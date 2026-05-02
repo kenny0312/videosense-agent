@@ -1,0 +1,33 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "Stage 3 — MCP Server (AlloyDB)",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["stage3_mcp_server.py"],
+      "port": 0,
+      "description": "stdio MCP Server，暴露 get_schema() 和 query_db()，供 Planner 调用"
+    },
+    {
+      "name": "Stage 4 — Planner REPL",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["stage4_planner.py"],
+      "port": 0,
+      "description": "自然语言 → DAG 执行引擎，交互式查询视频数据"
+    },
+    {
+      "name": "Stage 2 — Gemini Predicates Pipeline",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["stage2/gemini_predicates.py"],
+      "port": 0,
+      "description": "批量调用 Gemini 2.5 分析 GCS 视频，写入 video_facts 表"
+    },
+    {
+      "name": "Stage 5 — Sandbox API (FastAPI)",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "uvicorn", "stage5_sandbox:app", "--host", "0.0.0.0", "--port", "8080", "--reload"],
+      "port": 8080,
+      "description": "安全代码沙箱 POST /execute，第5阶段待实现"
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+.pytest_cache/
+
+# 环境变量与密钥（绝对不提交）
+.env
+*.json.key
+service_account*.json
+*credentials*.json
+
+# 临时文件
+*.tmp
+*.log
+*.mp4
+*.mkv
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
