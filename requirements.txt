@@ -1,0 +1,10 @@
+# Cloud & Database
+google-cloud-storage>=3.10.0
+google-cloud-aiplatform>=1.149.0
+psycopg2-binary>=2.9.12
+
+# MCP Protocol
+mcp>=1.0.0
+
+# Utilities
+tqdm

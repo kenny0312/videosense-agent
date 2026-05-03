@@ -2,32 +2,32 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "Stage 3 — MCP Server (AlloyDB)",
+      "name": "MCP Server (AlloyDB)",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["stage3_mcp_server.py"],
+      "runtimeArgs": ["mcp_server/server.py"],
       "port": 0,
-      "description": "stdio MCP Server，暴露 get_schema() 和 query_db()，供 Planner 调用"
+      "description": "stdio MCP Server — exposes get_schema() and query_db() for the Planner"
     },
     {
-      "name": "Stage 4 — Planner REPL",
+      "name": "Planner REPL",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["stage4_planner.py"],
+      "runtimeArgs": ["planner/dag_planner.py"],
       "port": 0,
-      "description": "自然语言 → DAG 执行引擎，交互式查询视频数据"
+      "description": "Interactive natural language → DAG query engine"
     },
     {
-      "name": "Stage 2 — Gemini Predicates Pipeline",
+      "name": "Gemini Perception Pipeline",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["stage2/gemini_predicates.py"],
+      "runtimeArgs": ["perception/gemini_predicates.py"],
       "port": 0,
-      "description": "批量调用 Gemini 2.5 分析 GCS 视频，写入 video_facts 表"
+      "description": "Batch predicate evaluation via Gemini 2.5 → writes to video_facts"
     },
     {
-      "name": "Stage 5 — Sandbox API (FastAPI)",
+      "name": "Sandbox API (FastAPI)",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["-m", "uvicorn", "stage5_sandbox:app", "--host", "0.0.0.0", "--port", "8080", "--reload"],
+      "runtimeArgs": ["-m", "uvicorn", "sandbox.server:app", "--host", "0.0.0.0", "--port", "8080", "--reload"],
       "port": 8080,
-      "description": "安全代码沙箱 POST /execute，第5阶段待实现"
+      "description": "Isolated code execution sandbox — Stage 5 (not yet implemented)"
     }
   ]
 }

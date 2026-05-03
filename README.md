@@ -108,17 +108,30 @@ A DAG intermediate representation separates *planning* from *execution*, making 
 ## Repository Structure
 
 ```
-├── scripts/
-│   ├── stage1_upload_metadata.py   # Download → transcode → GCS → AlloyDB
-│   ├── stage2_gemini_predicates.py # Gemini predicate evaluation pipeline
-│   ├── stage3_mcp_server.py        # MCP stdio server (get_schema, query_db)
-│   └── stage4_planner.py           # NL → DAG planner + execution engine
-├── data/src/
-│   └── data_download.py            # ActivityNet download utility
-├── stage2/
-│   └── create_video_facts.py       # DB schema setup
+├── ingestion/
+│   └── download_transcode_upload.py  # Download ActivityNet → 720p transcode → GCS → AlloyDB
+│
+├── perception/
+│   ├── gemini_predicates.py          # Gemini 2.5 predicate evaluation pipeline
+│   └── setup_schema.py               # Create video_facts table in AlloyDB
+│
+├── mcp_server/
+│   └── server.py                     # MCP stdio server (get_schema, query_db)
+│
+├── planner/
+│   └── dag_planner.py                # Natural language → JSON DAG → execution engine
+│
+├── sandbox/                          # Stage 5 — isolated code execution (planned)
+│
+├── utils/
+│   ├── test_connections.py           # Verify GCS + AlloyDB connectivity
+│   ├── inspect_facts.py              # Inspect video_facts table stats
+│   └── inspect_db.py                 # List all tables and row counts
+│
+├── requirements.txt
+├── .env.example
 └── .claude/
-    └── launch.json                 # Dev server configurations
+    └── launch.json                   # Dev server launch configurations
 ```
 
 ---
