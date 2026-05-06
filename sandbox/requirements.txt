@@ -1,0 +1,8 @@
+# Sandbox service dependencies
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+
+# Python packages available inside the execution sandbox
+# (the same image that runs FastAPI also runs the untrusted code)
+pandas>=2.2.0
+numpy>=1.26.0
