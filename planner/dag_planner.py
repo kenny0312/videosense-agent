@@ -84,6 +84,15 @@ def build_system_prompt(schema: dict) -> str:
 # 数据库结构
 {json.dumps(schema, ensure_ascii=False, indent=2)}
 
+# 关键数据说明
+- video_discovery.all_activities 是 PostgreSQL 数组类型（TEXT[]），搜索时用：
+    'keyword' = ANY(all_activities)  ← 精确匹配数组元素
+    all_activities::text ILIKE '%keyword%'  ← 模糊匹配（推荐）
+- video_discovery.primary_activity 是普通文本，搜索时用 ILIKE '%keyword%' 做大小写不敏感匹配
+- video_facts.predicate 存储的是英文活动描述字符串，搜索时同样用 ILIKE
+- video_facts.matched 是布尔值，查询已确认的活动时加 AND matched = true
+- 只使用上面 schema 中存在的表和列，不要创建不存在的表名或列名
+
 # 你的任务
 将用户的自然语言查询编译为 JSON DAG 执行计划。
 
@@ -204,7 +213,7 @@ def plan(user_query: str) -> dict:
 
     log.info("调用 Gemini 生成 DAG...")
     vertexai.init(project=PROJECT_ID, location=REGION)
-    model = GenerativeModel("gemini-2.5-flash")
+    model = GenerativeModel("gemini-2.5-pro")
 
     full_prompt = f"{system_prompt}\n\n用户问题：{user_query}"
     response = model.generate_content(
@@ -226,7 +235,7 @@ def plan(user_query: str) -> dict:
 def main():
     print("\n" + "="*55)
     print("  第4阶段：Planner 自然语言查询系统")
-    print("  LLM: Gemini 2.5 Flash + AlloyDB")
+    print("  LLM: Gemini 2.5 Pro + AlloyDB")
     print("  输入 'quit' 退出")
     print("="*55 + "\n")
 
