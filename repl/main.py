@@ -37,10 +37,13 @@ logging.basicConfig(
 
 HEADER = """
 ======================================================
-  第6阶段:Agentic REPL  (自愈版)
+  第6阶段:Agentic REPL  (无 Planner 快速直通通道)
   自然语言 → SQL → Python → Sandbox → 答案
   输入 'quit' / 'exit' / 'q' 退出
   按 Ctrl-C 中断当前查询
+------------------------------------------------------
+  需要完整 DAG 流水线(Planner→CodeGen→多节点自愈)?
+  改用:  python -m pipeline.main
 ======================================================
 """
 

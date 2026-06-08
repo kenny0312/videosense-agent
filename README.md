@@ -1,152 +1,215 @@
-# Structured Video Understanding via Multimodal LLM Predicates
+<div align="center">
 
-> An end-to-end pipeline that transforms raw video streams into queryable, structured knowledge — using Gemini as a multimodal perception engine, MCP as a standardized database protocol, and a declarative DAG planner to answer natural language queries over video facts.
+# 🎬 Video Vibe Query
 
----
+### Ask questions about video in plain English — get answers, charts, and the code that produced them.
 
-## Overview
+[![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-Production-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![Powered by Gemini](https://img.shields.io/badge/Powered%20by-Gemini%202.5-4285F4?logo=google&logoColor=white)](https://deepmind.google/technologies/gemini/)
+[![Google Cloud](https://img.shields.io/badge/Google%20Cloud-AlloyDB%20%7C%20Cloud%20Run-4285F4?logo=googlecloud&logoColor=white)](https://cloud.google.com/)
 
-Traditional video retrieval systems rely on metadata tags or transcript search. This project explores a different approach: **atomizing video content into structured predicates** — fine-grained, confidence-scored facts extracted directly from pixels by a multimodal LLM — and building an agentic query layer on top.
-
-The system is designed around three core ideas:
-
-1. **Perception as predicate evaluation.** Rather than generating free-form captions, Gemini 2.5 evaluates each video against specific activity predicates (e.g., *"snowboarding down a slope"*, *"applying mascara"*) and returns a structured `PredicateResult` with confidence, rationale, and timestamp bounds.
-
-2. **Schema-grounded query planning.** A Planner LLM receives the real database schema via MCP, then compiles natural language questions into executable JSON DAGs — eliminating hallucinated column names and invalid SQL.
-
-3. **Safe agentic execution.** Generated code runs inside an isolated sandbox (Cloud Run + gVisor), with a self-healing REPL loop that feeds tracebacks back to the LLM for automatic correction.
+</div>
 
 ---
 
-## Architecture
+## Demo
+
+<div align="center">
+
+<!-- Drop your recording here → docs/demo.gif -->
+<img src="docs/demo.gif" alt="Video Vibe Query demo" width="800"/>
+
+</div>
 
 ```
-User Query (natural language)
-        │
-        ▼
-┌───────────────────┐
-│   Stage 4: Planner│  ← Gemini 2.5 Flash + MCP Schema
-│   NL → JSON DAG   │
-└────────┬──────────┘
-         │
-         ▼
-┌───────────────────┐     ┌──────────────────────┐
-│  Stage 3: MCP     │────▶│  AlloyDB (PostgreSQL) │
-│  get_schema()     │     │  video_metadata       │
-│  query_db(sql)    │     │  video_facts (1,084)  │
-└───────────────────┘     └──────────────────────┘
-         │
-         ▼
-┌───────────────────┐
-│  Stage 5: Sandbox │  ← FastAPI + Cloud Run + gVisor
-│  POST /execute    │
-└───────────────────┘
-         │
-         ▼
-┌───────────────────┐
-│  Stage 2: Gemini  │  ← Vertex AI, direct GCS URI
-│  Predicate Engine │     582 unique predicates
-└───────────────────┘     87 videos · avg confidence 0.942
+You:  Find every video that contains skiing or snowboarding.
+→     3 videos · Skiing in Aspen · Snowboarding Slopes · Backcountry Snowboarding Run
+
+You:  Plot start time vs. detection confidence for all confirmed activities.
+→     scatter chart  →  http://localhost:8000/plots/bb9ab8e1.svg
+
+You:  Take the 3 highest-confidence skiing clips, align them with heart-rate
+      sensor data, resample to 10 Hz, and run an OLS regression.
+→     R² = 0.68 over 480 aligned samples · plus the exact Python that computed it
 ```
 
 ---
 
-## Dataset
+## What it does
 
-- **Source:** ActivityNet (subset, 100 videos)
-- **Storage:** Google Cloud Storage (`gs://activitynet/activitynet/720p/`)
-- **Format:** 720p H.264 MP4, transcoded via ffmpeg
-- **Metadata:** Stored in AlloyDB (`video_metadata`, 100 rows)
-- **Facts:** 1,084 predicate evaluation records across 87 videos (`video_facts`)
+**Video Vibe Query turns raw video into a knowledge base you can interrogate in natural language.**
 
----
+A multimodal LLM watches each video and extracts structured, confidence-scored facts
+("*snowboarding*, 0.96, 3s–36s"). On top of that fact base, you ask questions the way
+you'd ask a data analyst — *"find,"* *"compare,"* *"correlate,"* *"plot"* — and the system:
 
-## Implementation Stages
+1. **Plans** your question into an executable graph of steps.
+2. **Writes** the Python for each analytical step on the fly.
+3. **Runs** that code in an isolated sandbox, **fixing its own bugs** when it hits one.
+4. **Returns** the answer, any charts, and the exact code that produced them.
 
-| Stage | Component | Description | Status |
-|-------|-----------|-------------|--------|
-| 1 | **GCP Foundation** | Video download → 720p transcode → GCS upload → AlloyDB metadata | ✅ Complete |
-| 2 | **Gemini Predicates** | Multimodal predicate evaluation via Vertex AI; structured `PredicateResult` output | ✅ Complete |
-| 3 | **MCP Server** | stdio-based MCP server exposing `get_schema()` and `query_db()` | ✅ Complete |
-| 4 | **DAG Planner** | LLM compiles natural language to executable JSON DAG; topological execution engine | ✅ Complete |
-| 5 | **Sandbox Engine** | Isolated FastAPI execution environment on Cloud Run with gVisor | 🔜 In Progress |
-| 6 | **Agentic REPL** | Self-healing code loop: generate → execute → parse traceback → retry | ⏳ Planned |
-| 7 | **Data Engineering** | Cross-modal ETL: sensor CSV ↔ video facts via `pandas.merge_asof` | ⏳ Planned |
-| 8 | **Temporal Alignment** | Multi-rate resampling (1 fps video ↔ 100 Hz sensor) via `scipy.interpolate` | ⏳ Planned |
-| 9 | **Dynamic Simulation** | Exploratory threshold sweeps; OLS regression on visual features | ⏳ Planned |
-| 10 | **Orchestration** | Production FastAPI `POST /v1/video_vibe_query` with full pipeline | ⏳ Planned |
+No dashboards to configure, no SQL to write, no notebooks to babysit. Just ask.
 
----
+### Why it's different
 
-## Key Design Decisions
-
-**Why predicate-based perception over captioning?**
-Free-form captions are hard to query at scale. Predicates produce boolean + confidence outputs that map directly to SQL `WHERE` clauses, enabling precise retrieval without embedding search.
-
-**Why MCP for database access?**
-Giving the Planner LLM raw database credentials leads to hallucinated schema. The MCP `get_schema()` tool injects the real column names into the LLM context at query time, grounding every generated SQL statement in the actual schema.
-
-**Why a DAG over direct SQL generation?**
-A DAG intermediate representation separates *planning* from *execution*, making it easier to inspect, debug, and extend the query logic without re-prompting the LLM.
+| | Traditional video search | Video Vibe Query |
+|---|---|---|
+| **Query** | keyword / tag matching | full natural language |
+| **Answers** | a list of clips | computed analytics, regressions, charts |
+| **New question** | build a new pipeline | just ask — code is generated per query |
+| **Trust** | black box | returns the plan **and** the runnable code |
 
 ---
 
-## Stack
-
-| Layer | Technology |
-|-------|-----------|
-| Video Storage | Google Cloud Storage |
-| Database | AlloyDB for PostgreSQL |
-| Multimodal LLM | Gemini 2.5 Flash (Vertex AI) |
-| DB Protocol | MCP Python SDK (stdio) |
-| API Framework | FastAPI |
-| Execution Sandbox | Cloud Run + gVisor |
-| Orchestration | Python state machine / LangGraph |
-
----
-
-## Repository Structure
+## How it works
 
 ```
-├── ingestion/
-│   └── download_transcode_upload.py  # Download ActivityNet → 720p transcode → GCS → AlloyDB
-│
-├── perception/
-│   ├── gemini_predicates.py          # Gemini 2.5 predicate evaluation pipeline
-│   └── setup_schema.py               # Create video_facts table in AlloyDB
-│
-├── mcp_server/
-│   └── server.py                     # MCP stdio server (get_schema, query_db)
-│
-├── planner/
-│   └── dag_planner.py                # Natural language → JSON DAG → execution engine
-│
-├── sandbox/                          # Stage 5 — isolated code execution (planned)
-│
-├── utils/
-│   ├── test_connections.py           # Verify GCS + AlloyDB connectivity
-│   ├── inspect_facts.py              # Inspect video_facts table stats
-│   └── inspect_db.py                 # List all tables and row counts
-│
-├── requirements.txt
-├── .env.example
-└── .claude/
-    └── launch.json                   # Dev server launch configurations
+   Natural-language question
+            │
+            ▼
+   ┌──────────────────┐   reads live DB schema     ┌──────────────────┐
+   │   PLANNER        │ ◀────────────────────────▶ │  Knowledge base   │
+   │   question → plan│        (via MCP)            │  (video facts)    │
+   └────────┬─────────┘                            └──────────────────┘
+            │  a graph of steps
+            ▼
+   ┌──────────────────┐   writes Python per step
+   │  CODE GENERATOR  │ ─────────────────────────┐
+   └──────────────────┘                          ▼
+                                       ┌──────────────────────┐
+                                       │  SECURE SANDBOX       │
+                                       │  run · fail · self-fix│  ↺ up to 3×
+                                       └──────────┬───────────┘
+                                                  ▼
+                              answer · chart · generated code
 ```
+
+The pipeline separates **deciding what to do** (a transparent, auditable plan) from
+**doing it** (generated code that runs in isolation and repairs itself). Simple lookups
+take the fast path; only analytical work pays for code generation and sandboxed execution.
 
 ---
 
-## Environment Setup
+## Tech stack
+
+Built on a modern, cloud-native AI stack:
+
+- **🧠 Multimodal AI** — Gemini 2.5 (Vertex AI) for both perception and code generation
+- **🔌 Model Context Protocol** — standardized, schema-grounded database access
+- **🛡️ Isolated execution** — Cloud Run + gVisor sandbox with an AST policy gate
+- **🗄️ Cloud data** — AlloyDB for PostgreSQL · Google Cloud Storage
+- **⚡ Production API** — FastAPI, fully containerized
+
+---
+
+## Requirements
+
+- **Python** 3.11+
+- **Google Cloud** account with Vertex AI enabled, and `gcloud` CLI authenticated
+- **(Optional)** AlloyDB / PostgreSQL — *or* run in zero-cost **mock mode** (no database required)
+
+Install dependencies:
 
 ```bash
-# Python dependencies
-pip install psycopg2-binary google-cloud-storage google-cloud-aiplatform mcp
-
-# GCP authentication
-gcloud auth application-default login
-gcloud config set project your-gcp-project-id
-gcloud auth application-default set-quota-project your-gcp-project-id
-
-# AlloyDB password (never hardcode)
-export ALLOYDB_PASSWORD=<your_password>
+pip install -r requirements.txt
 ```
+
+Authenticate with Google Cloud (needed for Gemini):
+
+```bash
+gcloud auth application-default login
+```
+
+---
+
+## Quickstart
+
+The fastest way to try it — **mock mode** uses an in-memory database seeded with sample
+video facts, so you need **no AlloyDB and pay nothing for storage**.
+
+### 1. Configure your environment
+
+```powershell
+$env:REPL_USE_MOCK_DB = "1"                                         # zero-cost in-memory data
+$env:SANDBOX_URL      = "https://your-sandbox.run.app"   # hosted secure sandbox
+$env:SANDBOX_TOKEN    = (gcloud auth print-identity-token)
+```
+
+### 2. Start the API
+
+```bash
+uvicorn api.server:app --port 8000
+```
+
+### 3. Ask a question
+
+Open the interactive docs in your browser:
+
+```
+http://localhost:8000/docs
+```
+
+Or call it directly:
+
+```bash
+curl -X POST http://localhost:8000/v1/video_vibe_query \
+  -H "Content-Type: application/json" \
+  -d '{"query": "Find every video that contains skiing or snowboarding."}'
+```
+
+> 💡 Prefer real AlloyDB? Drop `REPL_USE_MOCK_DB` and set `ALLOYDB_PASSWORD` instead.
+> Prefer a terminal REPL over HTTP? Run `python -m pipeline.main`.
+
+---
+
+## Using the API
+
+**`POST /v1/video_vibe_query`**
+
+```jsonc
+// Request
+{ "query": "Plot start time vs. confidence for all confirmed activities." }
+
+// Response
+{
+  "ok": true,
+  "answer": { "n_points": 45 },
+  "dag": { "nodes": [ /* the plan that was executed */ ] },
+  "generated_code": { "n2": "import json ..." },   // the exact code that ran
+  "plot_url": "http://localhost:8000/plots/bb9ab8e1.svg",
+  "trace": [ /* every step, timed */ ],
+  "trace_summary": "trace: 4/4 steps ok, total 53578ms"
+}
+```
+
+Charts are served straight from the API — open `plot_url` in your browser.
+
+### Example questions to try
+
+| Ask this | You get |
+|----------|---------|
+| `How many videos are in the database?` | a count |
+| `Find every video that contains skiing or snowboarding.` | a filtered list |
+| `Plot start time vs. confidence for all confirmed activities.` | a scatter chart URL |
+| `Show the distribution of confidence scores in 0.1 buckets.` | a histogram |
+| `Take the top-3 skiing clips, align them with heart-rate data, resample to 10 Hz, and run an OLS regression.` | a regression + the code |
+
+---
+
+## Project layout
+
+```
+pipeline/     The query engine: planner · code generator · executor · orchestrator
+api/          FastAPI service (POST /v1/video_vibe_query)
+sandbox/      Isolated code-execution service (Cloud Run + gVisor)
+mcp_server/   Schema-grounded database access over MCP
+perception/   Multimodal fact extraction from video
+ingestion/    Video → transcode → cloud storage → metadata
+```
+
+---
+
+<div align="center">
+<sub>Built with Gemini, MCP, and a self-healing code sandbox on Google Cloud.</sub>
+</div>

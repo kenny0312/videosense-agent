@@ -4,5 +4,9 @@ uvicorn[standard]>=0.29.0
 
 # Python packages available inside the execution sandbox
 # (the same image that runs FastAPI also runs the untrusted code)
+# 对齐大纲 Stage 5 科学栈 —— interpolate/ols_regress 节点依赖 scipy/statsmodels
+# (plot 节点产出纯 Python SVG,不需要 matplotlib)
 pandas>=2.2.0
 numpy>=1.26.0
+scipy>=1.13.0
+statsmodels>=0.14.0

@@ -1,21 +1,30 @@
 """
-Quick local test for the Sandbox API (Phase A).
-Run after: uvicorn sandbox.server:app --port 8080
+Quick smoke test for the Sandbox API.
+
+Targets localhost by default. To run against Cloud Run:
+    $env:SANDBOX_URL = "https://your-sandbox.run.app"
+    $env:SANDBOX_TOKEN = (gcloud auth print-identity-token)
+    python sandbox/test_local.py
 """
+import os
 import urllib.request
 import json
 import sys
 
-BASE = "http://localhost:8080"
+BASE = os.environ.get("SANDBOX_URL", "http://localhost:8080").rstrip("/")
+TOKEN = os.environ.get("SANDBOX_TOKEN", "")
 PASS = True
 
 
 def post_execute(code: str, timeout: int = 30) -> dict:
     body = json.dumps({"code": code, "timeout": timeout}).encode()
+    headers = {"Content-Type": "application/json"}
+    if TOKEN:
+        headers["Authorization"] = f"Bearer {TOKEN}"
     req = urllib.request.Request(
         f"{BASE}/execute",
         data=body,
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         method="POST",
     )
     return json.loads(urllib.request.urlopen(req).read())
@@ -30,8 +39,10 @@ def check(label: str, condition: bool, detail: str = ""):
 
 
 # ── 1. Health ──────────────────────────────────────────────────────────────────
-resp = urllib.request.urlopen(f"{BASE}/health")
-data = json.loads(resp.read())
+health_req = urllib.request.Request(f"{BASE}/health")
+if TOKEN:
+    health_req.add_header("Authorization", f"Bearer {TOKEN}")
+data = json.loads(urllib.request.urlopen(health_req).read())
 check("Health endpoint", data.get("status") == "ok")
 
 # ── 2. Simple stdout ───────────────────────────────────────────────────────────
@@ -64,6 +75,26 @@ check("SyntaxError captured in stderr", r["exit_code"] != 0)
 # ── 8. Elapsed time recorded ──────────────────────────────────────────────────
 r = post_execute("print('hi')")
 check("elapsed_seconds > 0", r["elapsed_seconds"] > 0, str(r["elapsed_seconds"]))
+
+# ── 9. Import policy: network module blocked ──────────────────────────────────
+r = post_execute("import socket")
+check("socket import blocked", r["exit_code"] == 3 and "PolicyError" in r["stderr"], r["stderr"])
+
+# ── 10. Import policy: urllib blocked ─────────────────────────────────────────
+r = post_execute("import urllib.request")
+check("urllib import blocked", r["exit_code"] == 3 and "PolicyError" in r["stderr"], r["stderr"])
+
+# ── 11. Import policy: subprocess blocked ─────────────────────────────────────
+r = post_execute("import subprocess")
+check("subprocess blocked", r["exit_code"] == 3 and "PolicyError" in r["stderr"], r["stderr"])
+
+# ── 12. Import policy: __import__ blocked ─────────────────────────────────────
+r = post_execute("__import__('socket')")
+check("__import__ blocked", r["exit_code"] == 3 and "PolicyError" in r["stderr"], r["stderr"])
+
+# ── 13. Import policy: allowed modules still work ─────────────────────────────
+r = post_execute("import numpy as np; print(np.array([1,2,3]).sum())")
+check("numpy still allowed", r["exit_code"] == 0 and r["stdout"].strip() == "6", r["stdout"].strip())
 
 print()
 print("=" * 40)

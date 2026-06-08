@@ -1,0 +1,15 @@
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -f
+      - sandbox/Dockerfile
+      - -t
+      - gcr.io/$PROJECT_ID/sandbox:$_TAG
+      - .
+images:
+  - gcr.io/$PROJECT_ID/sandbox:$_TAG
+substitutions:
+  _TAG: v2
+options:
+  logging: CLOUD_LOGGING_ONLY

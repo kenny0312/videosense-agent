@@ -1,7 +1,21 @@
 #!/usr/bin/env python3
 """
-第4阶段：声明式计划生成器（Planner）
-使用 Gemini 作为 LLM，通过 MCP 获取 Schema，生成 JSON DAG
+第4阶段：声明式计划生成器（Planner）—— [已被 pipeline/ 取代,保留作参考]
+
+⚠️ DEPRECATED:
+    本文件是 Stage 4 的早期独立实现:DAG 词表只有 5 个关系工具,且 execute_dag()
+    直接解释执行,既没接 Code Generator / Sandbox,也用 `*_via_mcp` 假 MCP(直连 psycopg2)。
+
+    生产路径请用对齐大纲的新流水线:
+        python -m pipeline.main          # 完整 Planner→CodeGen→Sandbox 流水线 CLI
+        uvicorn api.server:app           # Stage 10 编排 API
+    其中:
+        pipeline/planner.py        —— 真·Planner(经真 MCP 取 schema,DAG 含科学节点)
+        pipeline/code_generator.py —— 逐节点代码生成
+        pipeline/node_executor.py  —— 单节点自愈执行
+        pipeline/orchestrator.py   —— DAG 拓扑编排
+
+    本文件仅留作教学对照(展示"DAG 解释器"形态),不再维护。
 """
 
 import json

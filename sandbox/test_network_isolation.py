@@ -1,27 +1,47 @@
-"""Verify that network access is blocked inside the container."""
-import urllib.request
-import json
-
-code = """
-import urllib.request
-try:
-    urllib.request.urlopen("http://google.com", timeout=3)
-    print("NETWORK_OPEN")
-except Exception as e:
-    print("NETWORK_BLOCKED:", type(e).__name__)
 """
+Verify the sandbox blocks network access at the policy layer.
 
-body = json.dumps({"code": code, "timeout": 10}).encode()
-req = urllib.request.Request(
-    "http://localhost:8080/execute",
-    data=body,
-    headers={"Content-Type": "application/json"},
-    method="POST",
-)
-r = json.loads(urllib.request.urlopen(req).read())
-print("stdout   :", r["stdout"].strip())
-print("exit_code:", r["exit_code"])
+Target is BASE (defaults to localhost). To run against Cloud Run:
+    $env:SANDBOX_URL = "https://your-sandbox.run.app"
+    $env:SANDBOX_TOKEN = (gcloud auth print-identity-token)
+    python sandbox/test_network_isolation.py
+"""
+import os
+import json
+import urllib.request
 
-blocked = "NETWORK_BLOCKED" in r["stdout"]
+BASE = os.environ.get("SANDBOX_URL", "http://localhost:8080").rstrip("/")
+TOKEN = os.environ.get("SANDBOX_TOKEN", "")
+
+
+def post_execute(code: str, timeout: int = 10) -> dict:
+    body = json.dumps({"code": code, "timeout": timeout}).encode()
+    headers = {"Content-Type": "application/json"}
+    if TOKEN:
+        headers["Authorization"] = f"Bearer {TOKEN}"
+    req = urllib.request.Request(f"{BASE}/execute", data=body, headers=headers, method="POST")
+    return json.loads(urllib.request.urlopen(req).read())
+
+
+CASES = [
+    ("urllib import",  "import urllib.request\nurllib.request.urlopen('http://example.com')"),
+    ("socket import",  "import socket\nsocket.socket().connect(('1.1.1.1', 80))"),
+    ("requests import","import requests\nrequests.get('http://example.com')"),
+    ("from urllib",    "from urllib.request import urlopen\nurlopen('http://example.com')"),
+    ("__import__",     "__import__('socket').socket().connect(('1.1.1.1', 80))"),
+    ("subprocess",     "import subprocess\nsubprocess.run(['curl','http://example.com'])"),
+]
+
+ok = True
+for label, code in CASES:
+    r = post_execute(code)
+    blocked = r["exit_code"] != 0 and "PolicyError" in r["stderr"]
+    mark = "[PASS]" if blocked else "[FAIL]"
+    if not blocked:
+        ok = False
+    print(f"{mark}  {label:18s}  exit={r['exit_code']}  stderr={r['stderr'][:80]!r}")
+
 print()
-print("[PASS] Network isolation confirmed" if blocked else "[FAIL] Network NOT isolated!")
+print("=" * 50)
+print("NETWORK ISOLATION CONFIRMED" if ok else "ISOLATION BROKEN")
+print("=" * 50)

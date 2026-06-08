@@ -221,6 +221,24 @@ def _init_conn() -> sqlite3.Connection:
         FACTS,
     )
 
+    # video_fact_instances — 为每条 matched fact 在 [start_ts, end_ts] 上
+    # 按 1 秒间隔生成逐帧实例,给 Stage 7/8 的时序对齐/插值提供真实时间序列。
+    instances = []
+    for row in conn.execute(
+        "SELECT id, matched, start_ts, end_ts FROM video_facts"
+    ).fetchall():
+        fid, matched, s, e = row["id"], row["matched"], row["start_ts"], row["end_ts"]
+        if not matched or e is None or s is None or e <= s:
+            continue
+        t = float(s)
+        while t <= float(e):
+            instances.append((fid, round(t, 3), 30))   # 30 frames/sec 占位
+            t += 1.0
+    conn.executemany(
+        "INSERT INTO video_fact_instances(fact_id, ts, frame_count) VALUES (?,?,?)",
+        instances,
+    )
+
     conn.commit()
     return conn
 
@@ -279,8 +297,9 @@ def mock_run_sql(sql: str) -> list[dict]:
     2. 把 PG 风格语法翻译成 SQLite 风格
     3. 返回 list[dict] (跟 RealDictCursor 一致)
     """
-    if not sql.strip().upper().startswith("SELECT"):
-        raise ValueError("只允许 SELECT 查询")
+    from pipeline.sql_guard import is_read_only
+    if not is_read_only(sql):
+        raise ValueError("只允许只读查询(SELECT / WITH ... SELECT)")
 
     translated = _translate(sql)
     conn = _get_conn()
