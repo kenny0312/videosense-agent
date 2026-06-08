@@ -1,8 +1,8 @@
 <div align="center">
 
-# 🎬 Video Vibe Query
+# 🎬 VideoSense Agent
 
-### Ask questions about video in plain English — get answers, charts, and the code that produced them.
+### Natural-language understanding & analytics for any video library — ask in plain English, get answers, charts, and the code behind them.
 
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-Production-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
@@ -18,7 +18,7 @@
 <div align="center">
 
 <!-- Drop your recording here → docs/demo.gif -->
-<img src="docs/demo.gif" alt="Video Vibe Query demo" width="800"/>
+<img src="docs/demo.gif" alt="VideoSense Agent demo" width="800"/>
 
 </div>
 
@@ -38,7 +38,7 @@ You:  Take the 3 highest-confidence skiing clips, align them with heart-rate
 
 ## What it does
 
-**Video Vibe Query turns raw video into a knowledge base you can interrogate in natural language.**
+**VideoSense Agent turns raw video into a knowledge base you can interrogate in natural language.**
 
 A multimodal LLM watches each video and extracts structured, confidence-scored facts
 ("*snowboarding*, 0.96, 3s–36s"). On top of that fact base, you ask questions the way
@@ -53,7 +53,7 @@ No dashboards to configure, no SQL to write, no notebooks to babysit. Just ask.
 
 ### Why it's different
 
-| | Traditional video search | Video Vibe Query |
+| | Traditional video search | VideoSense Agent |
 |---|---|---|
 | **Query** | keyword / tag matching | full natural language |
 | **Answers** | a list of clips | computed analytics, regressions, charts |

@@ -36,7 +36,7 @@ from pydantic import BaseModel, Field
 from pipeline import artifacts, config
 from pipeline.orchestrator import run_query
 
-app = FastAPI(title="video_vibe_query", version="1.0")
+app = FastAPI(title="VideoSense Agent", version="1.0")
 
 # 把本地 artifacts/ 目录挂成静态服务 —— 生成的图表用浏览器直接打开
 os.makedirs(artifacts.LOCAL_DIR, exist_ok=True)
