@@ -77,6 +77,7 @@ inputs: {json.dumps(node.inputs, ensure_ascii=False)}
 
 # 输出约定
 - 只输出 Python 代码,不要 markdown 围栏,不要解释
+- **代码里的所有注释、字符串字面量、标签一律用英文(English only)。禁止出现任何中文字符。**
 - 计算结果必须用 print(json.dumps(...)) 输出,以便下游节点解析
 - 若上游数据为空,print(json.dumps([]))
 """

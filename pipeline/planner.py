@@ -58,6 +58,7 @@ def _system_prompt(schema: dict) -> str:
 - depends_on 必须引用已定义的节点 id,不能成环
 - 节点 id 用 n1,n2,n3...
 - inputs 字段名严格按工具说明
+- **会出现在结果里的文本一律用英文:SQL 不要写注释、plot 的 title 用英文。禁止在 DAG 里出现中文。**
 - 只输出 JSON
 """
 
