@@ -17,8 +17,9 @@
 
 <div align="center">
 
-<!-- Drop your recording here → docs/demo.gif -->
 <img src="docs/demo.gif" alt="VideoSense Agent demo" width="800"/>
+
+<sub>One question → a multi-step plan → self-healing execution → answer + code. <a href="docs/DEMO.md"><b>See the full walkthrough →</b></a></sub>
 
 </div>
 
@@ -31,7 +32,7 @@ You:  Plot start time vs. detection confidence for all confirmed activities.
 
 You:  Take the 3 highest-confidence skiing clips, align them with heart-rate
       sensor data, resample to 10 Hz, and run an OLS regression.
-→     R² = 0.68 over 480 aligned samples · plus the exact Python that computed it
+→     R² over time-aligned samples · plus the exact Python that computed it
 ```
 
 ---
