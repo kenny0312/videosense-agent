@@ -30,12 +30,12 @@ from collections import defaultdict, deque
 # ══════════════════════════════════════════
 #  配置
 # ══════════════════════════════════════════
-PROJECT_ID       = "your-gcp-project-id"
-REGION           = "us-central1"
-ALLOYDB_IP       = "your-db-host"
+PROJECT_ID       = os.environ.get("GCP_PROJECT", "your-gcp-project-id")
+REGION           = os.environ.get("GCP_REGION", "us-central1")
+ALLOYDB_IP       = os.environ.get("ALLOYDB_HOST", "localhost")
 ALLOYDB_PASSWORD = os.environ.get("ALLOYDB_PASSWORD", "")
-ALLOYDB_DB       = "your_database"
-ALLOYDB_USER     = "postgres"
+ALLOYDB_DB       = os.environ.get("ALLOYDB_DB", "your_database")
+ALLOYDB_USER     = os.environ.get("ALLOYDB_USER", "postgres")
 # ══════════════════════════════════════════
 
 logging.basicConfig(

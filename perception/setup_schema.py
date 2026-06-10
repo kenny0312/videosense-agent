@@ -2,15 +2,16 @@
 第2阶段 Step 1: 创建 video_facts 表
 运行方式: python create_video_facts.py
 """
+import os
 import psycopg2
 
 password = input("AlloyDB postgres 密码: ")
 
 conn = psycopg2.connect(
-    host="your-db-host",
+    host=os.environ.get("ALLOYDB_HOST", "localhost"),
     port=5432,
-    dbname="your_database",
-    user="postgres",
+    dbname=os.environ.get("ALLOYDB_DB", "your_database"),
+    user=os.environ.get("ALLOYDB_USER", "postgres"),
     password=password,
     sslmode="require",
     connect_timeout=10,

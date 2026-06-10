@@ -7,6 +7,7 @@
 运行方式: python gemini_predicates.py
 """
 
+import os
 import json
 import time
 import psycopg2
@@ -14,16 +15,16 @@ import vertexai
 from vertexai.generative_models import GenerativeModel, Part
 from pydantic import BaseModel, ValidationError
 
-# ── 配置 ──────────────────────────────────────────────────────────────────────
-PROJECT_ID  = "your-gcp-project-id"
-LOCATION    = "us-central1"
+# ── 配置(从环境变量读取,默认占位符)──────────────────────────────────────────
+PROJECT_ID  = os.environ.get("GCP_PROJECT", "your-gcp-project-id")
+LOCATION    = os.environ.get("GCP_REGION", "us-central1")
 MODEL_NAME  = "gemini-1.5-flash-002"
 
 DB_CONFIG = dict(
-    host="your-db-host",
+    host=os.environ.get("ALLOYDB_HOST", "localhost"),
     port=5432,
-    dbname="your_database",
-    user="postgres",
+    dbname=os.environ.get("ALLOYDB_DB", "your_database"),
+    user=os.environ.get("ALLOYDB_USER", "postgres"),
     sslmode="require",
     connect_timeout=10,
 )

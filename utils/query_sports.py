@@ -10,8 +10,10 @@ SPORTS_KEYWORDS = [
 ]
 
 conn = psycopg2.connect(
-    host='your-db-host', dbname='your_database',
-    user='postgres', password=os.environ['ALLOYDB_PASSWORD'], sslmode='require'
+    host=os.environ.get('ALLOYDB_HOST', 'localhost'),
+    dbname=os.environ.get('ALLOYDB_DB', 'your_database'),
+    user=os.environ.get('ALLOYDB_USER', 'postgres'),
+    password=os.environ['ALLOYDB_PASSWORD'], sslmode='require'
 )
 cur = conn.cursor()
 

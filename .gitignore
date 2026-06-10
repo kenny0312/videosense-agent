@@ -34,5 +34,12 @@ Thumbs.db
 # Claude Code session worktrees
 .claude/worktrees/
 
+# Local Claude settings (machine-specific permissions / paths)
+.claude/settings.local.json
+
 # Pipeline plot artifacts (local fallback when GCS unavailable)
 artifacts/
+
+# Personal chat-history export & crawler (never publish)
+chat_history_export/
+scripts/

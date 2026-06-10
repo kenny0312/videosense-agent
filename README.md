@@ -133,7 +133,7 @@ video facts, so you need **no AlloyDB and pay nothing for storage**.
 
 ```powershell
 $env:REPL_USE_MOCK_DB = "1"                                         # zero-cost in-memory data
-$env:SANDBOX_URL      = "https://your-sandbox.run.app"   # hosted secure sandbox
+$env:SANDBOX_URL      = "https://your-sandbox-xxxxx.run.app"   # hosted secure sandbox
 $env:SANDBOX_TOKEN    = (gcloud auth print-identity-token)
 ```
 

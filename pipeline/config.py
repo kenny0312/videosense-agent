@@ -11,14 +11,14 @@ import os
 # ── GCP / Vertex AI ───────────────────────────
 GCP_PROJECT = os.environ.get("GCP_PROJECT", "your-gcp-project-id")
 GCP_REGION  = os.environ.get("GCP_REGION", "us-central1")
-GCS_BUCKET  = os.environ.get("GCS_BUCKET", "activitynet")
+GCS_BUCKET  = os.environ.get("GCS_BUCKET", "your-gcs-bucket")
 
 # Planner 与 Code Generator 用的模型(可分别覆盖,默认同一个)
 PLANNER_MODEL = os.environ.get("PLANNER_MODEL", "gemini-2.5-pro")
 CODEGEN_MODEL = os.environ.get("CODEGEN_MODEL", "gemini-2.5-pro")
 
 # ── AlloyDB ───────────────────────────────────
-ALLOYDB_HOST     = os.environ.get("ALLOYDB_HOST", "your-db-host")
+ALLOYDB_HOST     = os.environ.get("ALLOYDB_HOST", "localhost")
 ALLOYDB_PORT     = int(os.environ.get("ALLOYDB_PORT", "5432"))
 ALLOYDB_DB       = os.environ.get("ALLOYDB_DB", "your_database")
 ALLOYDB_USER     = os.environ.get("ALLOYDB_USER", "postgres")

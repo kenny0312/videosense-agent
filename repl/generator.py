@@ -13,11 +13,11 @@ import psycopg2.extras
 import vertexai
 from vertexai.generative_models import GenerativeModel
 
-PROJECT_ID       = "your-gcp-project-id"
-REGION           = "us-central1"
-ALLOYDB_IP       = "your-db-host"
-ALLOYDB_DB       = "your_database"
-ALLOYDB_USER     = "postgres"
+PROJECT_ID       = os.environ.get("GCP_PROJECT", "your-gcp-project-id")
+REGION           = os.environ.get("GCP_REGION", "us-central1")
+ALLOYDB_IP       = os.environ.get("ALLOYDB_HOST", "localhost")
+ALLOYDB_DB       = os.environ.get("ALLOYDB_DB", "your_database")
+ALLOYDB_USER     = os.environ.get("ALLOYDB_USER", "postgres")
 ALLOYDB_PASSWORD = os.environ.get("ALLOYDB_PASSWORD", "")
 
 # 切换:set REPL_USE_MOCK_DB=1 → 走内存 SQLite mock(零成本演示用)

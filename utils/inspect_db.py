@@ -1,10 +1,12 @@
+import os
 import psycopg2
 
 password = input("AlloyDB postgres 密码: ")
 
 conn = psycopg2.connect(
-    host="your-db-host", port=5432, dbname="your_database",
-    user="postgres", password=password, sslmode="require",
+    host=os.environ.get("ALLOYDB_HOST", "localhost"), port=5432,
+    dbname=os.environ.get("ALLOYDB_DB", "your_database"),
+    user=os.environ.get("ALLOYDB_USER", "postgres"), password=password, sslmode="require",
 )
 cur = conn.cursor()
 

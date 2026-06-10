@@ -2,6 +2,7 @@
 连接测试脚本：GCS + AlloyDB
 运行方式: python test_connections.py
 """
+import os
 import sys
 
 # ── GCS 测试 ──────────────────────────────────────────────────────────────────
@@ -10,8 +11,8 @@ print("测试 1: GCS 连接")
 print("=" * 50)
 try:
     from google.cloud import storage
-    client = storage.Client(project="your-gcp-project-id")
-    blobs = list(client.list_blobs("activitynet", max_results=3))
+    client = storage.Client(project=os.environ.get("GCP_PROJECT", "your-gcp-project-id"))
+    blobs = list(client.list_blobs(os.environ.get("GCS_BUCKET", "your-gcs-bucket"), max_results=3))
     print(f"[OK] GCS 连接成功，bucket 内文件示例:")
     for b in blobs:
         print(f"     {b.name}  ({round(b.size/1024/1024, 1)} MB)")
@@ -29,10 +30,10 @@ password = input("请输入 AlloyDB postgres 密码: ")
 try:
     import psycopg2
     conn = psycopg2.connect(
-        host="your-db-host",
+        host=os.environ.get("ALLOYDB_HOST", "localhost"),
         port=5432,
-        dbname="your_database",
-        user="postgres",
+        dbname=os.environ.get("ALLOYDB_DB", "your_database"),
+        user=os.environ.get("ALLOYDB_USER", "postgres"),
         password=password,
         sslmode="require",
         connect_timeout=10,
