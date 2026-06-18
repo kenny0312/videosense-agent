@@ -16,6 +16,8 @@ GCS_BUCKET  = os.environ.get("GCS_BUCKET", "your-gcs-bucket")
 # Planner 与 Code Generator 用的模型(可分别覆盖,默认同一个)
 PLANNER_MODEL = os.environ.get("PLANNER_MODEL", "gemini-2.5-pro")
 CODEGEN_MODEL = os.environ.get("CODEGEN_MODEL", "gemini-2.5-pro")
+# 前置 Router(可答性/意图判定)用的小模型 —— 评判任务,小模型够用且便宜
+CRITIC_MODEL  = os.environ.get("CRITIC_MODEL", "gemini-2.5-flash")
 
 # ── AlloyDB ───────────────────────────────────
 ALLOYDB_HOST     = os.environ.get("ALLOYDB_HOST", "localhost")
