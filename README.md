@@ -45,10 +45,11 @@ A multimodal LLM watches each video and extracts structured, confidence-scored f
 ("*snowboarding*, 0.96, 3s–36s"). On top of that fact base, you ask questions the way
 you'd ask a data analyst — *"find,"* *"compare,"* *"correlate,"* *"plot"* — and the system:
 
-1. **Plans** your question into an executable graph of steps.
-2. **Writes** the Python for each analytical step on the fly.
-3. **Runs** that code in an isolated sandbox, **fixing its own bugs** when it hits one.
-4. **Returns** the answer, any charts, and the exact code that produced them.
+1. **Routes** the question first — judging whether it can actually be answered with the data and tools at hand. If not (e.g. it refers to an earlier turn it can't see), it **says so honestly instead of guessing**.
+2. **Plans** the question into an executable graph of steps.
+3. **Writes** the Python for each analytical step on the fly.
+4. **Runs** that code in an isolated sandbox, **fixing its own bugs** when it hits one (database steps self-heal too).
+5. **Returns** the answer, any charts, and the exact code that produced them.
 
 No dashboards to configure, no SQL to write, no notebooks to babysit. Just ask.
 
@@ -60,6 +61,7 @@ No dashboards to configure, no SQL to write, no notebooks to babysit. Just ask.
 | **Answers** | a list of clips | computed analytics, regressions, charts |
 | **New question** | build a new pipeline | just ask — code is generated per query |
 | **Trust** | black box | returns the plan **and** the runnable code |
+| **When it can't** | wrong or empty results | refuses honestly, with a plain-English reason |
 
 ---
 
@@ -68,6 +70,12 @@ No dashboards to configure, no SQL to write, no notebooks to babysit. Just ask.
 ```
    Natural-language question
             │
+            ▼
+   ┌──────────────────┐
+   │   ROUTER          │   answerable? · intent?
+   │   can I answer?   │   ──► if not, refuse honestly
+   └────────┬─────────┘
+            │ yes
             ▼
    ┌──────────────────┐   reads live DB schema     ┌──────────────────┐
    │   PLANNER        │ ◀────────────────────────▶ │  Knowledge base   │
@@ -132,8 +140,9 @@ video facts, so you need **no AlloyDB and pay nothing for storage**.
 ### 1. Configure your environment
 
 ```powershell
-$env:REPL_USE_MOCK_DB = "1"                                         # zero-cost in-memory data
-$env:SANDBOX_URL      = "https://your-sandbox-xxxxx.run.app"   # hosted secure sandbox
+$env:GCP_PROJECT      = "your-gcp-project-id"                  # Vertex AI project (required for Gemini)
+$env:REPL_USE_MOCK_DB = "1"                                    # zero-cost in-memory data
+$env:SANDBOX_URL      = "https://your-sandbox-xxxxx.run.app"   # hosted secure sandbox (science steps only)
 $env:SANDBOX_TOKEN    = (gcloud auth print-identity-token)
 ```
 
@@ -145,10 +154,11 @@ uvicorn api.server:app --port 8000
 
 ### 3. Ask a question
 
-Open the interactive docs in your browser:
+Open the built-in test page — or the Swagger docs — in your browser:
 
 ```
-http://localhost:8000/docs
+http://localhost:8000/         # built-in query test page (type a question; see answer + trace)
+http://localhost:8000/docs     # interactive API docs
 ```
 
 Or call it directly:
@@ -160,7 +170,7 @@ curl -X POST http://localhost:8000/v1/video_vibe_query \
 ```
 
 > 💡 Prefer real AlloyDB? Drop `REPL_USE_MOCK_DB` and set `ALLOYDB_PASSWORD` instead.
-> Prefer a terminal REPL over HTTP? Run `python -m pipeline.main`.
+> Prefer a terminal CLI over HTTP? Run `python -m pipeline.main`.
 
 ---
 
@@ -175,6 +185,7 @@ curl -X POST http://localhost:8000/v1/video_vibe_query \
 // Response
 {
   "ok": true,
+  "status": "ok",                                  // ok · refused · error
   "answer": { "n_points": 45 },
   "dag": { "nodes": [ /* the plan that was executed */ ] },
   "generated_code": { "n2": "import json ..." },   // the exact code that ran
@@ -185,6 +196,9 @@ curl -X POST http://localhost:8000/v1/video_vibe_query \
 ```
 
 Charts are served straight from the API — open `plot_url` in your browser.
+
+If a question can't be answered (e.g. it refers to an earlier turn the system can't see), the response
+comes back with `"status": "refused"` and a plain-English `reason` — never a fabricated answer.
 
 ### Example questions to try
 
@@ -201,7 +215,7 @@ Charts are served straight from the API — open `plot_url` in your browser.
 ## Project layout
 
 ```
-pipeline/     The query engine: planner · code generator · executor · orchestrator
+pipeline/     The query engine: router · planner · code generator · executor · orchestrator
 api/          FastAPI service (POST /v1/video_vibe_query)
 sandbox/      Isolated code-execution service (Cloud Run + gVisor)
 mcp_server/   Schema-grounded database access over MCP
