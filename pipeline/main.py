@@ -9,8 +9,7 @@
     SANDBOX_URL            默认 http://localhost:8080,生产用 Cloud Run URL
     SANDBOX_TOKEN          Cloud Run 时自动经 gcloud 取
 
-对比:`python -m repl.main` 是无 Planner 的快速直通通道(NL→SQL→Python)。
-本入口是带 Planner 的完整 DAG 流水线。
+本入口:自然语言 → Planner 规划 DAG → 逐节点执行(数据走 MCP / 科学节点进沙箱,失败自愈)→ 答案。
 """
 from __future__ import annotations
 
@@ -56,6 +55,16 @@ def _check_env() -> bool:
 
 def _print_result(r: dict):
     print()
+    if r.get("status") == "smalltalk":
+        print(f"  {r.get('answer', '')}")
+        print(f"  {r['trace_summary']}")
+        print()
+        return
+    if r.get("status") == "refused":
+        print(f"  🛑 无法回答: {r.get('reason', '')}")
+        print(f"  {r['trace_summary']}")
+        print()
+        return
     if r.get("dag"):
         tools = " → ".join(n["tool"] for n in r["dag"]["nodes"])
         print(f"  DAG: {len(r['dag']['nodes'])} 节点 [{tools}]")

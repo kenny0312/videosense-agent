@@ -5,7 +5,7 @@ Reads SANDBOX_URL and optionally SANDBOX_TOKEN from the environment.
 When SANDBOX_URL points at a Cloud Run service (auth required), the token is
 acquired automatically via `gcloud auth print-identity-token` if not provided.
 
-Stage 6 (Agentic REPL) imports SandboxClient.execute() in its run loop.
+pipeline.node_executor imports SandboxClient.execute() to run generated code (with self-heal).
 """
 from __future__ import annotations
 

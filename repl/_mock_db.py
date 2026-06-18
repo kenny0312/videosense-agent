@@ -4,7 +4,7 @@
 启用方式:
     set REPL_USE_MOCK_DB=1            (cmd)
     $env:REPL_USE_MOCK_DB = "1"       (PowerShell)
-    python -m repl.main
+    python -m pipeline.main           (或 api.server / mcp_server.server)
 
 内置数据:
     - 12 个视频(贴近 ActivityNet 风格:滑雪 / 化妆 / 烘焙 / 运动 / 跳舞 等)

@@ -20,6 +20,7 @@ from vertexai.generative_models import GenerativeModel
 from pipeline import config, mcp_client
 from pipeline.dag_schema import DAG, parse_dag
 from pipeline.node_specs import catalog_for_planner
+from pipeline.sql_validate import validate_sql_columns
 
 log = logging.getLogger("pipeline.planner")
 
@@ -96,6 +97,7 @@ class Planner:
             raw = self._gen(prompt)
             try:
                 dag = parse_dag(raw)
+                validate_sql_columns(dag, self.schema)   # 表名校验:失败 → 走下面重规划
                 log.info("DAG 校验通过 (%d 节点)", len(dag.nodes))
                 return dag
             except Exception as e:
