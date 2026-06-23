@@ -8,6 +8,24 @@ from __future__ import annotations
 
 import os
 
+
+def _load_local_env() -> None:
+    """本地便利:若仓库根有 neon.env(gitignored),把其中 KEY=VALUE 载入环境
+    (不覆盖已显式设置的)。这样直接 uvicorn / 跑脚本都自动连 Neon,无需先手动 source。"""
+    p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "neon.env")
+    try:
+        with open(p, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    os.environ.setdefault(k.strip(), v.strip())
+    except OSError:
+        pass
+
+
+_load_local_env()
+
 # ── GCP / Vertex AI ───────────────────────────
 GCP_PROJECT = os.environ.get("GCP_PROJECT", "your-gcp-project-id")
 GCP_REGION  = os.environ.get("GCP_REGION", "us-central1")
