@@ -12,6 +12,7 @@ build/
 
 # 环境变量与密钥（绝对不提交）
 .env
+neon.env
 *.json.key
 service_account*.json
 *credentials*.json
@@ -39,6 +40,11 @@ Thumbs.db
 
 # Pipeline plot artifacts (local fallback when GCS unavailable)
 artifacts/
+
+# Session memory store (local SQLite; runtime state, never commit)
+.session_store.sqlite
+.session_store.sqlite-wal
+.session_store.sqlite-shm
 
 # Personal chat-history export & crawler (never publish)
 chat_history_export/

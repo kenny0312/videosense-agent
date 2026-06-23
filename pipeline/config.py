@@ -41,6 +41,14 @@ SANDBOX_URL = os.environ.get("SANDBOX_URL", "http://localhost:8080")
 # REPL_USE_MOCK_DB=1  → 用内存 SQLite mock,零成本、不需要 AlloyDB
 USE_MOCK_DB = os.environ.get("REPL_USE_MOCK_DB", "").lower() in ("1", "true", "yes")
 
+# ── 会话持久化(多轮记忆)──────────────────────
+# 独立 SQLite 文件:与 MCP 查的库【物理隔离】,planner 生成的 SQL 够不着 → 免疫"潘多拉"。
+# 设 SESSION_DB_PATH="" 关闭持久化(纯内存,测试/CI 用)。
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SESSION_DB_PATH = os.environ.get(
+    "SESSION_DB_PATH", os.path.join(_REPO_ROOT, ".session_store.sqlite"))
+SESSION_TTL_SECONDS = int(os.environ.get("SESSION_TTL_SECONDS", str(24 * 3600)))  # 闲置超此秒数的会话懒清理
+
 
 def alloydb_dsn() -> dict:
     """psycopg2.connect(**alloydb_dsn()) 用的连接参数。"""

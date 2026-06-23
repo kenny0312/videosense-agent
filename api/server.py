@@ -35,6 +35,7 @@ from pydantic import BaseModel, Field
 
 from pipeline import artifacts, config
 from pipeline.orchestrator import run_query
+from pipeline.session import STORE
 
 app = FastAPI(title="VideoSense Agent", version="1.0")
 
@@ -70,20 +71,25 @@ _TEST_PAGE = """<!doctype html>
   <h1>🎬 VideoSense Agent · 本地测试台</h1>
   <p class="sub">输入自然语言问题 → 看 答案 / DAG / trace / 图表。Ctrl/Cmd+Enter 发送。</p>
   <textarea id="q" rows="3" placeholder="例如: How many videos are in the database?"></textarea>
-  <div class="row"><button id="go">发送</button><span id="status"></span></div>
+  <div class="row"><button id="go">发送</button><button id="reset" style="background:#374151">新会话</button><span id="sess" class="chip"></span><span id="status"></span></div>
   <div id="out"></div>
 </div>
 <script>
 const $=id=>document.getElementById(id);
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 const G={ok:'[+]',error:'[x]',retry:'[~]',running:'[ ]'};
+let sessionId=null;
+function updateSess(){ $('sess').textContent = sessionId ? ('会话 '+sessionId.slice(0,8)) : '新会话'; }
+function resetSess(){ sessionId=null; updateSess(); $('out').innerHTML=''; $('status').textContent='已开新会话 —— 下一条问题不再记得上文'; }
 async function send(){
   const q=$('q').value.trim(); if(!q) return;
   $('go').disabled=true; $('status').textContent='运行中…(规划→执行,可能十几秒)'; $('out').innerHTML='';
   const t0=performance.now();
   try{
-    const r=await fetch('/v1/video_vibe_query',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:q})});
-    const d=await r.json(); render(d,Math.round(performance.now()-t0));
+    const r=await fetch('/v1/video_vibe_query',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:q, session_id:sessionId})});
+    const d=await r.json();
+    if(d.session_id){ sessionId=d.session_id; updateSess(); }
+    render(d,Math.round(performance.now()-t0));
   }catch(e){ $('status').textContent='请求失败: '+e; }
   $('go').disabled=false;
 }
@@ -94,11 +100,11 @@ function render(d,ms){
     return;
   }
   if(d.status==='refused'){
-    $('status').textContent='🛑 无法回答 · '+(d.trace_summary||'')+' · '+ms+'ms';
+    $('status').textContent='🛑 无法回答 · '+(d.turn_type||'')+' · '+(d.trace_summary||'')+' · '+ms+'ms';
     $('out').innerHTML='<h3>无法回答</h3><pre>'+esc(d.reason||'')+'</pre>';
     return;
   }
-  $('status').textContent=(d.ok?'✅ 成功':'❌ 失败')+' · '+(d.trace_summary||'')+' · '+ms+'ms(含网络)';
+  $('status').textContent=(d.ok?'✅ 成功':'❌ 失败')+' · '+(d.turn_type||'new')+' · '+(d.trace_summary||'')+' · '+ms+'ms(含网络)';
   let h='';
   if(d.dag&&d.dag.nodes){h+='<h3>DAG</h3><div class="chips">'+d.dag.nodes.map(n=>'<span class="chip">'+esc(n.id)+': '+esc(n.tool)+'</span>').join('')+'</div>';}
   h+='<h3>答案</h3><pre>'+esc(JSON.stringify(d.ok?d.answer:d.error,null,2))+'</pre>';
@@ -108,12 +114,16 @@ function render(d,ms){
   $('out').innerHTML=h;
 }
 $('go').onclick=send;
+$('reset').onclick=resetSess;
 $('q').addEventListener('keydown',e=>{if(e.key==='Enter'&&(e.ctrlKey||e.metaKey))send();});
+updateSess();
 </script></body></html>"""
 
 
 class VibeQueryRequest(BaseModel):
     query: str = Field(..., description="自然语言视频分析问题")
+    session_id: str | None = Field(
+        None, description="多轮会话 id;省略则开新会话,响应会回传一个 session_id 供下一轮带上")
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -128,7 +138,11 @@ def health():
 
 @app.post("/v1/video_vibe_query")
 def video_vibe_query(req: VibeQueryRequest, request: Request):
-    result = run_query(req.query, quiet_trace=True)
+    sid = req.session_id or uuid.uuid4().hex        # 没带 session_id → 开一个新会话
+    session = STORE.get_or_create(sid)
+    result = run_query(req.query, quiet_trace=True, session=session)
+    STORE.save(session)                             # 写时机:每请求一次(纯内存模式无操作)
+    result["session_id"] = sid                      # 回传,客户端下一轮带上即可续聊
 
     # 图表产物:沙箱产出的图像(svg/png)→ 存本地 → 返回浏览器可打开的 http URL
     plot_url = None
