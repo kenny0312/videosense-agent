@@ -33,6 +33,8 @@ DB_CONFIG = dict(
     user=os.environ.get("ALLOYDB_USER", "postgres"),
     sslmode="require",
     connect_timeout=10,
+    # keepalive:Gemini 调用慢,防止 Neon 在长空闲间隙关掉连接
+    keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=5,
 )
 
 MAX_VIDEOS    = int(os.environ.get("PERCEPTION_MAX_VIDEOS", "50"))  # 默认 50;可用 env 覆盖
@@ -72,7 +74,8 @@ List only activities truly present (the 3-8 most salient). Respond ONLY with a v
         try:
             response = model.generate_content(
                 [video_part, prompt],
-                generation_config={"temperature": 0.1, "max_output_tokens": 4096},
+                generation_config={"temperature": 0.1, "max_output_tokens": 4096,
+                                   "response_mime_type": "application/json"},
             )
             raw = response.text.strip()
 
@@ -157,12 +160,24 @@ def main():
             print("  FAILED\n")
             continue
 
-        for act in activities:
-            save_result(cur, video_id, act)
-            total_written += 1
-            print(f"  + {act.activity:<24} conf={act.confidence:.2f}  "
-                  f"{act.start_ts:.0f}-{act.end_ts:.0f}s")
-        conn.commit()
+        try:
+            for act in activities:
+                save_result(cur, video_id, act)
+                total_written += 1
+                print(f"  + {act.activity:<24} conf={act.confidence:.2f}  "
+                      f"{act.start_ts:.0f}-{act.end_ts:.0f}s")
+            conn.commit()
+        except psycopg2.OperationalError as e:
+            print(f"  [DB 掉线,重连重写] {str(e).strip()[:50]}")
+            try: conn.close()
+            except Exception: pass
+            conn = psycopg2.connect(**DB_CONFIG); conn.autocommit = False; cur = conn.cursor()
+            try:
+                for act in activities:
+                    save_result(cur, video_id, act)
+                conn.commit()
+            except Exception as e2:
+                print(f"  [重写仍失败] {e2}"); total_failed += 1
         print()
         time.sleep(SLEEP_BETWEEN)
 
