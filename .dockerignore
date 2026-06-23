@@ -1,0 +1,13 @@
+.git
+.gitignore
+neon.env
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.claude/
+artifacts/
+chat_history_export/
+scripts/
