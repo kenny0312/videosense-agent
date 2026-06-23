@@ -22,6 +22,8 @@ Stage 10 —— 端到端编排 API。
 """
 from __future__ import annotations
 
+import base64
+import secrets
 import uuid
 import warnings
 
@@ -30,7 +32,7 @@ warnings.filterwarnings("ignore", category=DeprecationWarning, module="vertexai.
 
 import os
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -48,6 +50,28 @@ app.mount("/plots", StaticFiles(directory=artifacts.LOCAL_DIR), name="plots")
 # 前端单页:气泡式多轮对话 + 富渲染(表格/图表/DAG/SQL/trace)。GET / 直接发它。
 _INDEX_HTML = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web", "index.html")
+
+# ── 最小鉴权(B 方案):设了 APP_ACCESS_KEYS(逗号分隔的口令)才生效;不设 = 无鉴权(本地开发)。
+# 对外暴露(Cloud Run 等)前务必设它。/health 始终放行,供探活。
+_ACCESS_KEYS = [k.strip() for k in os.environ.get("APP_ACCESS_KEYS", "").split(",") if k.strip()]
+_OPEN_PATHS = {"/health"}
+
+
+@app.middleware("http")
+async def _gate(request: Request, call_next):
+    if _ACCESS_KEYS and request.url.path not in _OPEN_PATHS:
+        ok = False
+        auth = request.headers.get("authorization", "")
+        if auth.startswith("Basic "):
+            try:                       # Basic 里 password 部分当口令(用户名随便填)
+                pwd = base64.b64decode(auth[6:]).decode("utf-8").partition(":")[2]
+                ok = any(secrets.compare_digest(pwd, k) for k in _ACCESS_KEYS)
+            except Exception:
+                ok = False
+        if not ok:
+            return Response(status_code=401,
+                            headers={"WWW-Authenticate": 'Basic realm="VideoSense"'})
+    return await call_next(request)
 
 
 class VibeQueryRequest(BaseModel):
