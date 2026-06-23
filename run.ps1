@@ -8,6 +8,17 @@ $ROOT   = $PSScriptRoot
 
 Set-Location $ROOT
 
+# ── 自动加载 neon.env(若存在)→ ALLOYDB_* 指向 Neon ──────────────
+$script:NeonLoaded = $false
+$NeonEnv = Join-Path $ROOT "neon.env"
+if (Test-Path $NeonEnv) {
+    Get-Content $NeonEnv | ForEach-Object {
+        if ($_ -match '^([A-Z_]+)=(.+)$') { Set-Item "env:$($matches[1])" $matches[2] }
+    }
+    $script:NeonLoaded = $true
+    Write-Host "  已加载 neon.env → 默认连 Neon" -ForegroundColor DarkGray
+}
+
 # ── helpers ───────────────────────────────────────────────────
 function Ensure-Gcp {
     # 没设(或还是占位符)时,自动取 gcloud 默认项目;取不到再手输
@@ -26,13 +37,17 @@ function Ensure-DbPassword {
     }
 }
 
-# 选数据库模式:m=mock(免费内存) / r=真 AlloyDB。默认 mock。
+# 选数据库模式:m=mock(免费内存) / r=真 DB。有 neon.env 时默认 Neon,否则默认 mock。
 function Choose-Db {
-    $m = Read-Host "数据库模式 [m=mock(免费) / r=真AlloyDB] (默认 m)"
+    $default = if ($script:NeonLoaded) { "r" } else { "m" }
+    $rlabel  = if ($script:NeonLoaded) { "r=Neon(真DB)" } else { "r=真AlloyDB" }
+    $m = Read-Host "数据库模式 [m=mock(免费) / $rlabel] (默认 $default)"
+    if ($m -eq "") { $m = $default }
     if ($m -eq "r") {
         Remove-Item Env:REPL_USE_MOCK_DB -ErrorAction SilentlyContinue
         Ensure-DbPassword
-        Write-Host "  DB = AlloyDB (real)" -ForegroundColor DarkGray
+        $dbname = if ($script:NeonLoaded) { "Neon" } else { "AlloyDB (real)" }
+        Write-Host "  DB = $dbname" -ForegroundColor DarkGray
     } else {
         $env:REPL_USE_MOCK_DB = "1"
         Write-Host "  DB = mock (in-memory SQLite)" -ForegroundColor DarkGray

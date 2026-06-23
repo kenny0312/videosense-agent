@@ -47,7 +47,7 @@ A multimodal LLM watches each video and extracts structured, confidence-scored f
 ("*snowboarding*, 0.96, 3s–36s"). On top of that fact base, you ask questions the way
 you'd ask a data analyst — *"find,"* *"compare,"* *"correlate,"* *"plot"* — and the system:
 
-1. **Routes** the question first — judging whether it can actually be answered with the data and tools at hand. If not (e.g. it refers to an earlier turn it can't see), it **says so honestly instead of guessing**.
+1. **Routes** the question first — judging whether it can actually be answered, and whether it's a **follow-up** to an earlier turn. Within a session it resolves references like *"plot those"* or *"how did you get that?"* against what it actually computed before; when a reference truly can't be matched, it **says so honestly instead of guessing**.
 2. **Plans** the question into an executable graph of steps.
 3. **Writes** the Python for each analytical step on the fly.
 4. **Runs** that code in an isolated sandbox, **fixing its own bugs** when it hits one (database steps self-heal too).
@@ -62,6 +62,7 @@ No dashboards to configure, no SQL to write, no notebooks to babysit. Just ask.
 | **Query** | keyword / tag matching | full natural language |
 | **Answers** | a list of clips | computed analytics, regressions, charts |
 | **New question** | build a new pipeline | just ask — code is generated per query |
+| **Follow-ups** | start over each time | remembers the session — *"plot those," "how did you get that?"* just work |
 | **Trust** | black box | returns the plan **and** the runnable code |
 | **When it can't** | wrong or empty results | refuses honestly, with a plain-English reason |
 
@@ -74,8 +75,8 @@ No dashboards to configure, no SQL to write, no notebooks to babysit. Just ask.
             │
             ▼
    ┌──────────────────┐
-   │   ROUTER          │   answerable? · intent?
-   │   can I answer?   │   ──► if not, refuse honestly
+   │   ROUTER          │   answerable? · intent? · follow-up?
+   │   can I answer?   │   ──► resolve refs · else refuse honestly
    └────────┬─────────┘
             │ yes
             ▼
@@ -181,13 +182,15 @@ curl -X POST http://localhost:8000/v1/video_vibe_query \
 **`POST /v1/video_vibe_query`**
 
 ```jsonc
-// Request
-{ "query": "Plot start time vs. confidence for all confirmed activities." }
+// Request  (omit session_id to start a new conversation)
+{ "query": "Plot start time vs. confidence for those.", "session_id": "ab12cd34…" }
 
 // Response
 {
   "ok": true,
-  "status": "ok",                                  // ok · refused · error
+  "status": "ok",                                  // ok · refused · error · smalltalk
+  "session_id": "ab12cd34…",                       // pass it back next turn to continue
+  "turn_type": "followup",                         // new · followup · meta
   "answer": { "n_points": 45 },
   "dag": { "nodes": [ /* the plan that was executed */ ] },
   "generated_code": { "n2": "import json ..." },   // the exact code that ran
@@ -199,8 +202,10 @@ curl -X POST http://localhost:8000/v1/video_vibe_query \
 
 Charts are served straight from the API — open `plot_url` in your browser.
 
-If a question can't be answered (e.g. it refers to an earlier turn the system can't see), the response
-comes back with `"status": "refused"` and a plain-English `reason` — never a fabricated answer.
+Pass the returned `session_id` back on the next request to **continue the conversation** — follow-ups like
+*"plot those"* or *"how did you get that?"* resolve against what was actually computed earlier. When a
+reference still can't be matched to anything real, the response comes back with `"status": "refused"` and a
+plain-English `reason` — never a fabricated answer.
 
 ### Example questions to try
 

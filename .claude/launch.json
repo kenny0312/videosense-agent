@@ -2,6 +2,14 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "videosense-api",
+      "runtimeExecutable": "C:\\Users\\User\\anaconda3\\python.exe",
+      "runtimeArgs": ["-m", "uvicorn", "api.server:app", "--host", "127.0.0.1", "--port", "8000"],
+      "port": 8000,
+      "autoPort": false,
+      "description": "VideoSense agent API + chat frontend (GET /)"
+    },
+    {
       "name": "MCP Server (AlloyDB)",
       "runtimeExecutable": "python",
       "runtimeArgs": ["mcp_server/server.py"],

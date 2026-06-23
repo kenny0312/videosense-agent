@@ -47,7 +47,7 @@
 ("*snowboarding*, 0.96, 3s–36s")。在这层事实之上,你像问数据分析师一样提问 ——
 *"找"*、*"对比"*、*"关联"*、*"画图"* —— 系统会:
 
-1. **路由(Route)**:先判断这个问题用现有数据和工具到底能不能答。若不能(比如它指代了一个看不见的上一轮),它会**老实说答不了,而不是瞎猜**。
+1. **路由(Route)**:先判断这个问题用现有数据和工具到底能不能答,以及它是不是对上一轮的**追问**。同一会话里,*"把那批画出来"*、*"你刚才怎么算的?"* 这类指代会对照**之前真正算过的结果**去解析;只有实在对不上号时,它才会**老实说答不了,而不是瞎猜**。
 2. **规划(Plan)**:把问题编译成一张可执行的步骤图。
 3. **写码(Write)**:为每个分析步骤即时生成 Python。
 4. **运行(Run)**:在隔离沙箱里跑这些代码,**出错能自我修复**(数据库步骤同样会自愈)。
@@ -62,6 +62,7 @@
 | **查询方式** | 关键词 / 标签匹配 | 完整自然语言 |
 | **结果** | 一串片段 | 计算分析、回归、图表 |
 | **新问题** | 搭一条新流水线 | 直接问 —— 代码按问题即时生成 |
+| **追问上文** | 每次从头来 | 记得这次会话 —— *"把那批画出来"*、*"你刚才怎么算的?"* 直接接得上 |
 | **可信度** | 黑盒 | 同时返回**计划**和**可运行的代码** |
 | **答不了时** | 给错的或空的结果 | 诚实拒答,并附一句大白话理由 |
 
@@ -74,8 +75,8 @@
             │
             ▼
    ┌──────────────────┐
-   │   ROUTER          │   answerable? · intent?
-   │   can I answer?   │   ──► if not, refuse honestly
+   │   ROUTER          │   answerable? · intent? · follow-up?
+   │   can I answer?   │   ──► resolve refs · else refuse honestly
    └────────┬─────────┘
             │ yes
             ▼
@@ -179,13 +180,15 @@ curl -X POST http://localhost:8000/v1/video_vibe_query \
 **`POST /v1/video_vibe_query`**
 
 ```jsonc
-// 请求
-{ "query": "Plot start time vs. confidence for all confirmed activities." }
+// 请求(省略 session_id 即开新会话)
+{ "query": "Plot start time vs. confidence for those.", "session_id": "ab12cd34…" }
 
 // 响应
 {
   "ok": true,
-  "status": "ok",                                  // ok · refused · error
+  "status": "ok",                                  // ok · refused · error · smalltalk
+  "session_id": "ab12cd34…",                       // 下一轮把它带回来即可续聊
+  "turn_type": "followup",                         // new · followup · meta
   "answer": { "n_points": 45 },
   "dag": { "nodes": [ /* 实际执行的计划 */ ] },
   "generated_code": { "n2": "import json ..." },   // 真正跑过的代码
@@ -197,7 +200,8 @@ curl -X POST http://localhost:8000/v1/video_vibe_query \
 
 图表直接由 API 提供 —— 在浏览器打开 `plot_url` 即可。
 
-如果一个问题无法回答(比如它指代了系统看不见的上一轮),响应会返回
+把响应里的 `session_id` 在下一次请求带回来,就能**接着聊** —— *"把那批画出来"*、*"你刚才怎么算的?"*
+这类追问会对照之前真正算过的结果去解析。只有指代实在对不上任何真实结果时,响应才返回
 `"status": "refused"` 和一句大白话 `reason` —— 绝不编造答案。
 
 ### 可以试试这些问题

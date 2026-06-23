@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>VideoSense Agent</title>
+<style>
+  :root{
+    --bg:#0a0b0d; --surface:#141619; --surface2:#1b1e22; --border:#272b31;
+    --text:#e7eaee; --muted:#9aa3ad; --hint:#6b7480; --accent:#4f8cff; --accent-dim:#1d2c4d;
+    --ok:#3ecf8e; --warn:#e0a23b; --danger:#e25c5c; --radius:12px;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font:15px/1.6 system-ui,"Segoe UI",-apple-system,sans-serif}
+  .app{max-width:880px;margin:0 auto;height:100vh;display:flex;flex-direction:column}
+  header{display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid var(--border)}
+  header .logo{width:30px;height:30px;border-radius:8px;background:var(--accent-dim);display:flex;align-items:center;justify-content:center;color:var(--accent);font-size:18px}
+  header h1{font-size:16px;font-weight:600;margin:0}
+  header .sess{font-size:12px;color:var(--hint);font-family:ui-monospace,monospace}
+  header .spacer{flex:1}
+  .btn{background:var(--surface2);color:var(--muted);border:1px solid var(--border);border-radius:8px;
+    padding:6px 12px;font-size:13px;cursor:pointer;display:inline-flex;align-items:center;gap:6px}
+  .btn:hover{color:var(--text);border-color:#333a42}
+  .thread{flex:1;overflow-y:auto;padding:18px;display:flex;flex-direction:column;gap:14px}
+  .row{display:flex;gap:10px}
+  .row.user{justify-content:flex-end}
+  .bubble{max-width:80%;padding:10px 14px;border-radius:var(--radius);white-space:pre-wrap;word-break:break-word}
+  .user .bubble{background:var(--accent-dim);color:#cfe0ff}
+  .av{width:28px;height:28px;border-radius:50%;background:var(--surface2);display:flex;align-items:center;justify-content:center;color:var(--accent);font-size:15px;flex-shrink:0}
+  .card{flex:1;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:13px 15px;max-width:calc(100% - 38px)}
+  .meta-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px}
+  .badge{font-size:11.5px;padding:3px 9px;border-radius:999px;background:var(--surface2);color:var(--muted);display:inline-flex;align-items:center;gap:5px}
+  .badge.new{background:#23282f;color:var(--muted)}
+  .badge.followup{background:var(--accent-dim);color:#9dc0ff}
+  .badge.meta{background:#2a2433;color:#c4a6e8}
+  .badge.refused{background:#3a2526;color:#e7a3a3}
+  .sub{font-size:12px;color:var(--hint)}
+  .chips{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:10px}
+  .chip{font-size:12px;padding:3px 9px;border-radius:999px;background:var(--surface2);color:var(--muted);display:inline-flex;align-items:center;gap:5px}
+  .lnk{font-size:12px;color:var(--accent);cursor:pointer;display:inline-flex;align-items:center;gap:4px;user-select:none}
+  .lnk:hover{text-decoration:underline}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;table-layout:auto}
+  th{text-align:left;font-weight:500;color:var(--muted);padding:6px 8px;cursor:pointer;user-select:none;white-space:nowrap}
+  th:hover{color:var(--text)}
+  td{padding:6px 8px;border-top:1px solid var(--border);vertical-align:middle}
+  .bar{height:6px;border-radius:3px;background:var(--surface2);min-width:46px;flex:1}
+  .bar>i{display:block;height:6px;border-radius:3px;background:var(--accent)}
+  .barcell{display:flex;align-items:center;gap:8px}
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px}
+  .stat{background:var(--surface2);border-radius:8px;padding:10px 12px}
+  .stat .k{font-size:12px;color:var(--muted)}
+  .stat .v{font-size:22px;font-weight:600;margin-top:2px}
+  details{margin-top:10px;border-top:1px solid var(--border);padding-top:8px}
+  details>summary{cursor:pointer;font-size:12.5px;color:var(--muted);list-style:none;display:flex;align-items:center;gap:6px}
+  details>summary::-webkit-details-marker{display:none}
+  details[open]>summary{color:var(--text)}
+  pre{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;overflow:auto;
+    font:12px/1.5 ui-monospace,"SF Mono",Consolas,monospace;color:#cdd3da;white-space:pre-wrap;word-break:break-word;margin:8px 0 0}
+  .trace{margin-top:8px;display:flex;flex-direction:column;gap:0}
+  .tstep{display:flex;align-items:center;gap:8px;font-size:12.5px;padding:3px 0}
+  .dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+  .tname{flex:1;color:var(--muted)}
+  .tms{color:var(--hint);font-family:ui-monospace,monospace}
+  .chart img{max-width:100%;border-radius:8px;background:#fff;border:1px solid var(--border)}
+  .composer{display:flex;align-items:flex-end;gap:8px;padding:14px 18px;border-top:1px solid var(--border)}
+  .composer .box{flex:1;display:flex;align-items:flex-end;gap:8px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px}
+  textarea{flex:1;border:none;background:transparent;color:var(--text);resize:none;font:15px/1.5 inherit;outline:none;max-height:140px}
+  .send{width:34px;height:34px;border-radius:9px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:18px;flex-shrink:0;display:flex;align-items:center;justify-content:center}
+  .send:disabled{opacity:.4;cursor:not-allowed}
+  .empty{color:var(--hint);text-align:center;margin:auto;font-size:14px}
+  .empty .ex{display:inline-block;margin:4px;padding:6px 12px;border:1px solid var(--border);border-radius:999px;cursor:pointer;color:var(--muted)}
+  .empty .ex:hover{color:var(--text);border-color:#333a42}
+  .think{color:var(--hint);font-size:13px;display:flex;align-items:center;gap:8px}
+  .spin{width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:s .7s linear infinite}
+  @keyframes s{to{transform:rotate(360deg)}}
+</style></head>
+<body><div class="app">
+  <header>
+    <div class="logo">▶</div>
+    <h1>VideoSense</h1>
+    <span class="sess" id="sess"></span>
+    <span class="spacer"></span>
+    <button class="btn" id="newchat">＋ 新会话</button>
+  </header>
+  <div class="thread" id="thread"></div>
+  <div class="composer">
+    <div class="box">
+      <textarea id="q" rows="1" placeholder="问问你的视频库… (Enter 发送, Shift+Enter 换行)"></textarea>
+      <button class="send" id="send">↑</button>
+    </div>
+  </div>
+</div>
+<script>
+const $ = s => document.querySelector(s);
+const thread = $('#thread');
+const EXAMPLES = [
+  "Find every video that contains skiing or snowboarding.",
+  "What activities appear most across all videos?",
+  "How many videos are in the database?",
+];
+let sessionId = localStorage.getItem('vs_session') || null;
+
+function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function el(html){const t=document.createElement('template');t.innerHTML=html.trim();return t.content.firstElementChild;}
+function scroll(){thread.scrollTop=thread.scrollHeight;}
+function updateSess(){$('#sess').textContent = sessionId ? '· '+sessionId.slice(0,8) : '· 新会话';}
+
+function showEmpty(){
+  thread.innerHTML='';
+  const e=el('<div class="empty">问点关于你视频库的问题 ↓<br></div>');
+  EXAMPLES.forEach(x=>{const c=el('<span class="ex"></span>');c.textContent=x;c.onclick=()=>send(x);e.appendChild(c);});
+  thread.appendChild(e);
+}
+
+// ── 气泡 ──────────────────────────────────────────────
+function addUser(text){
+  if($('.empty'))thread.innerHTML='';
+  const r=el('<div class="row user"></div>');
+  const b=el('<div class="bubble"></div>'); b.textContent=text;
+  r.appendChild(b); thread.appendChild(r); scroll();
+}
+function assistantShell(){
+  const r=el('<div class="row"><div class="av">✦</div></div>');
+  const card=el('<div class="card"></div>'); r.appendChild(card);
+  thread.appendChild(r); scroll(); return card;
+}
+
+// ── 富渲染:总入口 ──────────────────────────────────────
+function renderAssistant(card, d, ms){
+  card.innerHTML='';
+  const tt = d.turn_type||'new';
+  const head = el('<div class="meta-row"></div>');
+  if(d.status==='refused') head.appendChild(badge('refused','无法回答'));
+  else if(d.status==='smalltalk') head.appendChild(badge('new','smalltalk'));
+  else head.appendChild(badge(tt, tt==='followup'?'follow-up · 复用了上文':(tt==='meta'?'meta · 方法回放':'new')));
+  if(d.trace_summary) head.appendChild(sub(d.trace_summary));
+  if(ms!=null) head.appendChild(sub(ms+'ms'));
+  card.appendChild(head);
+
+  if(d.status==='refused'){ card.appendChild(textBlock(d.reason||'我没法回答这个。')); return; }
+  if(d.status==='error'){ card.appendChild(textBlock('出错了:'+(d.error||''))); return; }
+  if(d.status==='smalltalk'){ card.appendChild(textBlock(d.answer||'')); return; }
+
+  // ok
+  if(d.plot_url){ card.appendChild(renderChart(d.plot_url)); }
+  else { card.appendChild(renderAnswer(d.answer)); }
+
+  card.appendChild(renderPlan(d));   // DAG 步骤条 + SQL/代码 + trace
+}
+
+function badge(cls,txt){const b=el('<span class="badge"></span>');b.classList.add(cls);b.textContent=txt;return b;}
+function sub(txt){const s=el('<span class="sub"></span>');s.textContent='· '+txt;return s;}
+function textBlock(txt){const p=el('<div></div>');p.style.whiteSpace='pre-wrap';p.textContent=txt;return p;}
+
+// ── 答案分形:表格 / 统计卡 / 标量 / 文本 ──────────────
+function renderAnswer(ans){
+  if(ans==null) return textBlock('(空)');
+  if(typeof ans==='string') return textBlock(ans);
+  if(Array.isArray(ans)){
+    if(ans.length===0) return textBlock('没有匹配结果。');
+    if(typeof ans[0]==='object') return renderTable(ans);
+    return renderTable(ans.map(v=>({value:v})));
+  }
+  if(typeof ans==='object') return renderStats(ans);
+  return metric(ans);
+}
+function metric(v){const w=el('<div class="stats"></div>');w.appendChild(stat('结果',v));return w;}
+function stat(k,v){const s=el('<div class="stat"></div>');s.appendChild(Object.assign(el('<div class="k"></div>'),{textContent:k}));
+  const vv=el('<div class="v"></div>');vv.textContent=fmt(v);s.appendChild(vv);return s;}
+function renderStats(obj){
+  const w=el('<div class="stats"></div>');
+  Object.entries(obj).forEach(([k,v])=>{
+    if(v!=null && typeof v==='object'){ // 嵌套(如回归 params)→ 拍平成几条
+      Object.entries(v).forEach(([k2,v2])=>w.appendChild(stat(k+'.'+k2,v2)));
+    } else w.appendChild(stat(k,v));
+  });
+  return w;
+}
+function fmt(v){ if(typeof v==='number'){ return Number.isInteger(v)?v:(+v.toFixed(4)+'').replace(/\.?0+$/,''); } return String(v); }
+
+// ── 表格:排序 + 置信度条 + CSV ─────────────────────────
+function isConfCol(rows,k){
+  if(!/conf|score|prob|r2|r_squared/i.test(k)) return false;
+  return rows.every(r=>{const x=r[k];return x==null||(typeof x==='number'&&x>=0&&x<=1.0001);});
+}
+function renderTable(rows){
+  const wrap=el('<div></div>');
+  const keys=[...new Set(rows.flatMap(r=>Object.keys(r)))];
+  const confCols=new Set(keys.filter(k=>isConfCol(rows,k)));
+  let sortK=null, sortDir=1, data=rows.slice();
+  const tbl=el('<table></table>');
+  function draw(){
+    if(sortK!=null) data.sort((a,b)=>{const x=a[sortK],y=b[sortK];return (x>y?1:x<y?-1:0)*sortDir;});
+    tbl.innerHTML='';
+    const thead=el('<thead><tr></tr></thead>'), tr=thead.querySelector('tr');
+    keys.forEach(k=>{const th=el('<th></th>');th.textContent=k+(sortK===k?(sortDir>0?' ▲':' ▼'):'');
+      th.onclick=()=>{ if(sortK===k)sortDir*=-1; else {sortK=k;sortDir=1;} draw(); };
+      tr.appendChild(th);});
+    tbl.appendChild(thead);
+    const tb=el('<tbody></tbody>');
+    data.slice(0,200).forEach(r=>{
+      const row=el('<tr></tr>');
+      keys.forEach(k=>{const td=el('<td></td>'); const v=r[k];
+        if(confCols.has(k)&&typeof v==='number'){
+          const c=el('<div class="barcell"></div>'); const bar=el('<div class="bar"><i></i></div>');
+          bar.querySelector('i').style.width=Math.round(v*100)+'%'; c.appendChild(bar);
+          const n=el('<span></span>'); n.textContent=(+v.toFixed(2)); n.style.color='var(--muted)';
+          c.appendChild(n); td.appendChild(c);
+        } else td.textContent = v==null?'':fmt(v);
+        row.appendChild(td);});
+      tb.appendChild(row);
+    });
+    tbl.appendChild(tb);
+  }
+  draw();
+  wrap.appendChild(tbl);
+  const bar=el('<div class="chips"></div>');
+  const n=el('<span class="sub"></span>'); n.textContent=rows.length+' 行'+(rows.length>200?'(显示前 200)':'');
+  bar.appendChild(n); bar.appendChild(el('<span style="flex:1"></span>'));
+  const csv=el('<span class="lnk">⤓ CSV</span>'); csv.onclick=()=>downloadCSV(rows); bar.appendChild(csv);
+  wrap.appendChild(bar);
+  return wrap;
+}
+function downloadCSV(rows){
+  const keys=[...new Set(rows.flatMap(r=>Object.keys(r)))];
+  const e=v=>{v=v==null?'':String(v);return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v;};
+  const csv=[keys.join(','),...rows.map(r=>keys.map(k=>e(r[k])).join(','))].join('\n');
+  const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
+  a.download='videosense_result.csv'; a.click();
+}
+
+// ── 图表 ──────────────────────────────────────────────
+function renderChart(url){
+  const w=el('<div class="chart"></div>');
+  const img=el('<img/>'); img.src=url; img.alt='chart'; w.appendChild(img);
+  const bar=el('<div class="chips"></div>'); bar.appendChild(el('<span style="flex:1"></span>'));
+  const open=el('<a class="lnk" target="_blank">↗ 打开</a>'); open.href=url; bar.appendChild(open);
+  w.appendChild(bar); return w;
+}
+
+// ── 计划透明:DAG 步骤条 + SQL + 生成代码 + trace ───────
+function renderPlan(d){
+  const wrap=el('<div></div>');
+  if(d.dag&&d.dag.nodes&&d.dag.nodes.length){
+    const chips=el('<div class="chips"></div>');
+    chips.appendChild(label('计划'));
+    d.dag.nodes.forEach((n,i)=>{
+      if(i)chips.appendChild(el('<span class="sub">→</span>'));
+      const c=el('<span class="chip"></span>'); c.textContent=n.id+': '+n.tool; chips.appendChild(c);
+    });
+    wrap.appendChild(chips);
+    const sql=d.dag.nodes.map(n=>n.inputs&&n.inputs.sql).filter(Boolean).join('\n\n');
+    if(sql) wrap.appendChild(disclosure('查看 SQL', sql));
+  }
+  if(d.generated_code&&Object.keys(d.generated_code).length){
+    const code=Object.entries(d.generated_code).map(([k,v])=>'# '+k+'\n'+v).join('\n\n');
+    wrap.appendChild(disclosure('查看生成代码', code));
+  }
+  if(d.trace&&d.trace.length) wrap.appendChild(traceBlock(d.trace));
+  return wrap;
+}
+function label(t){const s=el('<span class="sub"></span>');s.textContent=t;return s;}
+function disclosure(summary, code){
+  const det=el('<details></details>');
+  const s=el('<summary></summary>'); s.textContent='⌄ '+summary; det.appendChild(s);
+  const pre=el('<pre></pre>'); pre.textContent=code; det.appendChild(pre);
+  return det;
+}
+function traceBlock(trace){
+  const det=el('<details></details>');
+  const s=el('<summary></summary>'); s.textContent='⌄ trace ('+trace.length+' 步)'; det.appendChild(s);
+  const box=el('<div class="trace"></div>');
+  const color={ok:'var(--ok)',error:'var(--danger)',retry:'var(--warn)',running:'var(--hint)'};
+  trace.forEach(st=>{
+    const row=el('<div class="tstep"></div>');
+    const dot=el('<span class="dot"></span>'); dot.style.background=color[st.status]||'var(--hint)'; row.appendChild(dot);
+    const nm=el('<span class="tname"></span>'); nm.textContent=st.name+(st.error?(' — '+st.error):''); row.appendChild(nm);
+    const ms=el('<span class="tms"></span>'); ms.textContent=(st.elapsed_ms!=null?st.elapsed_ms+'ms':''); row.appendChild(ms);
+    box.appendChild(row);
+  });
+  det.appendChild(box); return det;
+}
+
+// ── 发送 ──────────────────────────────────────────────
+async function send(text){
+  const q = text!=null ? text : $('#q').value.trim();
+  if(!q) return;
+  $('#q').value=''; autosize(); addUser(q);
+  $('#send').disabled=true;
+  const card=assistantShell();
+  card.appendChild(el('<div class="think"><span class="spin"></span>规划 → 执行…</div>'));
+  const t0=performance.now();
+  try{
+    const r=await fetch('/v1/video_vibe_query',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({query:q, session_id:sessionId})});
+    const d=await r.json();
+    if(d.session_id){ sessionId=d.session_id; localStorage.setItem('vs_session',sessionId); updateSess(); }
+    renderAssistant(card, d, Math.round(performance.now()-t0));
+  }catch(e){ card.innerHTML=''; card.appendChild(textBlock('请求失败:'+e)); }
+  $('#send').disabled=false; scroll();
+}
+function newChat(){ sessionId=null; localStorage.removeItem('vs_session'); updateSess(); showEmpty(); }
+function autosize(){const t=$('#q'); t.style.height='auto'; t.style.height=Math.min(t.scrollHeight,140)+'px';}
+
+$('#send').onclick=()=>send();
+$('#newchat').onclick=newChat;
+$('#q').addEventListener('input',autosize);
+$('#q').addEventListener('keydown',e=>{ if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();} });
+updateSess(); showEmpty();
+</script></body></html>

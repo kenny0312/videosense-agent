@@ -29,6 +29,7 @@ warnings.filterwarnings("ignore", category=UserWarning, module="vertexai.*")
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="vertexai.*")
 
 from pipeline.orchestrator import run_query
+from pipeline.session import Session
 from pipeline import config
 
 logging.basicConfig(
@@ -40,6 +41,7 @@ HEADER = """
 ======================================================
   完整流水线:Planner → CodeGen → Sandbox(自愈)
   自然语言 → DAG → 逐节点执行 → 答案
+  多轮:同一会话里可接着问("把那批画出来"/"你怎么算的");':new' 开新会话清空上下文
   输入 'quit' / 'exit' / 'q' 退出
 ======================================================
 """
@@ -93,6 +95,7 @@ def main() -> int:
     if not _check_env():
         return 1
 
+    session = Session("cli")          # 整个 REPL 共用一个会话 → 支持多轮指代
     while True:
         try:
             q = input("\n你的问题 > ").strip()
@@ -101,10 +104,14 @@ def main() -> int:
             break
         if not q or q.lower() in ("quit", "exit", "q"):
             break
+        if q.lower() in (":new", ":reset"):
+            session = Session("cli")
+            print("  (已开新会话 —— 不再记得上文)")
+            continue
 
         print("\n  --- trace ---")
         try:
-            r = run_query(q)
+            r = run_query(q, session=session)
         except KeyboardInterrupt:
             print("\n  (已中断)\n")
             continue

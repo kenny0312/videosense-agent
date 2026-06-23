@@ -27,6 +27,41 @@ log = logging.getLogger("pipeline.planner")
 PLAN_MAX_REPAIRS = 1   # 校验失败后重规划次数
 
 
+def _context_block(context: dict) -> str:
+    """多轮 follow-up:把已解析的上一轮"配方+预览"拼成提示,让 Planner 重建自洽 DAG。"""
+    history = context.get("history") or []
+    arts = context.get("resolved_artifacts") or []
+    lines = ["# 多轮上下文(这是一个 follow-up)"]
+    if history:
+        lines.append("## 最近对话")
+        for h in history:
+            lines.append(f"- 第{h.get('turn')}轮[{h.get('turn_type')}/{h.get('intent')}]:"
+                         f"{h.get('question')} → {h.get('answer_summary')}")
+    lines.append("## 已解析的上一轮结果(请复用/扩展它)")
+    for a in arts:
+        recipe = a.get("recipe") or {}
+        lines.append(f"### {a.get('id')} · {a.get('label')} (kind={a.get('kind')})")
+        if recipe.get("type") == "sql":
+            lines.append("上一轮 SQL(可直接复用或包成子查询):")
+            lines.append(recipe.get("sql", ""))
+        elif recipe.get("type") == "dag":
+            if recipe.get("truncated"):
+                lines.append(f"上一轮步骤链:{recipe.get('chain', '')}")
+                for nid, sql in (recipe.get("sqls") or {}).items():
+                    lines.append(f"  {nid} SQL:{sql}")
+            else:
+                lines.append("上一轮 DAG(可复用其 SQL/步骤):")
+                lines.append(json.dumps(recipe.get("dag", {}), ensure_ascii=False))
+        if a.get("preview"):
+            lines.append(f"结果预览:{json.dumps(a['preview'], ensure_ascii=False)}")
+    lines.append(
+        "\n# 重要:请【重建一个完整、自洽的新 DAG】,节点 id 用全新的 n1..nk("
+        "不要照抄旧 id、也不要假设旧节点还在)。复用上面配方里的 SQL/步骤(重跑数据),"
+        "再加上用户这一轮新要求的步骤。"
+    )
+    return "\n".join(lines)
+
+
 def _system_prompt(schema: dict) -> str:
     return f"""你是一个视频分析查询规划器。把用户的自然语言问题编译成 JSON DAG 执行计划。
 
@@ -83,15 +118,17 @@ class Planner:
             raw = raw.strip().rstrip("`").strip()
         return json.loads(raw)
 
-    def plan(self, user_query: str) -> DAG:
+    def plan(self, user_query: str, *, context: dict | None = None) -> DAG:
         sys_prompt = _system_prompt(self.schema)
-        prompt = f"{sys_prompt}\n\n用户问题：{user_query}"
+        # follow-up:把已解析的上一轮配方+预览拼进 system 段(无解析结果则为空,行为同单轮)
+        ctx = f"\n\n{_context_block(context)}" if (context and context.get("resolved_artifacts")) else ""
 
         last_err = ""
         for attempt in range(PLAN_MAX_REPAIRS + 1):
+            prompt = f"{sys_prompt}{ctx}\n\n用户问题：{user_query}"
             if attempt > 0:
                 prompt = (
-                    f"{sys_prompt}\n\n用户问题：{user_query}\n\n"
+                    f"{sys_prompt}{ctx}\n\n用户问题：{user_query}\n\n"
                     f"上一次生成的 DAG 校验失败,错误如下,请修正后重新输出完整 DAG：\n{last_err}"
                 )
             raw = self._gen(prompt)

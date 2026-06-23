@@ -8,6 +8,24 @@ from __future__ import annotations
 
 import os
 
+
+def _load_local_env() -> None:
+    """本地便利:若仓库根有 neon.env(gitignored),把其中 KEY=VALUE 载入环境
+    (不覆盖已显式设置的)。这样直接 uvicorn / 跑脚本都自动连 Neon,无需先手动 source。"""
+    p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "neon.env")
+    try:
+        with open(p, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    os.environ.setdefault(k.strip(), v.strip())
+    except OSError:
+        pass
+
+
+_load_local_env()
+
 # ── GCP / Vertex AI ───────────────────────────
 GCP_PROJECT = os.environ.get("GCP_PROJECT", "your-gcp-project-id")
 GCP_REGION  = os.environ.get("GCP_REGION", "us-central1")
@@ -40,6 +58,14 @@ SANDBOX_URL = os.environ.get("SANDBOX_URL", "http://localhost:8080")
 # ── 运行模式开关 ──────────────────────────────
 # REPL_USE_MOCK_DB=1  → 用内存 SQLite mock,零成本、不需要 AlloyDB
 USE_MOCK_DB = os.environ.get("REPL_USE_MOCK_DB", "").lower() in ("1", "true", "yes")
+
+# ── 会话持久化(多轮记忆)──────────────────────
+# 独立 SQLite 文件:与 MCP 查的库【物理隔离】,planner 生成的 SQL 够不着 → 免疫"潘多拉"。
+# 设 SESSION_DB_PATH="" 关闭持久化(纯内存,测试/CI 用)。
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SESSION_DB_PATH = os.environ.get(
+    "SESSION_DB_PATH", os.path.join(_REPO_ROOT, ".session_store.sqlite"))
+SESSION_TTL_SECONDS = int(os.environ.get("SESSION_TTL_SECONDS", str(24 * 3600)))  # 闲置超此秒数的会话懒清理
 
 
 def alloydb_dsn() -> dict:
