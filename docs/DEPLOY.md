@@ -93,18 +93,23 @@ gcloud run deploy videosense --source . --region us-central1 --allow-unauthentic
 ---
 
 ## 撤销 / 改口令
-改 `APP_ACCESS_KEYS`(去掉某人、或加人),重新部署即可生效:
+改 `APP_ACCESS_KEYS`(去掉某人、或加人),用 **`--update-env-vars`**(只改这一个、保留其余):
+
+> ⚠️ **改单个变量千万别用 `--set-env-vars`** —— 它会「先删光所有环境变量再设」,
+> 会把 `GCP_PROJECT` / `ALLOYDB_*` 等全冲掉,服务直接坏。只更新某个变量一律用 `--update-env-vars`。
 
 **bash**
 ```bash
 gcloud run services update videosense --region us-central1 \
-  --set-env-vars "^@^APP_ACCESS_KEYS=alice:9f3k2x7q"
+  --update-env-vars APP_ACCESS_KEYS=alice:9f3k2x7q
 ```
 
 **PowerShell**
 ```powershell
-gcloud run services update videosense --region us-central1 --set-env-vars "^@^APP_ACCESS_KEYS=alice:9f3k2x7q"
+gcloud run services update videosense --region us-central1 --update-env-vars APP_ACCESS_KEYS=alice:9f3k2x7q
 ```
+
+> 多个用户(值里有逗号)才需要 `^@^` 分隔符:`--update-env-vars "^@^APP_ACCESS_KEYS=alice:k1,bob:k2"`
 
 ---
 
