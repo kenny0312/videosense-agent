@@ -16,7 +16,7 @@ import logging
 import vertexai
 from vertexai.generative_models import GenerativeModel
 
-from pipeline import config
+from pipeline import config, usage
 from pipeline.dag_schema import Node
 from pipeline.node_specs import codegen_hint
 
@@ -121,6 +121,7 @@ class CodeGenerator:
         resp = self.model.generate_content(
             text, generation_config={"temperature": 0.2},
         )
+        usage.add_usage(resp, config.CODEGEN_MODEL)
         code = _strip_fence(resp.text)
         self.history.append({"role": "model", "text": code})
         return code

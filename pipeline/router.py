@@ -20,7 +20,7 @@ import vertexai
 from vertexai.generative_models import GenerativeModel
 from pydantic import BaseModel, Field
 
-from pipeline import config
+from pipeline import config, usage
 from pipeline.code_generator import _strip_fence   # 复用同一套去围栏逻辑
 
 log = logging.getLogger("pipeline.router")
@@ -156,6 +156,7 @@ class Router:
             _router_prompt(question, schema, tools, history, artifact_catalog),
             generation_config={"response_mime_type": "application/json", "temperature": 0.0},
         )
+        usage.add_usage(resp, config.CRITIC_MODEL)
         raw = _strip_fence(resp.text)
         try:
             data = json.loads(raw)
