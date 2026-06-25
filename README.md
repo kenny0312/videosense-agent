@@ -7,7 +7,8 @@
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-Production-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![Powered by Gemini](https://img.shields.io/badge/Powered%20by-Gemini%202.5-4285F4?logo=google&logoColor=white)](https://deepmind.google/technologies/gemini/)
-[![Google Cloud](https://img.shields.io/badge/Google%20Cloud-AlloyDB%20%7C%20Cloud%20Run-4285F4?logo=googlecloud&logoColor=white)](https://cloud.google.com/)
+[![Neon](https://img.shields.io/badge/Neon-Serverless%20Postgres-00E599?logo=postgresql&logoColor=white)](https://neon.tech/)
+[![Google Cloud](https://img.shields.io/badge/Google%20Cloud-Cloud%20Run%20%C2%B7%20Vertex%20AI-4285F4?logo=googlecloud&logoColor=white)](https://cloud.google.com/run)
 
 **English** · [简体中文](README.zh-CN.md)
 
@@ -70,32 +71,11 @@ No dashboards to configure, no SQL to write, no notebooks to babysit. Just ask.
 
 ## How it works
 
-```
-   Natural-language question
-            │
-            ▼
-   ┌──────────────────┐
-   │   ROUTER          │   answerable? · intent? · follow-up?
-   │   can I answer?   │   ──► resolve refs · else refuse honestly
-   └────────┬─────────┘
-            │ yes
-            ▼
-   ┌──────────────────┐   reads live DB schema     ┌──────────────────┐
-   │   PLANNER        │ ◀────────────────────────▶ │  Knowledge base   │
-   │   question → plan│        (via MCP)            │  (video facts)    │
-   └────────┬─────────┘                            └──────────────────┘
-            │  a graph of steps
-            ▼
-   ┌──────────────────┐   writes Python per step
-   │  CODE GENERATOR  │ ─────────────────────────┐
-   └──────────────────┘                          ▼
-                                       ┌──────────────────────┐
-                                       │  SECURE SANDBOX       │
-                                       │  run · fail · self-fix│  ↺ up to 3×
-                                       └──────────┬───────────┘
-                                                  ▼
-                              answer · chart · generated code
-```
+<div align="center">
+
+<img src="docs/how-it-works.svg" alt="VideoSense architecture: a natural-language question flows through Router → Planner → Code Generator → Secure Sandbox to an answer; Upstash Redis holds cross-turn, cross-instance session memory, and a Neon Postgres knowledge base feeds the Planner over MCP." width="900"/>
+
+</div>
 
 The pipeline separates **deciding what to do** (a transparent, auditable plan) from
 **doing it** (generated code that runs in isolation and repairs itself). Simple lookups
@@ -110,8 +90,10 @@ Built on a modern, cloud-native AI stack:
 - **🧠 Multimodal AI** — Gemini 2.5 (Vertex AI) for both perception and code generation
 - **🔌 Model Context Protocol** — standardized, schema-grounded database access
 - **🛡️ Isolated execution** — Cloud Run + gVisor sandbox with an AST policy gate
-- **🗄️ Cloud data** — AlloyDB for PostgreSQL · Google Cloud Storage
-- **⚡ Production API** — FastAPI, fully containerized
+- **🗄️ Cloud data** — Neon serverless Postgres · Google Cloud Storage
+- **💬 Shared session memory** — Upstash Redis · cross-turn *and* cross-instance (multi-replica continuity), physically isolated from the query DB
+- **📊 Per-request audit** — who · tokens · cost → Cloud Logging
+- **⚡ Production API** — FastAPI on Cloud Run (multi-instance + session affinity), fully containerized
 
 ---
 
@@ -119,7 +101,7 @@ Built on a modern, cloud-native AI stack:
 
 - **Python** 3.11+
 - **Google Cloud** account with Vertex AI enabled, and `gcloud` CLI authenticated
-- **(Optional)** AlloyDB / PostgreSQL — *or* run in zero-cost **mock mode** (no database required)
+- **(Optional)** Neon (or any PostgreSQL) — *or* run in zero-cost **mock mode** (no database required)
 
 Install dependencies:
 
@@ -138,7 +120,7 @@ gcloud auth application-default login
 ## Quickstart
 
 The fastest way to try it — **mock mode** uses an in-memory database seeded with sample
-video facts, so you need **no AlloyDB and pay nothing for storage**.
+video facts, so you need **no database and pay nothing for storage**.
 
 ### 1. Configure your environment
 
@@ -157,10 +139,10 @@ uvicorn api.server:app --port 8000
 
 ### 3. Ask a question
 
-Open the built-in test page — or the Swagger docs — in your browser:
+Open the built-in **chat UI** — or the Swagger docs — in your browser:
 
 ```
-http://localhost:8000/         # built-in query test page (type a question; see answer + trace)
+http://localhost:8000/         # chat UI — multi-turn, conversation-history sidebar, rich rendering (tables/charts/code)
 http://localhost:8000/docs     # interactive API docs
 ```
 
@@ -172,7 +154,7 @@ curl -X POST http://localhost:8000/v1/video_vibe_query \
   -d '{"query": "Find every video that contains skiing or snowboarding."}'
 ```
 
-> 💡 Prefer real AlloyDB? Drop `REPL_USE_MOCK_DB` and set `ALLOYDB_PASSWORD` instead.
+> 💡 Prefer real data? Drop `REPL_USE_MOCK_DB` and point the `ALLOYDB_*` vars at your Neon database.
 > Prefer a terminal CLI over HTTP? Run `python -m pipeline.main`.
 
 ---
