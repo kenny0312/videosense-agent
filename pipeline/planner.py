@@ -17,7 +17,7 @@ import logging
 import vertexai
 from vertexai.generative_models import GenerativeModel
 
-from pipeline import config, mcp_client
+from pipeline import config, mcp_client, usage
 from pipeline.dag_schema import DAG, parse_dag
 from pipeline.node_specs import catalog_for_planner
 from pipeline.sql_validate import validate_sql_columns
@@ -110,6 +110,7 @@ class Planner:
             prompt,
             generation_config={"response_mime_type": "application/json", "temperature": 0.0},
         )
+        usage.add_usage(resp, config.PLANNER_MODEL)
         raw = resp.text.strip()
         if raw.startswith("```"):
             raw = raw.split("```", 2)[1]

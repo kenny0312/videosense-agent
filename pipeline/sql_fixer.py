@@ -17,7 +17,7 @@ import logging
 import vertexai
 from vertexai.generative_models import GenerativeModel
 
-from pipeline import config
+from pipeline import config, usage
 from pipeline.code_generator import _strip_fence   # 复用同一套去围栏逻辑
 
 log = logging.getLogger("pipeline.sql_fixer")
@@ -59,6 +59,7 @@ class SqlFixer:
             _prompt(bad_sql, db_error, schema, self._prior),
             generation_config={"temperature": 0.0},
         )
+        usage.add_usage(resp, config.CODEGEN_MODEL)
         fixed = _strip_fence(resp.text)
         self._prior.append((bad_sql, db_error))   # 记下这次失败,下一轮回喂
         return fixed

@@ -19,7 +19,7 @@ import json
 import logging
 from typing import Any, TYPE_CHECKING
 
-from pipeline import mcp_client
+from pipeline import mcp_client, usage
 from pipeline.dag_schema import DAG
 from pipeline.node_executor import NodeResult, execute_node
 from pipeline.node_specs import catalog_for_planner
@@ -56,6 +56,7 @@ def _result(ok: bool, *, trace: Trace, dag: DAG | None = None,
         "turn_type": turn_type,                           # new | followup | meta
         "trace": trace.as_list(),
         "trace_summary": trace.summary_line(),
+        "usage": usage.summarize(),                       # 本轮 LLM token 总计 + 估算成本(含自愈重试)
     }
 
 
@@ -85,6 +86,7 @@ def _explain_meta(session: "Session", resolved_ids: list[str]) -> str:
 def run_query(nl: str, *, quiet_trace: bool = False,
               planner: Planner | None = None,
               session: "Session | None" = None) -> dict:
+    usage.reset_usage()                  # 清空本轮 token 累加器(每请求一次)
     trace = Trace(quiet=quiet_trace)
     sandbox = SandboxClient()
 

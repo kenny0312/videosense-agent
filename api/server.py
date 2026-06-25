@@ -23,7 +23,11 @@ Stage 10 —— 端到端编排 API。
 from __future__ import annotations
 
 import base64
+import hashlib
+import json
+import logging
 import secrets
+import time
 import uuid
 import warnings
 
@@ -53,26 +57,54 @@ app.mount("/plots", StaticFiles(directory=artifacts.LOCAL_DIR), name="plots")
 _INDEX_HTML = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web", "index.html")
 
+log = logging.getLogger("api.server")
+
 # ── 最小鉴权(B 方案):设了 APP_ACCESS_KEYS(逗号分隔的口令)才生效;不设 = 无鉴权(本地开发)。
 # 对外暴露(Cloud Run 等)前务必设它。/health 始终放行,供探活。
-_ACCESS_KEYS = [k.strip() for k in os.environ.get("APP_ACCESS_KEYS", "").split(",") if k.strip()]
+# 审计要记"谁",所以支持 name:key 格式 —— 命中哪个 key 就记成对应 name。
+#   推荐:APP_ACCESS_KEYS="alice:k_9f3k2,bob:k_7x2qd"  → 审计里记 alice / bob
+#   兼容:老的裸 key "k_9f3k2,k_7x2qd"               → 记成不可逆短标签 u_xxxxxx(绝不把口令写进日志)
+def _parse_access_keys(raw: str) -> tuple[list[str], dict[str, str]]:
+    keys: list[str] = []
+    name_of: dict[str, str] = {}
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if ":" in item:
+            name, _, key = item.partition(":")
+            name, key = name.strip(), key.strip()
+        else:
+            key, name = item, ""                      # 裸 key → 下面用 hash 短标签兜底
+        if key:
+            keys.append(key)
+            name_of[key] = name or ("u_" + hashlib.sha256(key.encode()).hexdigest()[:6])
+    return keys, name_of
+
+
+_ACCESS_KEYS, _KEY_TO_NAME = _parse_access_keys(os.environ.get("APP_ACCESS_KEYS", ""))
 _OPEN_PATHS = {"/health"}
 
 
 @app.middleware("http")
 async def _gate(request: Request, call_next):
+    request.state.app_user = "anon"                   # 默认:本地无鉴权 / 非受控路径
     if _ACCESS_KEYS and request.url.path not in _OPEN_PATHS:
-        ok = False
+        matched = None
         auth = request.headers.get("authorization", "")
         if auth.startswith("Basic "):
             try:                       # Basic 里 password 部分当口令(用户名随便填)
                 pwd = base64.b64decode(auth[6:]).decode("utf-8").partition(":")[2]
-                ok = any(secrets.compare_digest(pwd, k) for k in _ACCESS_KEYS)
+                for k in _ACCESS_KEYS:
+                    if secrets.compare_digest(pwd, k):
+                        matched = k
+                        break
             except Exception:
-                ok = False
-        if not ok:
+                matched = None
+        if matched is None:
             return Response(status_code=401,
                             headers={"WWW-Authenticate": 'Basic realm="VideoSense"'})
+        request.state.app_user = _KEY_TO_NAME.get(matched, "user")   # 记下"谁"供审计
     return await call_next(request)
 
 
@@ -111,14 +143,53 @@ def _session_lock(sid: str) -> threading.Lock:
         return lk
 
 
+def _client_ip(request: Request) -> str | None:
+    """Cloud Run 在 Google 代理之后 → 真实调用方是 X-Forwarded-For 最左一项;
+    本地/无代理回退到 request.client.host。(最左值客户端可伪造,强信任只认 Google 追加段。)"""
+    xff = request.headers.get("x-forwarded-for", "")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else None
+
+
+def _audit(request: Request, req: VibeQueryRequest, result: dict,
+           usage: dict, latency_ms: int) -> None:
+    """每请求一行结构化 JSON → stdout → Cloud Run 自动收进 Cloud Logging。
+    在 Logs Explorer 按 jsonPayload.* 筛即可:谁/从哪/何时/问了什么/用了多少 token。"""
+    record = {
+        "severity":     "INFO",
+        "logType":      "usage_audit",                # 过滤锚点:jsonPayload.logType="usage_audit"
+        "app_user":     getattr(request.state, "app_user", "anon"),
+        "ip":           _client_ip(request),
+        "session_id":   result.get("session_id"),
+        "query":        req.query,
+        "status":       result.get("status"),
+        "turn_type":    result.get("turn_type"),
+        "tokens_in":    usage.get("tokens_in", 0),
+        "tokens_out":   usage.get("tokens_out", 0),
+        "tokens_total": usage.get("tokens_total", 0),
+        "llm_calls":    usage.get("llm_calls", 0),
+        "cost_usd":     usage.get("cost_usd", 0.0),
+        # 序列化成字符串:模型名带点/横线(gemini-2.5-pro),作 JSON 对象会在 BigQuery 里炸成一堆动态列
+        "by_model":     json.dumps(usage.get("by_model", {}), ensure_ascii=False),
+        "latency_ms":   latency_ms,
+        "ts":           time.time(),
+    }
+    record["message"] = (f'audit user={record["app_user"]} status={record["status"]} '
+                         f'tokens={record["tokens_total"]} cost=${record["cost_usd"]}')
+    print(json.dumps(record, ensure_ascii=False), flush=True)
+
+
 @app.post("/v1/video_vibe_query")
 def video_vibe_query(req: VibeQueryRequest, request: Request):
+    t0 = time.perf_counter()
     sid = req.session_id or uuid.uuid4().hex        # 没带 session_id → 开一个新会话
     with _session_lock(sid):                        # 同会话 read-modify-write 串行,防丢轮
         session = STORE.get_or_create(sid)
         result = run_query(req.query, quiet_trace=True, session=session)
         STORE.save(session)                         # 写时机:每请求一次(纯内存模式无操作)
     result["session_id"] = sid                      # 回传,客户端下一轮带上即可续聊
+    usage = result.pop("usage", {}) or {}           # token/成本:内部审计用,不回传给前端
 
     # 图表产物:沙箱产出的图像(svg/png)→ 存本地 → 返回浏览器可打开的 http URL
     plot_url = None
@@ -129,4 +200,10 @@ def video_vibe_query(req: VibeQueryRequest, request: Request):
             plot_url = str(request.base_url).rstrip("/") + f"/plots/{fname}"
 
     result["plot_url"] = plot_url
+
+    try:                                            # 审计绝不能拖垮请求 → 整体兜底
+        _audit(request, req, result, usage, int((time.perf_counter() - t0) * 1000))
+    except Exception:
+        log.warning("audit emit failed (fail-open)", exc_info=True)
+
     return result
