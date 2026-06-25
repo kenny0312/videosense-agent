@@ -1,0 +1,6 @@
+# Dev / test-only dependencies (not needed at runtime).
+#   pip install -r requirements.txt -r requirements-dev.txt
+-r requirements.txt
+
+# In-memory Redis fake for RedisSessionStore tests (no real Redis needed)
+fakeredis>=2.20.0

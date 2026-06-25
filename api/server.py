@@ -31,6 +31,8 @@ warnings.filterwarnings("ignore", category=UserWarning, module="vertexai.*")
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="vertexai.*")
 
 import os
+import threading
+import weakref
 
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import FileResponse
@@ -90,12 +92,32 @@ def health():
     return {"status": "ok", "mode": "mock" if config.USE_MOCK_DB else "alloydb"}
 
 
+# 同会话请求在本进程内串行化 —— 端点是 sync def,FastAPI 放线程池并发执行;一次请求是
+# read(get_or_create)→ mutate(run_query)→ write(save) 的非原子序列,两个同 session_id
+# 请求重叠会"后写覆盖"整轮(丢一轮记忆)。每会话一把锁把这段串起来 → 单副本即安全。
+# WeakValueDictionary:不再被持有的锁自动 GC,锁表不会无限增长。
+# 跨副本(Cloud Run 多实例、无 session 亲和)仍可能后写覆盖 —— 部署建议开 session affinity
+# 让同会话落同一副本;要严格跨副本原子再上 CAS/append-only(见 RedisSessionStore 注释)。
+_session_locks: "weakref.WeakValueDictionary[str, threading.Lock]" = weakref.WeakValueDictionary()
+_session_locks_guard = threading.Lock()
+
+
+def _session_lock(sid: str) -> threading.Lock:
+    with _session_locks_guard:
+        lk = _session_locks.get(sid)
+        if lk is None:
+            lk = threading.Lock()
+            _session_locks[sid] = lk
+        return lk
+
+
 @app.post("/v1/video_vibe_query")
 def video_vibe_query(req: VibeQueryRequest, request: Request):
     sid = req.session_id or uuid.uuid4().hex        # 没带 session_id → 开一个新会话
-    session = STORE.get_or_create(sid)
-    result = run_query(req.query, quiet_trace=True, session=session)
-    STORE.save(session)                             # 写时机:每请求一次(纯内存模式无操作)
+    with _session_lock(sid):                        # 同会话 read-modify-write 串行,防丢轮
+        session = STORE.get_or_create(sid)
+        result = run_query(req.query, quiet_trace=True, session=session)
+        STORE.save(session)                         # 写时机:每请求一次(纯内存模式无操作)
     result["session_id"] = sid                      # 回传,客户端下一轮带上即可续聊
 
     # 图表产物:沙箱产出的图像(svg/png)→ 存本地 → 返回浏览器可打开的 http URL
