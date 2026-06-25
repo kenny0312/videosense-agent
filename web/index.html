@@ -11,7 +11,30 @@
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--text);
     font:15px/1.6 system-ui,"Segoe UI",-apple-system,sans-serif}
-  .app{max-width:880px;margin:0 auto;height:100vh;display:flex;flex-direction:column}
+  .shell{display:flex;height:100vh;overflow:hidden}
+  .app{flex:1;min-width:0;display:flex;flex-direction:column}
+  /* ── 左侧会话栏 ── */
+  .sidebar{width:264px;flex-shrink:0;background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column}
+  .shell.nosb .sidebar{display:none}
+  .sidebar .sb-top{padding:12px}
+  .newbtn{width:100%;justify-content:center;font-size:14px;padding:9px 12px}
+  .sidebar .sb-h{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--hint);padding:6px 14px 4px}
+  .convlist{flex:1;overflow-y:auto;padding:2px 8px 12px}
+  .conv{display:flex;align-items:center;gap:8px;padding:9px 10px;border-radius:8px;cursor:pointer;color:var(--muted)}
+  .conv:hover{background:var(--surface2);color:var(--text)}
+  .conv.active{background:var(--accent-dim);color:var(--text)}
+  .conv .title{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13.5px}
+  .conv .del{opacity:0;color:var(--hint);font-size:17px;line-height:1;padding:0 3px;border-radius:5px}
+  .conv:hover .del{opacity:.65}
+  .conv .del:hover{color:var(--danger);opacity:1}
+  .sb-empty{color:var(--hint);font-size:13px;text-align:center;line-height:1.7;padding:26px 12px}
+  .icon-btn{background:none;border:none;color:var(--muted);cursor:pointer;font-size:18px;padding:2px 8px;border-radius:8px;line-height:1}
+  .icon-btn:hover{color:var(--text);background:var(--surface2)}
+  .scrim{display:none}
+  @media(max-width:720px){
+    .sidebar{position:fixed;z-index:30;top:0;bottom:0;left:0;width:78%;max-width:300px;box-shadow:2px 0 24px rgba(0,0,0,.55)}
+    .shell:not(.nosb) .scrim{display:block;position:fixed;inset:0;z-index:25;background:rgba(0,0,0,.45)}
+  }
   header{display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid var(--border)}
   header .logo{width:30px;height:30px;border-radius:8px;background:var(--accent-dim);display:flex;align-items:center;justify-content:center;color:var(--accent);font-size:18px}
   header h1{font-size:16px;font-weight:600;margin:0}
@@ -20,7 +43,8 @@
   .btn{background:var(--surface2);color:var(--muted);border:1px solid var(--border);border-radius:8px;
     padding:6px 12px;font-size:13px;cursor:pointer;display:inline-flex;align-items:center;gap:6px}
   .btn:hover{color:var(--text);border-color:#333a42}
-  .thread{flex:1;overflow-y:auto;padding:18px;display:flex;flex-direction:column;gap:14px}
+  .thread{flex:1;overflow-y:auto;padding:18px;display:flex;flex-direction:column;gap:14px;align-items:center}
+  .thread>*{width:100%;max-width:860px}
   .row{display:flex;gap:10px}
   .row.user{justify-content:flex-end}
   .bubble{max-width:80%;padding:10px 14px;border-radius:var(--radius);white-space:pre-wrap;word-break:break-word}
@@ -61,8 +85,8 @@
   .tname{flex:1;color:var(--muted)}
   .tms{color:var(--hint);font-family:ui-monospace,monospace}
   .chart img{max-width:100%;border-radius:8px;background:#fff;border:1px solid var(--border)}
-  .composer{display:flex;align-items:flex-end;gap:8px;padding:14px 18px;border-top:1px solid var(--border)}
-  .composer .box{flex:1;display:flex;align-items:flex-end;gap:8px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px}
+  .composer{display:flex;align-items:flex-end;gap:8px;padding:14px 18px;border-top:1px solid var(--border);justify-content:center}
+  .composer .box{flex:1;max-width:860px;display:flex;align-items:flex-end;gap:8px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px}
   textarea{flex:1;border:none;background:transparent;color:var(--text);resize:none;font:15px/1.5 inherit;outline:none;max-height:140px}
   .send{width:34px;height:34px;border-radius:9px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:18px;flex-shrink:0;display:flex;align-items:center;justify-content:center}
   .send:disabled{opacity:.4;cursor:not-allowed}
@@ -73,21 +97,29 @@
   .spin{width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:s .7s linear infinite}
   @keyframes s{to{transform:rotate(360deg)}}
 </style></head>
-<body><div class="app">
-  <header>
-    <div class="logo">▶</div>
-    <h1>VideoSense</h1>
-    <span class="sess" id="sess"></span>
-    <span class="spacer"></span>
-    <button class="btn" id="newchat">＋ 新会话</button>
-  </header>
-  <div class="thread" id="thread"></div>
-  <div class="composer">
-    <div class="box">
-      <textarea id="q" rows="1" placeholder="问问你的视频库… (Enter 发送, Shift+Enter 换行)"></textarea>
-      <button class="send" id="send">↑</button>
+<body><div class="shell" id="shell">
+  <aside class="sidebar" id="sidebar">
+    <div class="sb-top"><button class="btn newbtn" id="newchat">＋ 新对话</button></div>
+    <div class="sb-h">历史对话</div>
+    <div class="convlist" id="convlist"></div>
+  </aside>
+  <div class="app">
+    <header>
+      <button class="icon-btn" id="toggle" title="折叠 / 展开侧栏">☰</button>
+      <div class="logo">▶</div>
+      <h1>VideoSense</h1>
+      <span class="sess" id="sess"></span>
+      <span class="spacer"></span>
+    </header>
+    <div class="thread" id="thread"></div>
+    <div class="composer">
+      <div class="box">
+        <textarea id="q" rows="1" placeholder="问问你的视频库… (Enter 发送, Shift+Enter 换行)"></textarea>
+        <button class="send" id="send">↑</button>
+      </div>
     </div>
   </div>
+  <div class="scrim" id="scrim"></div>
 </div>
 <script>
 const $ = s => document.querySelector(s);
@@ -97,7 +129,14 @@ const EXAMPLES = [
   "What activities appear most across all videos?",
   "How many videos are in the database?",
 ];
-let sessionId = localStorage.getItem('vs_session') || null;
+// ── 本地会话历史(ChatGPT 式;存浏览器,后端按 session_id 续聊)──
+const LS_CHATS='vs_chats_v1';
+let chats = loadChats();   // [{id,title,updatedAt,messages:[{role,text?,data?,ms?}]}](newest-first)
+let activeId = null;       // 当前打开的会话 id;null = 尚未落地的新对话(draft)
+let activeDraft = 0;       // draft 身份序号(activeId 为 null 时区分"哪一个新对话")
+let draftSeq = 0;          // draft 计数器
+let sessionId = null;      // 发给后端的 session_id(= activeId)
+let sending = false;       // in-flight 守卫:同一时刻只允许一个发送在途
 
 function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 function el(html){const t=document.createElement('template');t.innerHTML=html.trim();return t.content.firstElementChild;}
@@ -229,11 +268,14 @@ function downloadCSV(rows){
 }
 
 // ── 图表 ──────────────────────────────────────────────
+// 只放行 http/https —— 回放历史时 plot_url 来自 localStorage,挡掉被篡改的 javascript: 等协议
+function safeUrl(u){ try{ const p=new URL(u, location.href).protocol; return (p==='http:'||p==='https:')?u:'#'; }catch(e){ return '#'; } }
 function renderChart(url){
+  const safe=safeUrl(url);
   const w=el('<div class="chart"></div>');
-  const img=el('<img/>'); img.src=url; img.alt='chart'; w.appendChild(img);
+  const img=el('<img/>'); img.src=safe; img.alt='chart'; w.appendChild(img);
   const bar=el('<div class="chips"></div>'); bar.appendChild(el('<span style="flex:1"></span>'));
-  const open=el('<a class="lnk" target="_blank">↗ 打开</a>'); open.href=url; bar.appendChild(open);
+  const open=el('<a class="lnk" target="_blank" rel="noopener noreferrer">↗ 打开</a>'); open.href=safe; bar.appendChild(open);
   w.appendChild(bar); return w;
 }
 
@@ -280,30 +322,111 @@ function traceBlock(trace){
   det.appendChild(box); return det;
 }
 
+// ── 本地会话历史存取 ───────────────────────────────────
+function loadChats(){ try{ return JSON.parse(localStorage.getItem(LS_CHATS))||[]; }catch(e){ return []; } }
+function saveChats(){
+  while(true){
+    try{ localStorage.setItem(LS_CHATS, JSON.stringify(chats)); return; }
+    catch(e){                                 // 配额超限:逐步裁剪后重试,绝不静默丢当前会话
+      let idx=-1;                             // 先删最旧的【非当前】会话
+      for(let i=chats.length-1;i>=0;i--){ if(chats[i].id!==activeId){ idx=i; break; } }
+      if(idx>=0){ chats.splice(idx,1); continue; }
+      const a=chats[0];                       // 只剩当前会话仍超限 → 砍它最旧的两条消息
+      if(a && a.messages.length>2){ a.messages.splice(0,2); continue; }
+      return;                                 // 实在存不下 → 放弃本轮持久化(不抛错)
+    }
+  }
+}
+function activeChat(){ return chats.find(c=>c.id===activeId)||null; }
+function titleOf(t){ t=String(t||'').trim().replace(/\s+/g,' '); return t ? (t.length>42?t.slice(0,42)+'…':t) : '新对话'; }
+
+// ── 侧栏渲染 ───────────────────────────────────────────
+function renderSidebar(){
+  const list=$('#convlist'); list.innerHTML='';
+  if(!chats.length){ list.appendChild(el('<div class="sb-empty">还没有对话<br>问个问题就会出现在这里</div>')); return; }
+  chats.forEach(c=>{
+    const row=el('<div class="conv"></div>'); if(c.id===activeId) row.classList.add('active');
+    const t=el('<span class="title"></span>'); t.textContent=c.title; row.appendChild(t);
+    const x=el('<span class="del" title="删除对话">×</span>'); row.appendChild(x);
+    row.onclick=()=>openChat(c.id);
+    x.onclick=(e)=>deleteChat(c.id, e);
+    list.appendChild(row);
+  });
+}
+
+// ── 新对话 / 打开 / 删除 ───────────────────────────────
+function newChat(){
+  activeId=null; activeDraft=++draftSeq; sessionId=null; updateSess();
+  renderSidebar(); showEmpty(); $('#q').focus();
+  if(window.innerWidth<=720) $('#shell').classList.add('nosb');   // 移动端开新对话即收起侧栏
+}
+function openChat(id){
+  const c=chats.find(x=>x.id===id); if(!c) return;
+  activeId=id; activeDraft=0; sessionId=id; updateSess();
+  thread.innerHTML='';
+  if(!c.messages.length){ showEmpty(); }
+  else c.messages.forEach(m=>{
+    if(m.role==='user') addUser(m.text);
+    else { const card=assistantShell(); renderAssistant(card, m.data, m.ms); }
+  });
+  renderSidebar(); scroll();
+  if(window.innerWidth<=720) $('#shell').classList.add('nosb');   // 移动端选完自动收起
+}
+function deleteChat(id, ev){
+  if(ev) ev.stopPropagation();
+  chats=chats.filter(c=>c.id!==id); saveChats();
+  if(activeId===id) newChat(); else renderSidebar();
+}
+
 // ── 发送 ──────────────────────────────────────────────
 async function send(text){
   const q = text!=null ? text : $('#q').value.trim();
-  if(!q) return;
+  if(!q || sending) return;                    // in-flight 守卫:防狂按 Enter 重复发、并发建重复会话
+  sending=true;
   $('#q').value=''; autosize(); addUser(q);
   $('#send').disabled=true;
   const card=assistantShell();
   card.appendChild(el('<div class="think"><span class="spin"></span>规划 → 执行…</div>'));
   const t0=performance.now();
+  const originId=activeId, originDraft=activeDraft, sentSid=sessionId;   // 快照:发起时的归属
   try{
     const r=await fetch('/v1/video_vibe_query',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({query:q, session_id:sessionId})});
+      body:JSON.stringify({query:q, session_id:sentSid})});
     const d=await r.json();
-    if(d.session_id){ sessionId=d.session_id; localStorage.setItem('vs_session',sessionId); updateSess(); }
-    renderAssistant(card, d, Math.round(performance.now()-t0));
+    const ms=Math.round(performance.now()-t0);
+    // 路由到【发起时】的会话,而非 await 后的当前会话 —— 中途切换/删除都不会错配
+    let c = originId ? chats.find(x=>x.id===originId) : chats.find(x=>x.id===d.session_id);
+    if(!originId && !c){                        // draft 首次落地 → 新建(用后端 session_id 当 id)
+      c={ id: d.session_id || ('local-'+Date.now()), title: titleOf(q), updatedAt: Date.now(), messages: [] };
+    }
+    if(c){
+      if(d.session_id && c.id!==d.session_id) c.id=d.session_id;   // 对齐后端 session_id(过期/重建)
+      c.messages.push({role:'user', text:q});
+      c.messages.push({role:'assistant', data:d, ms});
+      c.updatedAt=Date.now();
+      chats=[c, ...chats.filter(x=>x!==c)];     // 最近活跃置顶
+      saveChats();
+      // 仅当用户仍停留在发起时的会话,才动全局 + 高亮(否则结果只入库,重开即见)
+      const stillHere = originId ? (activeId===originId) : (activeId===null && activeDraft===originDraft);
+      if(stillHere){ activeId=c.id; activeDraft=0; sessionId=c.id; updateSess(); }
+      renderSidebar();
+    }
+    // c 为空且非 draft → 目标会话在 await 期间被删了 → 丢弃结果,不复活
+    renderAssistant(card, d, ms);               // card 若已随切换分离则不可见,符合预期(已入库)
   }catch(e){ card.innerHTML=''; card.appendChild(textBlock('请求失败:'+e)); }
-  $('#send').disabled=false; scroll();
+  finally{ sending=false; $('#send').disabled=false; $('#q').focus(); scroll(); }
 }
-function newChat(){ sessionId=null; localStorage.removeItem('vs_session'); updateSess(); showEmpty(); }
 function autosize(){const t=$('#q'); t.style.height='auto'; t.style.height=Math.min(t.scrollHeight,140)+'px';}
 
+// ── 事件 / 初始化 ──────────────────────────────────────
 $('#send').onclick=()=>send();
 $('#newchat').onclick=newChat;
+$('#toggle').onclick=()=>$('#shell').classList.toggle('nosb');
+$('#scrim').onclick=()=>$('#shell').classList.add('nosb');
 $('#q').addEventListener('input',autosize);
 $('#q').addEventListener('keydown',e=>{ if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();} });
-updateSess(); showEmpty();
+
+renderSidebar();
+if(chats.length) openChat(chats[0].id); else newChat();
+if(window.innerWidth<=720) $('#shell').classList.add('nosb');
 </script></body></html>
