@@ -54,7 +54,7 @@ gcloud projects add-iam-policy-binding <YOUR_GCP_PROJECT> --member="serviceAccou
 
 **bash / macOS / Linux**
 ```bash
-set -a; source neon.env; set +a          # 载入 GCP_PROJECT / ALLOYDB_* / GCS_BUCKET
+set -a; source neon.env; set +a          # 载入 GCP_PROJECT / ALLOYDB_* / GCS_BUCKET / UPSTASH_REDIS_REST_*
 APP_ACCESS_KEYS="kenny:$(openssl rand -hex 6)"
 echo "登录口令(密码填冒号后那段): $APP_ACCESS_KEYS"
 
@@ -63,8 +63,9 @@ gcloud run deploy videosense \
   --region us-central1 \
   --allow-unauthenticated \
   --memory 1Gi --cpu 1 --timeout 120 \
-  --min-instances 0 --max-instances 1 \
-  --set-env-vars "^@^GCP_PROJECT=$GCP_PROJECT@GCP_REGION=us-central1@ALLOYDB_HOST=$ALLOYDB_HOST@ALLOYDB_DB=$ALLOYDB_DB@ALLOYDB_USER=$ALLOYDB_USER@ALLOYDB_PASSWORD=$ALLOYDB_PASSWORD@GCS_BUCKET=$GCS_BUCKET@SESSION_DB_PATH=@APP_ACCESS_KEYS=$APP_ACCESS_KEYS"
+  --min-instances 0 --max-instances 5 \
+  --session-affinity \
+  --set-env-vars "^@^GCP_PROJECT=$GCP_PROJECT@GCP_REGION=us-central1@ALLOYDB_HOST=$ALLOYDB_HOST@ALLOYDB_DB=$ALLOYDB_DB@ALLOYDB_USER=$ALLOYDB_USER@ALLOYDB_PASSWORD=$ALLOYDB_PASSWORD@GCS_BUCKET=$GCS_BUCKET@SESSION_BACKEND=redis@UPSTASH_REDIS_REST_URL=$UPSTASH_REDIS_REST_URL@UPSTASH_REDIS_REST_TOKEN=$UPSTASH_REDIS_REST_TOKEN@APP_ACCESS_KEYS=$APP_ACCESS_KEYS"
 ```
 
 **PowerShell / Windows**(gcloud 那行是**完整一行**,粘进去不会断)
@@ -73,17 +74,19 @@ $neon = @{}
 Get-Content neon.env | ForEach-Object { if ($_ -match '^\s*([A-Z_]+)=(.+)$') { $neon[$matches[1]] = $matches[2].Trim() } }
 $APP_ACCESS_KEYS = "kenny:" + [guid]::NewGuid().ToString('N').Substring(0,12)
 Write-Host "登录口令(密码填冒号后那段): $APP_ACCESS_KEYS"
-$pairs = @("GCP_PROJECT=$($neon['GCP_PROJECT'])","GCP_REGION=us-central1","ALLOYDB_HOST=$($neon['ALLOYDB_HOST'])","ALLOYDB_DB=$($neon['ALLOYDB_DB'])","ALLOYDB_USER=$($neon['ALLOYDB_USER'])","ALLOYDB_PASSWORD=$($neon['ALLOYDB_PASSWORD'])","GCS_BUCKET=$($neon['GCS_BUCKET'])","SESSION_DB_PATH=","APP_ACCESS_KEYS=$APP_ACCESS_KEYS") -join "@"
-gcloud run deploy videosense --source . --region us-central1 --allow-unauthenticated --memory 1Gi --cpu 1 --timeout 120 --min-instances 0 --max-instances 1 --set-env-vars "^@^$pairs"
+$pairs = @("GCP_PROJECT=$($neon['GCP_PROJECT'])","GCP_REGION=us-central1","ALLOYDB_HOST=$($neon['ALLOYDB_HOST'])","ALLOYDB_DB=$($neon['ALLOYDB_DB'])","ALLOYDB_USER=$($neon['ALLOYDB_USER'])","ALLOYDB_PASSWORD=$($neon['ALLOYDB_PASSWORD'])","GCS_BUCKET=$($neon['GCS_BUCKET'])","SESSION_BACKEND=redis","UPSTASH_REDIS_REST_URL=$($neon['UPSTASH_REDIS_REST_URL'])","UPSTASH_REDIS_REST_TOKEN=$($neon['UPSTASH_REDIS_REST_TOKEN'])","APP_ACCESS_KEYS=$APP_ACCESS_KEYS") -join "@"
+gcloud run deploy videosense --source . --region us-central1 --allow-unauthenticated --memory 1Gi --cpu 1 --timeout 120 --min-instances 0 --max-instances 5 --session-affinity --set-env-vars "^@^$pairs"
 ```
 
 部署完会输出一个 `https://videosense-xxxx-uc.a.run.app` 网址。
 
+> ⚠️ **必须 `--source .` 从源码重建镜像**:会话后端是新代码,只改 env 不重建不会生效(旧镜像里没有 `RedisSessionStore`)。
+
 要点:
 - `--allow-unauthenticated`:服务公开,但鉴权在 app 里(B 方案);口令门是唯一拦未授权访问的闸。
-- `--max-instances 1`:多轮会话落在同一实例(内存会话一致)。
-- `SESSION_DB_PATH=`(置空):会话纯内存(Cloud Run 文件系统易失,演示够用)。
-- 本次只演示 **SQL 类问题**,未部沙箱(`SANDBOX_URL` 不设);画图/科学题要再单独部 `sandbox/`(它已有自己的 Dockerfile),再把 `SANDBOX_URL` 指过去。
+- **`SESSION_BACKEND=redis` + Upstash**:会话存共享 Redis —— 重启续得上、**多副本跨实例共享**,不再靠单实例内存。
+- **`--max-instances 5`**:会话共享后可横向扩(原先锁 `1` 是因为内存会话只在单实例一致);**`--session-affinity`** 让同一会话尽量落同一副本(配合 app 内每会话锁,防跨副本"后写覆盖")。
+- 想让**画图/科学题**也能用:再加一项 `SANDBOX_URL=<你的 sandbox 服务地址>`(`sandbox/` 已可单独部署,有自己的 Dockerfile);只问 SQL 类问题则可不设。
 
 ---
 
