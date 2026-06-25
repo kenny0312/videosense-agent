@@ -67,6 +67,16 @@ SESSION_DB_PATH = os.environ.get(
     "SESSION_DB_PATH", os.path.join(_REPO_ROOT, ".session_store.sqlite"))
 SESSION_TTL_SECONDS = int(os.environ.get("SESSION_TTL_SECONDS", str(24 * 3600)))  # 闲置超此秒数的会话懒清理
 
+# 会话后端:sqlite(默认,本机单节点)| redis(共享外部存储,多实例/Cloud Run 跨副本续聊)。
+# 选 redis 仍守"潘多拉"隔离 —— 会话存在独立服务,planner 的 SQL(MCP 查 Neon)够不着。
+# redis 后端的连接二选一(工厂里 TCP 优先):
+#   · REDIS_URL —— TCP RESP 协议(redis-py),如 rediss://default:<pwd>@<host>:6379
+#   · UPSTASH_REDIS_REST_URL + _TOKEN —— Upstash 的 HTTP REST(upstash-redis),Cloud Run 同样可用
+SESSION_BACKEND = os.environ.get("SESSION_BACKEND", "sqlite").lower()
+REDIS_URL = os.environ.get("REDIS_URL", "")
+UPSTASH_REDIS_REST_URL = os.environ.get("UPSTASH_REDIS_REST_URL", "")
+UPSTASH_REDIS_REST_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "")
+
 
 def alloydb_dsn() -> dict:
     """psycopg2.connect(**alloydb_dsn()) 用的连接参数。"""

@@ -21,15 +21,19 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
 import threading
 import time
+from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from pipeline import config
 from pipeline.dag_schema import DAG
+
+log = logging.getLogger("pipeline.session")
 
 # ── 容量与封顶常量(防 prompt / 内存膨胀)──────────────
 MAX_TURNS = 12             # history 保留最近 N 轮
@@ -304,8 +308,20 @@ class Session:
         return s
 
 
+# ── 会话仓接口 ──────────────────────────────────────────────
+# 持久化与 pipeline 解耦:请求开头 get_or_create(读)、结尾 save(写),中间流水线只动内存里的
+# Session 对象。换后端只实现这三个方法即可,router/planner/orchestrator 一行不改。
+class BaseSessionStore(ABC):
+    @abstractmethod
+    def get_or_create(self, session_id: str) -> Session: ...
+    @abstractmethod
+    def save(self, session: Session) -> None: ...
+    @abstractmethod
+    def reset(self, session_id: str) -> Session: ...
+
+
 # ── 进程级会话仓(默认落独立 SQLite 文件;path=None 则纯内存)───────────
-class SessionStore:
+class SessionStore(BaseSessionStore):
     def __init__(self, path: str | None = None, ttl_seconds: int = 0) -> None:
         self._sessions: dict[str, Session] = {}   # L0 缓存(进程内)
         self._lock = threading.Lock()
@@ -381,4 +397,89 @@ class SessionStore:
             pass
 
 
-STORE = SessionStore(config.SESSION_DB_PATH or None, ttl_seconds=config.SESSION_TTL_SECONDS)
+# ── Redis 会话仓(共享外部存储:多实例/Cloud Run 跨副本续聊)──────────
+class RedisSessionStore(BaseSessionStore):
+    """会话以 `key_prefix+session_id → JSON blob` 存进 Redis —— 形状和 SQLite 那版一模一样
+    (一次 GET / 一次 SET),只是换成所有副本共享的外部 KV。client 只需暴露 get/set(ex=)/delete,
+    redis-py(TCP)与 upstash-redis(REST)都满足,故本类与具体客户端库解耦。
+
+    刻意【不留进程内 L0 缓存】:Redis 是唯一真相源,每请求开头都重新读 —— 否则副本 A 的缓存
+    会在副本 B 写入后变脏。TTL 直接交给 Redis(`SET ... EX`),省掉 SQLite 那版的懒清理。
+    Redis 读写异常一律 fail-open(退化为新会话/跳过写),不让记忆层拖垮主请求。
+
+    并发:save 是无条件 SET(后写覆盖)。SQLite 版靠 L0 缓存让同进程并发轮共用同一对象、
+    经 Session._lock 合并;这里无缓存,故并发同会话轮在【同进程】也会互相覆盖丢轮 ——
+    因此 read-modify-write 由 API 层每会话一把锁串行化(见 api/server.py:_session_lock),
+    单副本安全。【跨副本】并发同会话仍会后写覆盖:正常多轮是串行的(要等上一轮答案才能追问),
+    故部署开 session affinity 即可;要严格跨副本原子,再上 WATCH/MULTI(TCP)或 append-only。
+    """
+
+    def __init__(self, url: str | None = None, *, ttl_seconds: int = 0,
+                 client: Any = None, key_prefix: str = "vs:session:") -> None:
+        if client is not None:                     # 测试可注入 fakeredis,免依赖真 Redis
+            self._r = client
+        else:
+            if not url:
+                raise ValueError("RedisSessionStore 需要 REDIS_URL(或注入 client)")
+            import redis                            # 惰性导入:只有真用 redis 后端才需要装
+            self._r = redis.from_url(url, decode_responses=True)
+        self._ttl = ttl_seconds
+        self._prefix = key_prefix
+
+    def _key(self, session_id: str) -> str:
+        return f"{self._prefix}{session_id}"
+
+    def get_or_create(self, session_id: str) -> Session:
+        try:
+            blob = self._r.get(self._key(session_id))
+        except Exception as e:
+            log.warning("redis get 失败(fail-open,退化为新会话): %r", e)
+            blob = None
+        if blob:
+            try:
+                return Session.from_dict(json.loads(blob))
+            except Exception as e:
+                log.warning("会话反序列化失败(退化为新会话): %r", e)
+        return Session(session_id=session_id)
+
+    def save(self, session: Session) -> None:
+        blob = json.dumps(session.to_dict(), ensure_ascii=False, default=str)
+        try:
+            if self._ttl and self._ttl > 0:
+                self._r.set(self._key(session.session_id), blob, ex=self._ttl)
+            else:
+                self._r.set(self._key(session.session_id), blob)
+        except Exception as e:
+            log.warning("redis save 失败(fail-open,本轮记忆未落盘): %r", e)
+
+    def reset(self, session_id: str) -> Session:
+        try:
+            self._r.delete(self._key(session_id))
+        except Exception as e:
+            log.warning("redis delete 失败(fail-open): %r", e)
+        return Session(session_id=session_id)
+
+
+# ── 后端工厂:按 SESSION_BACKEND 选;默认 sqlite,本地零改动 ────────────
+def _build_redis_client() -> Any:
+    """按可用凭据建 Redis 客户端 —— TCP(redis-py)优先,否则 Upstash REST(upstash-redis)。
+    两种客户端都暴露同样的 get/set(ex=)/delete,对 RedisSessionStore 等价。惰性导入:
+    只装你实际用到的那个库即可。"""
+    if config.REDIS_URL:
+        import redis                                # TCP RESP 协议
+        return redis.from_url(config.REDIS_URL, decode_responses=True)
+    if config.UPSTASH_REDIS_REST_URL and config.UPSTASH_REDIS_REST_TOKEN:
+        from upstash_redis import Redis             # HTTP REST(serverless 友好)
+        return Redis(url=config.UPSTASH_REDIS_REST_URL, token=config.UPSTASH_REDIS_REST_TOKEN)
+    raise ValueError(
+        "SESSION_BACKEND=redis 需要 REDIS_URL 或 UPSTASH_REDIS_REST_URL/UPSTASH_REDIS_REST_TOKEN")
+
+
+def _make_store() -> BaseSessionStore:
+    if config.SESSION_BACKEND == "redis":
+        return RedisSessionStore(client=_build_redis_client(),
+                                 ttl_seconds=config.SESSION_TTL_SECONDS)
+    return SessionStore(config.SESSION_DB_PATH or None, ttl_seconds=config.SESSION_TTL_SECONDS)
+
+
+STORE: BaseSessionStore = _make_store()
