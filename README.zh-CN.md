@@ -7,7 +7,8 @@
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-Production-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![Powered by Gemini](https://img.shields.io/badge/Powered%20by-Gemini%202.5-4285F4?logo=google&logoColor=white)](https://deepmind.google/technologies/gemini/)
-[![Google Cloud](https://img.shields.io/badge/Google%20Cloud-AlloyDB%20%7C%20Cloud%20Run-4285F4?logo=googlecloud&logoColor=white)](https://cloud.google.com/)
+[![Neon](https://img.shields.io/badge/Neon-Serverless%20Postgres-00E599?logo=postgresql&logoColor=white)](https://neon.tech/)
+[![Google Cloud](https://img.shields.io/badge/Google%20Cloud-Cloud%20Run%20%C2%B7%20Vertex%20AI-4285F4?logo=googlecloud&logoColor=white)](https://cloud.google.com/run)
 
 [English](README.md) · **简体中文**
 
@@ -70,32 +71,11 @@
 
 ## 工作原理
 
-```
-   Natural-language question
-            │
-            ▼
-   ┌──────────────────┐
-   │   ROUTER          │   answerable? · intent? · follow-up?
-   │   can I answer?   │   ──► resolve refs · else refuse honestly
-   └────────┬─────────┘
-            │ yes
-            ▼
-   ┌──────────────────┐   reads live DB schema     ┌──────────────────┐
-   │   PLANNER        │ ◀────────────────────────▶ │  Knowledge base   │
-   │   question → plan│        (via MCP)            │  (video facts)    │
-   └────────┬─────────┘                            └──────────────────┘
-            │  a graph of steps
-            ▼
-   ┌──────────────────┐   writes Python per step
-   │  CODE GENERATOR  │ ─────────────────────────┐
-   └──────────────────┘                          ▼
-                                       ┌──────────────────────┐
-                                       │  SECURE SANDBOX       │
-                                       │  run · fail · self-fix│  ↺ up to 3×
-                                       └──────────┬───────────┘
-                                                  ▼
-                              answer · chart · generated code
-```
+<div align="center">
+
+<img src="docs/how-it-works.svg" alt="VideoSense 架构:自然语言问题流经 Router → Planner → Code Generator → Secure Sandbox 得到答案;Upstash Redis 持有跨轮、跨实例的会话记忆,Neon Postgres 知识库经 MCP 喂给 Planner。" width="900"/>
+
+</div>
 
 整条流水线把**"决定做什么"**(一份透明、可审计的计划)和**"具体去做"**(在隔离环境里运行、能自我修复的生成代码)分开。简单查询走快速通道;只有分析类工作才需要付出代码生成与沙箱执行的成本。
 
@@ -108,8 +88,10 @@
 - **🧠 多模态 AI** —— Gemini 2.5(Vertex AI),同时负责感知与代码生成
 - **🔌 Model Context Protocol** —— 标准化、基于真实 schema 的数据库访问
 - **🛡️ 隔离执行** —— Cloud Run + gVisor 沙箱,带 AST 策略闸门
-- **🗄️ 云端数据** —— AlloyDB for PostgreSQL · Google Cloud Storage
-- **⚡ 生产级 API** —— FastAPI,全容器化
+- **🗄️ 云端数据** —— Neon serverless Postgres · Google Cloud Storage
+- **💬 共享会话记忆** —— Upstash Redis · 跨轮 *且* 跨实例(多副本续聊),与查询库物理隔离
+- **📊 逐请求审计** —— 谁 · token · 成本 → Cloud Logging
+- **⚡ 生产级 API** —— FastAPI on Cloud Run(多副本 + 会话亲和),全容器化
 
 ---
 
@@ -117,7 +99,7 @@
 
 - **Python** 3.11+
 - **Google Cloud** 账号(已开启 Vertex AI),且 `gcloud` CLI 已认证
-- **(可选)** AlloyDB / PostgreSQL —— *或者*用零成本 **mock 模式**(无需数据库)
+- **(可选)** Neon(或任意 PostgreSQL)—— *或者*用零成本 **mock 模式**(无需数据库)
 
 安装依赖:
 
@@ -136,7 +118,7 @@ gcloud auth application-default login
 ## 快速开始
 
 最快的体验方式 —— **mock 模式**用一个内存数据库,内置示例视频事实,
-**无需 AlloyDB、存储零成本**。
+**无需数据库、存储零成本**。
 
 ### 1. 配置环境
 
@@ -155,10 +137,10 @@ uvicorn api.server:app --port 8000
 
 ### 3. 提问
 
-在浏览器打开内置测试页 —— 或 Swagger 文档:
+在浏览器打开内置**聊天界面** —— 或 Swagger 文档:
 
 ```
-http://localhost:8000/         # 内置查询测试页(输入问题,看答案 + trace)
+http://localhost:8000/         # 聊天界面 —— 多轮、历史会话侧栏、富渲染(表格/图表/代码)
 http://localhost:8000/docs     # 交互式 API 文档
 ```
 
@@ -170,7 +152,7 @@ curl -X POST http://localhost:8000/v1/video_vibe_query \
   -d '{"query": "Find every video that contains skiing or snowboarding."}'
 ```
 
-> 💡 想用真实 AlloyDB?去掉 `REPL_USE_MOCK_DB`,改设 `ALLOYDB_PASSWORD`。
+> 💡 想用真实数据?去掉 `REPL_USE_MOCK_DB`,把 `ALLOYDB_*` 变量指向你的 Neon 数据库。
 > 想在终端用 CLI 而非 HTTP?运行 `python -m pipeline.main`。
 
 ---

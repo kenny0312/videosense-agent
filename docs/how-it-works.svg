@@ -1,0 +1,99 @@
+<svg viewBox="0 0 1040 620" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,-apple-system,Segoe UI,Roboto,sans-serif">
+  <defs>
+    <marker id="ar" markerWidth="10" markerHeight="10" refX="7" refY="3.2" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L7.5,3.2 L0,6.4 Z" fill="#6b7480"/>
+    </marker>
+    <marker id="arR" markerWidth="10" markerHeight="10" refX="7" refY="3.2" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L7.5,3.2 L0,6.4 Z" fill="#e25c5c"/>
+    </marker>
+    <marker id="arG" markerWidth="10" markerHeight="10" refX="2" refY="3.2" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M7.5,0 L0,3.2 L7.5,6.4 Z" fill="#00c98a"/>
+    </marker>
+    <marker id="arG2" markerWidth="10" markerHeight="10" refX="7" refY="3.2" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L7.5,3.2 L0,6.4 Z" fill="#00c98a"/>
+    </marker>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0e1015"/><stop offset="1" stop-color="#0a0b0d"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="1" y="1" width="1038" height="618" rx="18" fill="url(#bg)" stroke="#232830"/>
+
+  <text x="42" y="44" fill="#e7eaee" font-size="22" font-weight="700">How VideoSense works</text>
+  <text x="42" y="67" fill="#6b7480" font-size="13">one question → a transparent plan → self-healing execution → the answer <tspan fill="#9aa3ad">+ the code behind it</tspan></text>
+
+  <!-- ===== central spine ===== -->
+  <!-- question -->
+  <rect x="380" y="92" width="260" height="38" rx="19" fill="#141821" stroke="#2b3540"/>
+  <text x="510" y="116" text-anchor="middle" fill="#e7eaee" font-size="13.5" font-weight="600">Natural-language question</text>
+  <line x1="510" y1="130" x2="510" y2="158" stroke="#6b7480" stroke-width="1.6" marker-end="url(#ar)"/>
+
+  <!-- router -->
+  <rect x="360" y="160" width="300" height="72" rx="12" fill="#13233f" stroke="#4f8cff"/>
+  <text x="510" y="190" text-anchor="middle" fill="#cfe0ff" font-size="16" font-weight="700">ROUTER</text>
+  <text x="510" y="212" text-anchor="middle" fill="#9aa3ad" font-size="12">answerable? · intent? · follow-up?</text>
+  <line x1="510" y1="232" x2="510" y2="258" stroke="#6b7480" stroke-width="1.6" marker-end="url(#ar)"/>
+
+  <!-- planner -->
+  <rect x="360" y="260" width="300" height="58" rx="12" fill="#1f1830" stroke="#a479e0"/>
+  <text x="510" y="285" text-anchor="middle" fill="#d3bff5" font-size="15" font-weight="700">PLANNER</text>
+  <text x="510" y="305" text-anchor="middle" fill="#9aa3ad" font-size="12">question → a DAG of steps</text>
+  <line x1="510" y1="318" x2="510" y2="344" stroke="#6b7480" stroke-width="1.6" marker-end="url(#ar)"/>
+
+  <!-- code generator -->
+  <rect x="360" y="346" width="300" height="58" rx="12" fill="#0e2724" stroke="#2bb79e"/>
+  <text x="510" y="371" text-anchor="middle" fill="#79dcc9" font-size="15" font-weight="700">CODE GENERATOR</text>
+  <text x="510" y="391" text-anchor="middle" fill="#9aa3ad" font-size="12">writes Python for each step</text>
+  <line x1="510" y1="404" x2="510" y2="430" stroke="#6b7480" stroke-width="1.6" marker-end="url(#ar)"/>
+
+  <!-- sandbox -->
+  <rect x="360" y="432" width="300" height="72" rx="12" fill="#2a2310" stroke="#e0a23b"/>
+  <text x="510" y="462" text-anchor="middle" fill="#ecc987" font-size="16" font-weight="700">SECURE SANDBOX</text>
+  <text x="510" y="484" text-anchor="middle" fill="#9aa3ad" font-size="12">run · fail · self-fix  (Cloud Run + gVisor)</text>
+  <line x1="510" y1="504" x2="510" y2="532" stroke="#6b7480" stroke-width="1.6" marker-end="url(#ar)"/>
+
+  <!-- self-heal loop -->
+  <path d="M662,476 C720,476 720,440 668,440" fill="none" stroke="#e0a23b" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#ar)"/>
+  <text x="724" y="462" fill="#e0a23b" font-size="11.5" font-weight="600">↺ self-fix ×3</text>
+
+  <!-- output -->
+  <rect x="360" y="534" width="300" height="46" rx="23" fill="#0e2a1d" stroke="#3ecf8e"/>
+  <text x="510" y="562" text-anchor="middle" fill="#93e9c0" font-size="14" font-weight="700">answer · chart · generated code</text>
+
+  <!-- ===== left: session memory (Redis) ===== -->
+  <rect x="60" y="188" width="216" height="252" rx="14" fill="#261518" stroke="#e25c5c"/>
+  <text x="80" y="222" fill="#f0a8a8" font-size="14" font-weight="700">SESSION MEMORY</text>
+  <text x="80" y="242" fill="#9aa3ad" font-size="11.5">Upstash Redis</text>
+  <line x1="80" y1="254" x2="256" y2="254" stroke="#3a2326" stroke-width="1"/>
+  <text x="80" y="276" fill="#cdd3da" font-size="11.5">· cross-turn references</text>
+  <text x="80" y="296" fill="#9aa3ad" font-size="11">  &#8220;plot those&#8221; · &#8220;how?&#8221;</text>
+  <text x="80" y="320" fill="#cdd3da" font-size="11.5">· cross-instance shared</text>
+  <text x="80" y="340" fill="#9aa3ad" font-size="11">  multi-replica continuity</text>
+  <text x="80" y="364" fill="#cdd3da" font-size="11.5">· isolated from the DB</text>
+  <text x="80" y="384" fill="#9aa3ad" font-size="11">  planner SQL can't reach</text>
+  <!-- memory -> router (read) -->
+  <path d="M276,236 C320,236 330,190 358,188" fill="none" stroke="#e25c5c" stroke-width="1.5" marker-end="url(#arR)"/>
+  <text x="286" y="206" fill="#e25c5c" font-size="11">history · refs</text>
+  <!-- output -> memory (persist), dashed -->
+  <path d="M360,557 C220,557 168,500 168,442" fill="none" stroke="#7a4a4d" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arR)"/>
+  <text x="196" y="530" fill="#b06a6d" font-size="11">persist turn</text>
+
+  <!-- ===== right: knowledge base (Neon) ===== -->
+  <rect x="752" y="252" width="216" height="120" rx="14" fill="#10261b" stroke="#00c98a"/>
+  <text x="772" y="286" fill="#79e3b6" font-size="14" font-weight="700">KNOWLEDGE BASE</text>
+  <text x="772" y="306" fill="#9aa3ad" font-size="11.5">Neon serverless Postgres</text>
+  <line x1="772" y1="318" x2="948" y2="318" stroke="#143a29" stroke-width="1"/>
+  <text x="772" y="340" fill="#cdd3da" font-size="11.5">video facts (confidence-</text>
+  <text x="772" y="356" fill="#cdd3da" font-size="11.5">scored) · clips on GCS</text>
+  <!-- planner <-> KB via MCP (bidirectional) -->
+  <line x1="660" y1="296" x2="752" y2="300" stroke="#00c98a" stroke-width="1.6" marker-start="url(#arG)" marker-end="url(#arG2)"/>
+  <text x="668" y="288" fill="#00c98a" font-size="11">MCP · live schema</text>
+
+  <!-- ===== refuse branch ===== -->
+  <rect x="700" y="166" width="270" height="42" rx="12" fill="#2a1a1c" stroke="#7a4a4d"/>
+  <text x="716" y="192" fill="#e7a3a3" font-size="12.5">✗ can&#8217;t answer → <tspan font-weight="700">refuses honestly</tspan></text>
+  <line x1="660" y1="184" x2="698" y2="186" stroke="#7a4a4d" stroke-width="1.5" marker-end="url(#arR)"/>
+
+  <!-- footnote -->
+  <text x="42" y="602" fill="#5a626c" font-size="11.5">Deciding <tspan fill="#8a929c">what to do</tspan> (auditable plan) is separated from <tspan fill="#8a929c">doing it</tspan> (generated code, isolated &amp; self-repairing). Simple lookups skip code-gen.</text>
+</svg>
