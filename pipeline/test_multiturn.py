@@ -132,7 +132,7 @@ def test_success_registers_artifact():
     saved = _stub_router(v)
     orig_exec = orch.execute_node
 
-    def fake_exec(node, upstream, sandbox, trace, schema=None):
+    def fake_exec(node, upstream, sandbox, trace, schema=None, **kwargs):
         return NodeResult(node.id, node.tool, ok=True,
                           value=[{"id": 1, "predicate": "skiing"}], attempts=1)
     orch.execute_node = fake_exec

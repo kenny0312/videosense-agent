@@ -20,6 +20,7 @@ import logging
 from typing import Any, TYPE_CHECKING
 
 from pipeline import mcp_client, usage
+from pipeline.artifact_value_store import VALUE_STORE
 from pipeline.dag_schema import DAG
 from pipeline.node_executor import NodeResult, execute_node
 from pipeline.node_specs import catalog_for_planner
@@ -155,8 +156,11 @@ def run_query(nl: str, *, quiet_trace: bool = False,
                               "说得更具体些(比如含哪个活动、第几条),我就能接着算。",
                        session_id=sid, turn_type="followup")
 
-    # 已解析的上一轮结果(配方+预览)打包给 Planner —— 复用策略=重算
-    context = session.planner_context(resolved_ids) if (session and resolved_ids) else None
+    # 已解析的上一轮结果(配方+预览)打包给 Planner —— 复用策略=重算。
+    # 传入值仓:planner_context 据【活仓】算 value_cached(重启/跨副本/LRU 淘汰后值已不在 →
+    # 不暴露 value_cached,planner 自然走重算,不会发出注定取不到的 load_artifact)。
+    context = (session.planner_context(resolved_ids, value_store=VALUE_STORE)
+               if (session and resolved_ids) else None)
 
     # ── Stage 4: 规划 ──
     step = trace.step("Plan DAG")
@@ -178,7 +182,9 @@ def run_query(nl: str, *, quiet_trace: bool = False,
     for node in order:
         upstream = {dep: results[dep].value for dep in node.depends_on
                     if dep in results}
-        res = execute_node(node, upstream, sandbox, trace, schema=planner.schema)
+        # session_id + 值仓:仅 load_artifact 节点用到(跨轮值复用);其余节点忽略
+        res = execute_node(node, upstream, sandbox, trace, schema=planner.schema,
+                           session_id=sid, value_store=VALUE_STORE)
         results[node.id] = res
         if not res.ok:
             _remember("error")
@@ -196,7 +202,9 @@ def run_query(nl: str, *, quiet_trace: bool = False,
         artifact_ids = None
         try:
             node_values = {nid: r.value for nid, r in results.items()}
-            art = session.register_artifact(dag, node_values, nl, intent)
+            # 传入值仓:可复用类 artifact 的真实值会另存进【独立值仓】(供下一轮 load_artifact 复用)
+            art = session.register_artifact(dag, node_values, nl, intent,
+                                            value_store=VALUE_STORE)
             artifact_ids = [art.id]
         except Exception as e:
             log.warning("session.register_artifact 失败(fail-open): %r", e)

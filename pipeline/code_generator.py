@@ -13,9 +13,6 @@ from __future__ import annotations
 import json
 import logging
 
-import vertexai
-from vertexai.generative_models import GenerativeModel
-
 from pipeline import config, usage
 from pipeline.dag_schema import Node
 from pipeline.node_specs import codegen_hint
@@ -89,6 +86,11 @@ class CodeGenerator:
     HISTORY_TAIL = 4   # 保留首条(节点说明)+ 最近 4 条
 
     def __init__(self):
+        # 惰性导入:把 vertexai 留到真正构造 CodeGenerator 时再 import,这样仅
+        # `import pipeline.node_executor`(离线测试的传递依赖)不会把 vertexai 拉进来 ——
+        # 离线测试套件因此无需安装/初始化 vertexai。
+        import vertexai
+        from vertexai.generative_models import GenerativeModel
         vertexai.init(project=config.GCP_PROJECT, location=config.GCP_REGION)
         self.model = GenerativeModel(config.CODEGEN_MODEL)
         self.history: list[dict] = []

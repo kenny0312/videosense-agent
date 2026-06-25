@@ -43,6 +43,18 @@ SPECS: dict[str, NodeSpec] = {
             "[{threshold, <聚合列>}] 表返回。"
         ),
     ),
+    "load_artifact": NodeSpec(
+        tool="load_artifact",
+        needs_sandbox=False,
+        planner_desc=(
+            "跨轮【值复用】:直接载入上一轮已算好的某个 artifact 的真实值,不重跑其配方。"
+            "inputs.artifact_id = 已解析的上一轮 artifact id(如 'a1')。无上游依赖,返回其值。"
+            "【硬性前提】仅当上下文把该 artifact 标了 value_cached=true 时才可用;没标就【绝不要】"
+            "对它发 load_artifact —— 值已不在场,该节点会失败并使整轮失败(无自动重算回退)。"
+            "适用面很窄:仅【重新呈现/重渲染刚算出的同一份结果】(如把上一轮回归结果再画一张图、"
+            "换种排版展示)。只要数据/筛选/范围/时间有任何变化,就别用它,改用配方重算(写 sql_query 等)。"
+        ),
+    ),
 
     # ── 数据科学(沙箱 / CodeGen)────────────────
     "load_sensor_csv": NodeSpec(
