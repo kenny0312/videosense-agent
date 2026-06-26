@@ -184,10 +184,11 @@ def _audit(request: Request, req: VibeQueryRequest, result: dict,
 def video_vibe_query(req: VibeQueryRequest, request: Request):
     t0 = time.perf_counter()
     sid = req.session_id or uuid.uuid4().hex        # 没带 session_id → 开一个新会话
-    with _session_lock(sid):                        # 同会话 read-modify-write 串行,防丢轮
-        session = STORE.get_or_create(sid)
+    owner = getattr(request.state, "app_user", "anon")   # 会话按认证身份归属(关 IDOR)
+    with _session_lock(f"{owner}:{sid}"):           # 同会话 read-modify-write 串行,防丢轮
+        session = STORE.get_or_create(sid, owner=owner)
         result = run_query(req.query, quiet_trace=True, session=session)
-        STORE.save(session)                         # 写时机:每请求一次(纯内存模式无操作)
+        STORE.save(session, owner=owner)            # 写时机:每请求一次(纯内存模式无操作)
     result["session_id"] = sid                      # 回传,客户端下一轮带上即可续聊
     usage = result.pop("usage", {}) or {}           # token/成本:内部审计用,不回传给前端
 
