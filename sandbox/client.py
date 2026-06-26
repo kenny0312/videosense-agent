@@ -2,8 +2,10 @@
 Thin HTTP client for the Sandbox /execute endpoint.
 
 Reads SANDBOX_URL and optionally SANDBOX_TOKEN from the environment.
-When SANDBOX_URL points at a Cloud Run service (auth required), the token is
-acquired automatically via `gcloud auth print-identity-token` if not provided.
+When SANDBOX_URL points at a (private) Cloud Run service, an identity token is
+acquired automatically — via google-auth (uses the metadata server on Cloud Run,
+ADC elsewhere), falling back to `gcloud auth print-identity-token` locally.
+Token fetch is lazy: SQL-only queries that never call the sandbox pay nothing.
 
 pipeline.node_executor imports SandboxClient.execute() to run generated code (with self-heal).
 """
@@ -41,11 +43,32 @@ class SandboxClient:
     def __init__(self, url: Optional[str] = None, token: Optional[str] = None):
         self.url = (url or os.environ.get("SANDBOX_URL") or DEFAULT_URL).rstrip("/")
         self.token = token if token is not None else os.environ.get("SANDBOX_TOKEN", "")
-        if self._needs_auth() and not self.token:
-            self.token = self._fetch_gcloud_token()
+        self._auth_resolved = False        # 惰性:首次 execute/health 才取 token,SQL-only 查询零开销
 
     def _needs_auth(self) -> bool:
         return ".run.app" in self.url
+
+    def _bearer(self) -> str:
+        """惰性拿 Bearer token 并缓存到 self.token。私有 Cloud Run 服务间调用:google-auth
+        会用 metadata server 签一个 audience=沙箱URL 的 ID token(容器无需装 gcloud)。"""
+        if not self._auth_resolved:
+            if self._needs_auth() and not self.token:
+                self.token = self._fetch_token()
+            self._auth_resolved = True
+        return self.token
+
+    def _fetch_token(self) -> str:
+        # 优先 google-auth:Cloud Run 上走 metadata server(标准服务间鉴权),本地走 ADC;
+        # 取不到再退化到 gcloud 子进程(本地装了 gcloud 时)。
+        try:
+            from google.oauth2 import id_token
+            from google.auth.transport.requests import Request as GAuthRequest
+            tok = id_token.fetch_id_token(GAuthRequest(), self.url)   # audience = 沙箱 URL
+            if tok:
+                return tok
+        except Exception:
+            pass
+        return self._fetch_gcloud_token()
 
     @staticmethod
     def _fetch_gcloud_token() -> str:
@@ -63,8 +86,9 @@ class SandboxClient:
     def execute(self, code: str, timeout: int = 30) -> ExecuteResult:
         body = json.dumps({"code": code, "timeout": timeout}).encode("utf-8")
         headers = {"Content-Type": "application/json"}
-        if self.token:
-            headers["Authorization"] = f"Bearer {self.token}"
+        token = self._bearer()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
 
         req = urllib.request.Request(f"{self.url}/execute", data=body, headers=headers, method="POST")
         try:
@@ -85,7 +109,8 @@ class SandboxClient:
         )
 
     def health(self) -> bool:
-        headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+        token = self._bearer()
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
         req = urllib.request.Request(f"{self.url}/health", headers=headers)
         try:
             data = json.loads(urllib.request.urlopen(req, timeout=10).read())
