@@ -20,6 +20,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -308,16 +309,27 @@ class Session:
         return s
 
 
+def _scoped(owner: str, session_id: str) -> str:
+    """会话的"带归属存储 key" = owner:session_id。让每条会话归属到认证身份(app_user):
+    别人拿你的 session_id 来,也只会落到【他自己】的命名空间 → 读不到你的(关掉 IDOR)。
+    owner 含分隔符 → 哈希兜底,防越界/碰撞。owner 为空 → "anon"(本地无鉴权时全归 anon)。"""
+    owner = owner or "anon"
+    if ":" in owner:
+        owner = "u_" + hashlib.sha256(owner.encode()).hexdigest()[:12]
+    return f"{owner}:{session_id}"
+
+
 # ── 会话仓接口 ──────────────────────────────────────────────
 # 持久化与 pipeline 解耦:请求开头 get_or_create(读)、结尾 save(写),中间流水线只动内存里的
 # Session 对象。换后端只实现这三个方法即可,router/planner/orchestrator 一行不改。
+# owner = 认证身份(API 层传 request.state.app_user);存储按 owner 命名空间隔离(见 _scoped)。
 class BaseSessionStore(ABC):
     @abstractmethod
-    def get_or_create(self, session_id: str) -> Session: ...
+    def get_or_create(self, session_id: str, owner: str = "anon") -> Session: ...
     @abstractmethod
-    def save(self, session: Session) -> None: ...
+    def save(self, session: Session, owner: str = "anon") -> None: ...
     @abstractmethod
-    def reset(self, session_id: str) -> Session: ...
+    def reset(self, session_id: str, owner: str = "anon") -> Session: ...
 
 
 # ── 进程级会话仓(默认落独立 SQLite 文件;path=None 则纯内存)───────────
@@ -339,47 +351,50 @@ class SessionStore(BaseSessionStore):
             c.execute("PRAGMA journal_mode=WAL")
         self._ensured = True
 
-    def get_or_create(self, session_id: str) -> Session:
+    def get_or_create(self, session_id: str, owner: str = "anon") -> Session:
+        key = _scoped(owner, session_id)          # 按归属隔离:别人的 sid 落不到你的命名空间
         with self._lock:
             self._sweep_locked()                  # 懒清理:删盘上闲置超 TTL 的会话
-            s = self._sessions.get(session_id)
+            s = self._sessions.get(key)
             if s is None and self._path:
-                s = self._load_locked(session_id)  # 重启后从盘恢复
+                s = self._load_locked(key)         # 重启后从盘恢复
             if s is None:
                 s = Session(session_id=session_id)
-            self._sessions[session_id] = s
+            self._sessions[key] = s
             return s
 
-    def save(self, session: Session) -> None:
+    def save(self, session: Session, owner: str = "anon") -> None:
         """写时机 = 每个请求结束写一次(API/CLI 调用点);纯内存模式无操作。"""
         if not self._path:
             return
         self._ensure()
+        key = _scoped(owner, session.session_id)
         blob = json.dumps(session.to_dict(), ensure_ascii=False, default=str)
         with self._lock:
             with sqlite3.connect(self._path) as c:
                 c.execute(
                     "INSERT INTO sessions(session_id, blob, updated_at) VALUES(?,?,?) "
                     "ON CONFLICT(session_id) DO UPDATE SET blob=excluded.blob, updated_at=excluded.updated_at",
-                    (session.session_id, blob, time.time()))
+                    (key, blob, time.time()))
 
-    def reset(self, session_id: str) -> Session:
+    def reset(self, session_id: str, owner: str = "anon") -> Session:
+        key = _scoped(owner, session_id)
         with self._lock:
             s = Session(session_id=session_id)
-            self._sessions[session_id] = s
+            self._sessions[key] = s
             if self._path:
                 self._ensure()
                 with sqlite3.connect(self._path) as c:
-                    c.execute("DELETE FROM sessions WHERE session_id=?", (session_id,))
+                    c.execute("DELETE FROM sessions WHERE session_id=?", (key,))
             return s
 
     # ── 内部(均在 self._lock 内调用)──────────────────
-    def _load_locked(self, session_id: str) -> Session | None:
+    def _load_locked(self, key: str) -> Session | None:
         self._ensure()
         try:
             with sqlite3.connect(self._path) as c:
                 row = c.execute("SELECT blob FROM sessions WHERE session_id=?",
-                                (session_id,)).fetchone()
+                                (key,)).fetchone()
             if row:
                 return Session.from_dict(json.loads(row[0]))
         except Exception:
@@ -426,12 +441,12 @@ class RedisSessionStore(BaseSessionStore):
         self._ttl = ttl_seconds
         self._prefix = key_prefix
 
-    def _key(self, session_id: str) -> str:
-        return f"{self._prefix}{session_id}"
+    def _key(self, session_id: str, owner: str = "anon") -> str:
+        return f"{self._prefix}{_scoped(owner, session_id)}"
 
-    def get_or_create(self, session_id: str) -> Session:
+    def get_or_create(self, session_id: str, owner: str = "anon") -> Session:
         try:
-            blob = self._r.get(self._key(session_id))
+            blob = self._r.get(self._key(session_id, owner))
         except Exception as e:
             log.warning("redis get 失败(fail-open,退化为新会话): %r", e)
             blob = None
@@ -442,19 +457,20 @@ class RedisSessionStore(BaseSessionStore):
                 log.warning("会话反序列化失败(退化为新会话): %r", e)
         return Session(session_id=session_id)
 
-    def save(self, session: Session) -> None:
+    def save(self, session: Session, owner: str = "anon") -> None:
         blob = json.dumps(session.to_dict(), ensure_ascii=False, default=str)
+        key = self._key(session.session_id, owner)
         try:
             if self._ttl and self._ttl > 0:
-                self._r.set(self._key(session.session_id), blob, ex=self._ttl)
+                self._r.set(key, blob, ex=self._ttl)
             else:
-                self._r.set(self._key(session.session_id), blob)
+                self._r.set(key, blob)
         except Exception as e:
             log.warning("redis save 失败(fail-open,本轮记忆未落盘): %r", e)
 
-    def reset(self, session_id: str) -> Session:
+    def reset(self, session_id: str, owner: str = "anon") -> Session:
         try:
-            self._r.delete(self._key(session_id))
+            self._r.delete(self._key(session_id, owner))
         except Exception as e:
             log.warning("redis delete 失败(fail-open): %r", e)
         return Session(session_id=session_id)
