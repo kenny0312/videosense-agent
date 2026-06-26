@@ -180,6 +180,7 @@ function renderAssistant(card, d, ms){
   if(d.status==='smalltalk'){ card.appendChild(textBlock(d.answer||'')); return; }
 
   // ok
+  if(d.videos && d.videos.length){ card.appendChild(renderVideos(d.videos)); }
   if(d.plot_url){ card.appendChild(renderChart(d.plot_url)); }
   else { card.appendChild(renderAnswer(d.answer)); }
 
@@ -277,6 +278,44 @@ function renderChart(url){
   const bar=el('<div class="chips"></div>'); bar.appendChild(el('<span style="flex:1"></span>'));
   const open=el('<a class="lnk" target="_blank" rel="noopener noreferrer">↗ 打开</a>'); open.href=safe; bar.appendChild(open);
   w.appendChild(bar); return w;
+}
+
+// ── 视频展示:内嵌 <video> 播放数据库里的视频/片段(show_video 节点产出)──────
+function renderVideos(list){
+  const wrap=el('<div></div>');
+  wrap.style.cssText='display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));margin:4px 0';
+  list.forEach(v=>{
+    const card=el('<div></div>');
+    card.style.cssText='border:1px solid var(--line,#2a2a2a);border-radius:12px;overflow:hidden;background:var(--card,#161616)';
+    const t=el('<div></div>'); t.textContent=v.title||v.video_id;
+    t.style.cssText='padding:8px 10px;font-weight:600;font-size:13px';
+    card.appendChild(t);
+    if(v.playable && v.signed_url){
+      const vid=el('<video controls preload="metadata" playsinline></video>');
+      vid.src=safeUrl(v.signed_url);
+      vid.style.cssText='width:100%;max-height:380px;background:#000;display:block';
+      // 有片段起点 → 载入后定位到该秒
+      if(v.start_ts!=null){ vid.addEventListener('loadedmetadata',()=>{ try{vid.currentTime=v.start_ts;}catch(e){} }, {once:true}); }
+      card.appendChild(vid);
+      if(v.marks && v.marks.length){
+        const chips=el('<div class="chips"></div>'); chips.style.padding='8px 10px';
+        v.marks.forEach(m=>{
+          const c=el('<span class="chip"></span>'); c.style.cursor='pointer';
+          c.textContent='▶ '+(m.label||((m.ts|0)+'s'));
+          c.onclick=()=>{ try{ vid.currentTime=m.ts; vid.play(); }catch(e){} };
+          chips.appendChild(c);
+        });
+        card.appendChild(chips);
+      }
+    } else {
+      const note=el('<div class="sub"></div>');
+      note.style.cssText='padding:8px 10px;color:var(--muted,#888)';
+      note.textContent='暂不可播放(未签名)· '+(v.gcs_uri||v.video_id);
+      card.appendChild(note);
+    }
+    wrap.appendChild(card);
+  });
+  return wrap;
 }
 
 // ── 计划透明:DAG 步骤条 + SQL + 生成代码 + trace ───────

@@ -43,6 +43,18 @@ SPECS: dict[str, NodeSpec] = {
             "[{threshold, <聚合列>}] 表返回。"
         ),
     ),
+    "show_video": NodeSpec(
+        tool="show_video",
+        needs_sandbox=False,
+        planner_desc=(
+            "在问答界面【展示/播放】视频或视频片段。主进程把这些视频的私有 gcs_uri 签成"
+            "浏览器可播放的 https URL,前端内嵌 <video> 播放。"
+            "依赖一个上游节点(其结果【行】需含 video_id;可选 start_ts/end_ts/label 用于"
+            "定位要跳播的片段),或直接 inputs.video_ids=[\"v001\",...]。"
+            "当用户想【看 / 播放 / 展示 / 给我看】视频本身或某片段时,在 DAG 末尾加这个节点"
+            "(通常上游是一个选出 video_id 的 sql_query)。最多展示前 8 个。"
+        ),
+    ),
     "load_artifact": NodeSpec(
         tool="load_artifact",
         needs_sandbox=False,

@@ -23,6 +23,11 @@ import sqlite3
 import threading
 from typing import Any
 
+from perception.skydive_schema import (
+    COLUMNS as SKY_COLUMNS, PhaseSpan, SkydiveExtraction,
+    create_table_sql as sky_create_table_sql, mock_schema as sky_mock_schema, to_row as sky_to_row,
+)
+
 # ── 单例 connection(线程安全) ──
 _lock = threading.Lock()
 _conn: sqlite3.Connection | None = None
@@ -94,6 +99,8 @@ _SCHEMA_FOR_LLM = {
         {"column": "ts",          "type": "double precision"},
         {"column": "frame_count", "type": "integer"},
     ],
+    # 跳伞专栏:受控阶段元数据(列定义由 perception.skydive_schema 单源生成)
+    "skydive_segments": sky_mock_schema(),
 }
 
 
@@ -115,6 +122,34 @@ VIDEOS = [
     ("v010", "Basketball Three Pointers",      "gs://activitynet/v010.mp4", 50.0, ["playing basketball"]),
     ("v011", "Salsa Dancing Lessons",          "gs://activitynet/v011.mp4", 36.0, ["dancing salsa", "dancing"]),
     ("v012", "Walking Dog in Park",            "gs://activitynet/v012.mp4", 18.0, ["walking dog", "walking"]),
+    # ── 跳伞专栏 mock 视频(用于演示 skydive_segments;注意阶段【故意各有缺失】以证明 null-safe)──
+    ("sky01", "Wingsuit Jump Over Alps",       "gs://activitynet/sky01.mp4", 130.0, ["skydiving", "wingsuit flight"]),
+    ("sky02", "Freefall Headcam Clip",         "gs://activitynet/sky02.mp4",  48.0, ["skydiving", "freefall"]),
+    ("sky03", "Belly Jump Full Sequence",      "gs://activitynet/sky03.mp4", 135.0, ["skydiving"]),
+    ("sky04", "Wingsuit Flight (cut, no landing)", "gs://activitynet/sky04.mp4", 90.0, ["skydiving", "wingsuit flight"]),
+]
+
+# 跳伞阶段 seed —— 用 SkydiveExtraction 构造(走与线上抽取同一条 to_row 路径)。
+# 故意覆盖不同完整度:sky01 全阶段 / sky02 只有 freefall / sky03 无 aircraft / sky04 无 landing。
+def _sp(s, e, c):   # 简写一个 PhaseSpan
+    return PhaseSpan(start_ts=s, end_ts=e, confidence=c)
+
+SKYDIVE_SEED = [
+    ("sky01", SkydiveExtraction(
+        aircraft=_sp(0, 9, 0.9), exit=_sp(9, 11, 0.95), freefall=_sp(11, 62, 0.97),
+        deploy=_sp(62, 65, 0.93), canopy=_sp(65, 126, 0.9), landing=_sp(126, 130, 0.88),
+        jump_type="wingsuit", is_wingsuit=True, summary="Full wingsuit jump from exit to landing.")),
+    ("sky02", SkydiveExtraction(                                   # 只有自由落体(其余阶段 → NULL)
+        freefall=_sp(2, 46, 0.96),
+        jump_type="freefly", is_wingsuit=False, summary="Headcam freefall-only clip, no deployment shown.")),
+    ("sky03", SkydiveExtraction(                                   # 无 aircraft 段
+        exit=_sp(0, 2, 0.9), freefall=_sp(2, 58, 0.95), deploy=_sp(58, 61, 0.9),
+        canopy=_sp(61, 130, 0.88), landing=_sp(130, 135, 0.85),
+        jump_type="belly", is_wingsuit=False, summary="Belly-to-earth jump, exit through landing.")),
+    ("sky04", SkydiveExtraction(                                   # 翼装,剪掉了落地(landing → NULL)
+        exit=_sp(0, 2, 0.92), freefall=_sp(2, 20, 0.9), deploy=_sp(20, 23, 0.9),
+        canopy=_sp(23, 90, 0.87),
+        jump_type="wingsuit", is_wingsuit=True, summary="Wingsuit flight under canopy, clip ends before landing.")),
 ]
 
 # (video_id, predicate, matched, confidence, rationale, start_ts, end_ts)
@@ -237,6 +272,15 @@ def _init_conn() -> sqlite3.Connection:
     conn.executemany(
         "INSERT INTO video_fact_instances(fact_id, ts, frame_count) VALUES (?,?,?)",
         instances,
+    )
+
+    # ── 跳伞专栏:建表(单源 DDL,CURRENT_TIMESTAMP 兼容 SQLite)+ 灌 seed ──
+    conn.executescript(sky_create_table_sql())
+    sky_rows = [sky_to_row(vid, ext) for vid, ext in SKYDIVE_SEED]   # 缺席阶段 → None → SQL NULL
+    conn.executemany(
+        f"INSERT INTO skydive_segments ({', '.join(SKY_COLUMNS)}) "
+        f"VALUES ({', '.join(['?'] * len(SKY_COLUMNS))})",
+        [tuple(r[c] for c in SKY_COLUMNS) for r in sky_rows],
     )
 
     conn.commit()

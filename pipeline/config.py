@@ -50,6 +50,7 @@ BUSINESS_TABLES = [
     "video_discovery",
     "video_facts",
     "video_fact_instances",
+    "skydive_segments",          # 跳伞专栏:受控阶段元数据(每视频一行,阶段列可为 NULL)
 ]
 
 # ── Sandbox (Stage 5) ─────────────────────────

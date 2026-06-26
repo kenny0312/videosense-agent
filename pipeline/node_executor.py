@@ -43,6 +43,7 @@ class NodeResult:
     attempts: int = 0
     stderr: str = ""
     artifact: dict = field(default_factory=dict)   # 如 plot 的 png_base64
+    videos: list = field(default_factory=list)     # show_video 的侧信道:可播放视频描述符
 
 
 # ── 上游数据注入 ──────────────────────────────
@@ -126,6 +127,85 @@ def _run_load_artifact(node: Node, session_id: str | None,
         return NodeResult(node.id, node.tool, ok=False, attempts=1,
                           stderr=f"artifact {aid} 的缓存值不可用(请改用配方重算)")
     return NodeResult(node.id, node.tool, ok=True, value=value, attempts=1)
+
+
+_VIDEO_ID_RE = __import__("re").compile(r"^[A-Za-z0-9_\-]+$")
+
+
+def _collect_items(node: Node, upstream: dict[str, Any]) -> list[dict]:
+    """收集要展示的视频:优先用上游第一个依赖的结果行(含 video_id,可选 start_ts/end_ts/label),
+    没有上游则用 inputs.video_ids。id 做白名单校验(防注入),去重保序。"""
+    items: list[dict] = []
+    seen: set[str] = set()
+
+    def add(vid: Any, start=None, end=None, label=None) -> None:
+        vid = "" if vid is None else str(vid)
+        if not vid or not _VIDEO_ID_RE.match(vid) or vid in seen:
+            return
+        seen.add(vid)
+        items.append({"video_id": vid, "start_ts": start, "end_ts": end, "label": label})
+
+    for val in upstream.values():                 # 只取第一个上游
+        if isinstance(val, list):
+            for r in val:
+                if isinstance(r, dict):
+                    add(r.get("video_id") or r.get("id"),
+                        r.get("start_ts"), r.get("end_ts"),
+                        r.get("label") or r.get("predicate") or r.get("title"))
+        break
+    if not items:
+        for v in (node.inputs.get("video_ids") or []):
+            add(v)
+    return items
+
+
+def _run_show_video(node: Node, upstream: dict[str, Any]) -> NodeResult:
+    """主进程节点:把要展示的视频签成可播放 URL,放进 NodeResult.videos 侧信道供前端 <video> 播放。
+    缺凭证/签不出 → playable=false(fail-open),仍带回标题/片段,前端优雅降级。"""
+    from pipeline.video_url import sign_gcs_uri
+
+    items = _collect_items(node, upstream)[:8]     # 最多 8 个,防一次签太多
+    if not items:
+        return NodeResult(node.id, node.tool, ok=True, attempts=1,
+                          value={"shown": 0, "note": "没有可展示的视频(上游无 video_id)"})
+
+    ids = [it["video_id"] for it in items]
+    in_list = ", ".join("'" + i + "'" for i in ids)   # ids 已过白名单校验
+    try:
+        rows = mcp_client.query_db(
+            "SELECT video_id, title, gcs_uri, duration_sec FROM video_metadata "
+            f"WHERE video_id IN ({in_list})")
+    except Exception as e:
+        return NodeResult(node.id, node.tool, ok=False, attempts=1,
+                          stderr=f"show_video 查 video_metadata 失败: {e!r}")
+    meta = {r.get("video_id"): r for r in (rows or [])}
+
+    videos: list[dict] = []
+    for it in items:
+        m = meta.get(it["video_id"]) or {}
+        gcs = m.get("gcs_uri")
+        url = sign_gcs_uri(gcs) if gcs else None
+        marks = []
+        if it.get("start_ts") is not None:
+            ts = it["start_ts"]
+            lbl = it.get("label") or (f"{ts:.0f}s" if isinstance(ts, (int, float)) else str(ts))
+            marks.append({"ts": ts, "label": lbl})
+        videos.append({
+            "video_id":     it["video_id"],
+            "title":        m.get("title") or it["video_id"],
+            "gcs_uri":      gcs,
+            "signed_url":   url,
+            "playable":     bool(url),
+            "start_ts":     it.get("start_ts"),
+            "end_ts":       it.get("end_ts"),
+            "duration_sec": m.get("duration_sec"),
+            "marks":        marks,
+        })
+
+    n, n_play = len(videos), sum(1 for v in videos if v["playable"])
+    note = "" if n == n_play else f"(其中 {n - n_play} 个暂不可播放)"
+    return NodeResult(node.id, node.tool, ok=True, attempts=1, videos=videos,
+                      value=f"🎬 为你准备了 {n} 个视频{note}")
 
 
 def _run_threshold_sweep(node: Node) -> NodeResult:
@@ -215,9 +295,12 @@ def execute_node(node: Node, upstream: dict[str, Any],
         try:
             if node.tool == "threshold_sweep":
                 res = _run_threshold_sweep(node)
+            elif node.tool == "show_video":
+                res = _run_show_video(node, upstream)
             else:
                 raise ValueError(f"未知数据工具: {node.tool}")
-            step.ok(rows=len(res.value) if isinstance(res.value, list) else 1)
+            step.ok(rows=len(res.videos) if res.videos else
+                    (len(res.value) if isinstance(res.value, list) else 1))
             return res
         except Exception as e:
             step.fail(error=str(e)[:160])
