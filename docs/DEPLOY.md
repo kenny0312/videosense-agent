@@ -87,6 +87,12 @@ gcloud run deploy videosense --source . --region us-central1 --allow-unauthentic
 - **`SESSION_BACKEND=redis` + Upstash**:会话存共享 Redis —— 重启续得上、**多副本跨实例共享**,不再靠单实例内存。
 - **`--max-instances 5`**:会话共享后可横向扩(原先锁 `1` 是因为内存会话只在单实例一致);**`--session-affinity`** 让同一会话尽量落同一副本(配合 app 内每会话锁,防跨副本"后写覆盖")。
 - 想让**画图/科学题**也能用:再加一项 `SANDBOX_URL=<你的 sandbox 服务地址>`(`sandbox/` 已可单独部署,有自己的 Dockerfile);只问 SQL 类问题则可不设。
+  - sandbox 是**私有服务**(代码执行端点,别设 `--allow-unauthenticated`)。给 videosense 的运行 SA 授权调它(一次性):
+    ```bash
+    gcloud run services add-iam-policy-binding sandbox --region us-central1 \
+      --member="serviceAccount:<PROJECT_NUMBER>-compute@developer.gserviceaccount.com" --role="roles/run.invoker"
+    ```
+    令牌由 `sandbox/client.py` 自动取(google-auth 走 metadata server,容器无需装 gcloud)。
 
 ---
 
