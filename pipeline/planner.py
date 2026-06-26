@@ -14,9 +14,6 @@ from __future__ import annotations
 import json
 import logging
 
-import vertexai
-from vertexai.generative_models import GenerativeModel
-
 from pipeline import config, mcp_client, usage
 from pipeline.dag_schema import DAG, parse_dag
 from pipeline.node_specs import catalog_for_planner
@@ -40,7 +37,13 @@ def _context_block(context: dict) -> str:
     lines.append("## 已解析的上一轮结果(请复用/扩展它)")
     for a in arts:
         recipe = a.get("recipe") or {}
-        lines.append(f"### {a.get('id')} · {a.get('label')} (kind={a.get('kind')})")
+        cached = " [value_cached]" if a.get("value_cached") else ""
+        lines.append(f"### {a.get('id')} · {a.get('label')} (kind={a.get('kind')}){cached}")
+        if a.get("value_cached"):
+            lines.append(f"已缓存其真实值:【仅当】你要把这【同一份刚算出的结果】原样重新呈现/"
+                         f"重渲染(如再画一张图、换种展示)时,才用 load_artifact"
+                         f"(artifact_id='{a.get('id')}') 直接载入,免重跑下面的配方。"
+                         f"数据/筛选/范围/时间有任何变化 → 别用,照配方重算。")
         if recipe.get("type") == "sql":
             lines.append("上一轮 SQL(可直接复用或包成子查询):")
             lines.append(recipe.get("sql", ""))
@@ -58,6 +61,11 @@ def _context_block(context: dict) -> str:
         "\n# 重要:请【重建一个完整、自洽的新 DAG】,节点 id 用全新的 n1..nk("
         "不要照抄旧 id、也不要假设旧节点还在)。复用上面配方里的 SQL/步骤(重跑数据),"
         "再加上用户这一轮新要求的步骤。"
+        "\n# 复用 vs 重算(强默认=重算):load_artifact 只用于一种情形 ——【把某条刚算出的结果"
+        "原样重新呈现/重渲染】(如再画一张图、换种排版),且该结果标了 [value_cached]。"
+        "判据很严:用户这一轮对【数据 / 筛选 / 范围 / 聚合 / 时间】有任何改动,哪怕只是换个活动、"
+        "改个阈值、换段时间窗,都【不是】重新呈现 → 别用 load_artifact,照配方里的 SQL/步骤重算。"
+        "没标 [value_cached] 的结果一律走重算(其缓存值已不在场,load_artifact 会失败)。拿不准就重算。"
     )
     return "\n".join(lines)
 
@@ -101,6 +109,10 @@ def _system_prompt(schema: dict) -> str:
 
 class Planner:
     def __init__(self, schema: dict | None = None):
+        # 惰性导入(与 CodeGenerator/SqlFixer/Router 同):import pipeline.orchestrator
+        # (离线测试的传递依赖)不该把 vertexai 拉进来 —— 留到真正构造 Planner 时再 import。
+        import vertexai
+        from vertexai.generative_models import GenerativeModel
         vertexai.init(project=config.GCP_PROJECT, location=config.GCP_REGION)
         self.model = GenerativeModel(config.PLANNER_MODEL)
         self.schema = schema if schema is not None else mcp_client.get_schema()

@@ -16,8 +16,6 @@ import json
 import logging
 from typing import Any
 
-import vertexai
-from vertexai.generative_models import GenerativeModel
 from pydantic import BaseModel, Field
 
 from pipeline import config, usage
@@ -146,6 +144,10 @@ def _router_prompt(question: str, schema: dict, tools: str,
 
 class Router:
     def __init__(self) -> None:
+        # 惰性导入(与 CodeGenerator/SqlFixer 同):import pipeline.router / orchestrator
+        # (离线测试的传递依赖)不该把 vertexai 拉进来 —— 留到真正构造 Router 时再 import。
+        import vertexai
+        from vertexai.generative_models import GenerativeModel
         vertexai.init(project=config.GCP_PROJECT, location=config.GCP_REGION)
         self.model = GenerativeModel(config.CRITIC_MODEL)
 

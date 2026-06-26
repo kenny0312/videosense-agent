@@ -14,9 +14,6 @@ from __future__ import annotations
 import json
 import logging
 
-import vertexai
-from vertexai.generative_models import GenerativeModel
-
 from pipeline import config, usage
 from pipeline.code_generator import _strip_fence   # 复用同一套去围栏逻辑
 
@@ -49,6 +46,10 @@ class SqlFixer:
     """单个 sql_query 节点的 SQL 自愈器(含失败 history,防重复)。"""
 
     def __init__(self) -> None:
+        # 惰性导入(与 CodeGenerator 同):仅 import node_executor(离线测试的传递依赖)
+        # 不该把 vertexai 拉进来 —— 留到真正构造 SqlFixer 时再 import。
+        import vertexai
+        from vertexai.generative_models import GenerativeModel
         vertexai.init(project=config.GCP_PROJECT, location=config.GCP_REGION)
         self.model = GenerativeModel(config.CODEGEN_MODEL)
         self._prior: list[tuple[str, str]] = []

@@ -32,7 +32,8 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from pipeline import config
-from pipeline.dag_schema import DAG
+from pipeline.artifact_value_store import (BaseArtifactValueStore, make_key)
+from pipeline.dag_schema import DAG, DATA_TOOLS
 
 log = logging.getLogger("pipeline.session")
 
@@ -103,6 +104,23 @@ def _infer_kind(final_tool: str, final_value: Any) -> str:
     return "other"
 
 
+def _is_reusable(final_tool: str) -> bool:
+    """值复用启发式:哪些 artifact 值得把真实值存进值仓供下一轮直接载入。
+    纯数据获取类(sql_query / threshold_sweep / load_artifact)→ 重算便宜且要的是最新数据,
+    仍走"重算"不存值;其余(沙箱算出的:ols_regress / merge_asof / interpolate / python /
+    load_sensor_csv / plot 等,重算昂贵或非确定)→ 存值,允许下一轮 load_artifact 复用。
+    默认仍是重算;存值只是把"复用"这个选项摆上桌,由 planner 显式选取。
+
+    【关于"上游有 sql_query 也照存"的取舍】:本启发式只看【最终工具】,不因 DAG 上游含
+    sql_query 就一律不存。这是有意为之 —— 本应用几乎每条 DAG 都从 sql_query 取数,若上游
+    见 sql 就禁存,等于废掉整个值复用特性。前提假设:同一会话内 video-facts 业务库实际是
+    【静态】的,故复用一份当轮算出的值是安全的;且值复用的目标是省掉【昂贵的沙箱计算】,
+    而非省查库。对"要最新/变了数据"的诉求,防线在规划层:planner 被明确引导为仅对
+    【重新呈现/重渲染同一份刚算出的结果】用 load_artifact,任何数据/筛选/范围/时间的变化
+    都改走配方重算(见 planner.py 的复用指引)。"""
+    return final_tool not in DATA_TOOLS
+
+
 def _derive_recipe(dag: DAG) -> dict:
     """复用策略=重算:把这一轮的 DAG 压成一份"配方"供下一轮重建。
     只两种形:单 sql_query 节点 → {type:sql};其余一律 {type:dag}(过大则退化截断)。"""
@@ -161,6 +179,10 @@ class Artifact:
     n: int = 0                    # 真实行数(预览是采样)
     recipe: dict = field(default_factory=dict)    # {type:sql|dag} —— 只给 Planner
     artifact_ref: str | None = None               # 已存图 url/文件名(仅 plot)
+    # 跨轮【值复用】:完整结果值【不】进 session blob,只在【独立值仓】里存一份;
+    # 这里只留指针/标志(has_value=True 时 value_key 指向值仓里的那条)。
+    has_value: bool = False       # 值仓里是否存了这个 artifact 的真实值(可被 load_artifact 复用)
+    value_key: str | None = None  # 值仓主键(session_id::artifact_id);has_value 时才有意义
 
 
 @dataclass
@@ -188,9 +210,15 @@ class Session:
     # ── 写入 ─────────────────────────────────────────
     def register_artifact(self, dag: DAG, node_values: dict[str, Any],
                           question: str, intent: str,
-                          artifact_ref: str | None = None) -> Artifact:
+                          artifact_ref: str | None = None,
+                          value_store: BaseArtifactValueStore | None = None) -> Artifact:
         """成功轮把结果登记为可指代的 artifact。【只在 status==ok 时调,且在 record_turn 之前。】
-        node_values: {node_id: 该节点的 .value}(完整值只在当轮短暂存在,这里只取预览)。"""
+        node_values: {node_id: 该节点的 .value}(完整值只在当轮短暂存在,session blob 里只取预览)。
+
+        value_store 给定且本 artifact"可复用"(沙箱算出/外部拉取类,见 _is_reusable)时,
+        把【最终节点的真实值】另存进【独立值仓】(超封顶则自动跳过),并在 Artifact 上只留
+        has_value/value_key 指针 —— 完整值绝不进 session blob,免膨胀、守"潘多拉"隔离。
+        默认仍是重算:不传 value_store 行为与从前完全一致。"""
         with self._lock:
             order = dag.topo_order()
             final = order[-1]
@@ -204,8 +232,9 @@ class Session:
             preview, n = _cap_preview(node_values.get(preview_node.id))
 
             self._seq += 1
+            aid = f"a{self._seq}"
             art = Artifact(
-                id=f"a{self._seq}",
+                id=aid,
                 turn=self._turn_no + 1,               # 即将记录的这轮(与紧接的 record_turn 同号)
                 kind=_infer_kind(final.tool, node_values.get(final.id)),
                 label=_make_label(question, intent),
@@ -213,6 +242,18 @@ class Session:
                 recipe=_derive_recipe(dag),
                 artifact_ref=artifact_ref,
             )
+
+            # 值复用(重算之外的补充):仅"可复用"类才尝试存值;存成功才置 has_value。
+            # 存的是 preview_node(预览所依据的【同一】节点)的真实值,而非 final 节点:
+            # plot-final 的 final.value 只有 {n_points},毫无复用价值;preview_node 在
+            # plot-final 时指向上游的 x/y 数据节点,正是下一轮要 re-plot/变换的那份数据。
+            # 非 plot DAG 里 preview_node == final,故 ols/python 等行为不变。
+            if value_store is not None and _is_reusable(final.tool):
+                key = make_key(self.session_id, aid)
+                if value_store.put(key, node_values.get(preview_node.id)):
+                    art.has_value = True
+                    art.value_key = key
+
             self.catalog.append(art)
             _evict(self.catalog, MAX_ARTIFACTS)
             return art
@@ -270,16 +311,32 @@ class Session:
                 out.append(rid)
         return out
 
-    def planner_context(self, resolved_ids: list[str]) -> dict:
-        """给 Planner 的上下文:history + 【仅已解析】artifact(连 recipe),newest-first。"""
+    def planner_context(self, resolved_ids: list[str],
+                        value_store: BaseArtifactValueStore | None = None) -> dict:
+        """给 Planner 的上下文:history + 【仅已解析】artifact(连 recipe),newest-first。
+
+        value_cached 必须反映【当下能否真取到】,不能只看持久化的 has_value 标志:
+        has_value/value_key 记的是"我们当时存过",但值活在易失的进程内仓里 —— 重启 / 跨副本 /
+        被 LRU 淘汰后值就没了,而 has_value 还是 True。若照搬 has_value,会向 planner 谎称
+        value_cached=true,planner 选 load_artifact,该节点取不到值 → 本轮硬失败。
+        故这里【实查活仓】:value_cached = has_value 标记过 且 活仓里此键确有值。值不在场时
+        不暴露 value_cached,planner 自然改走配方重算 —— 这是把"缺失"消化在规划阶段的核心。
+        不传 value_store(如无值复用的纯多轮场景)→ value_cached 一律 False(保守、安全)。"""
         by_id = {a.id: a for a in self.catalog}
         arts = [by_id[i] for i in resolved_ids if i in by_id]
         arts.sort(key=lambda a: a.turn, reverse=True)
+
+        def _live_cached(a: Artifact) -> bool:
+            return bool(value_store is not None and a.value_key
+                        and value_store.get(a.value_key) is not None)
+
         return {
             "history": self.history_view(),
             "resolved_artifacts": [
                 {"id": a.id, "label": a.label, "kind": a.kind,
-                 "preview": a.preview, "recipe": a.recipe, "artifact_ref": a.artifact_ref}
+                 "preview": a.preview, "recipe": a.recipe, "artifact_ref": a.artifact_ref,
+                 # value_cached=true → 活仓里【此刻确有】这条的真实值,planner 可选 load_artifact 复用
+                 "value_cached": _live_cached(a)}
                 for a in arts
             ],
         }
