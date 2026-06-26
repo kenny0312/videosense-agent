@@ -1,0 +1,67 @@
+"""
+把私有 gs:// 视频签成【浏览器可播放的短期 https URL】(给 show_video 节点用)。
+
+GCS 对象是私有的,浏览器不能直接放 gs://。这里用 V4 签名出一个有过期时间的 https
+直链(浏览器 <video> 原生支持 Range 拖动)。两种凭证路径都覆盖:
+  · Cloud Run / 服务账号:走 IAM signBlob(creds 带 service_account_email + token)——
+    需要运行时 SA 对自身有 roles/iam.serviceAccountTokenCreator(可签自己)。
+  · 本地用户 ADC:没有签名私钥 → 签不了 → 返回 None(fail-open),前端优雅降级显示
+    "暂不可播放",绝不抛错卡住请求。
+
+惰性 import google-cloud-storage / google-auth —— 不在模块加载期碰网络/GCP。
+"""
+from __future__ import annotations
+
+import logging
+from datetime import timedelta
+
+from pipeline import config
+
+log = logging.getLogger("pipeline.video_url")
+
+DEFAULT_TTL_MIN = 15
+
+
+def parse_gcs_uri(uri: str) -> tuple[str, str] | None:
+    """gs://bucket/path/to.mp4 → (bucket, 'path/to.mp4');非 gs:// → None。"""
+    if not uri or not uri.startswith("gs://"):
+        return None
+    bucket, _, name = uri[5:].partition("/")
+    if not bucket or not name:
+        return None
+    return bucket, name
+
+
+def sign_gcs_uri(gcs_uri: str | None, ttl_minutes: int = DEFAULT_TTL_MIN) -> str | None:
+    """把 gs:// 签成短期 https;任何失败 → None(fail-open)。"""
+    parsed = parse_gcs_uri(gcs_uri or "")
+    if not parsed:
+        return None
+    bucket_name, blob_name = parsed
+    try:
+        import google.auth
+        from google.auth.transport import requests as ga_requests
+        from google.cloud import storage
+
+        creds, _ = google.auth.default()
+        client = storage.Client(project=config.GCP_PROJECT, credentials=creds)
+        blob = client.bucket(bucket_name).blob(blob_name)
+
+        kwargs: dict = {"version": "v4",
+                        "expiration": timedelta(minutes=ttl_minutes),
+                        "method": "GET"}
+        # 服务账号路径(Cloud Run):刷新拿 token + email,走 IAM signBlob 签名,无需私钥文件
+        email = getattr(creds, "service_account_email", None)
+        if email:
+            try:
+                creds.refresh(ga_requests.Request())
+            except Exception:
+                pass
+            token = getattr(creds, "token", None)
+            if token:
+                kwargs["service_account_email"] = email
+                kwargs["access_token"] = token
+        return blob.generate_signed_url(**kwargs)
+    except Exception as e:
+        log.warning("签名失败(fail-open,返回不可播放): %r", e)
+        return None
