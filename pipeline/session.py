@@ -34,6 +34,7 @@ from typing import Any
 from pipeline import config
 from pipeline.artifact_value_store import (BaseArtifactValueStore, make_key)
 from pipeline.dag_schema import DAG, DATA_TOOLS
+from pipeline.redis_client import build_redis_client
 
 log = logging.getLogger("pipeline.session")
 
@@ -535,17 +536,8 @@ class RedisSessionStore(BaseSessionStore):
 
 # ── 后端工厂:按 SESSION_BACKEND 选;默认 sqlite,本地零改动 ────────────
 def _build_redis_client() -> Any:
-    """按可用凭据建 Redis 客户端 —— TCP(redis-py)优先,否则 Upstash REST(upstash-redis)。
-    两种客户端都暴露同样的 get/set(ex=)/delete,对 RedisSessionStore 等价。惰性导入:
-    只装你实际用到的那个库即可。"""
-    if config.REDIS_URL:
-        import redis                                # TCP RESP 协议
-        return redis.from_url(config.REDIS_URL, decode_responses=True)
-    if config.UPSTASH_REDIS_REST_URL and config.UPSTASH_REDIS_REST_TOKEN:
-        from upstash_redis import Redis             # HTTP REST(serverless 友好)
-        return Redis(url=config.UPSTASH_REDIS_REST_URL, token=config.UPSTASH_REDIS_REST_TOKEN)
-    raise ValueError(
-        "SESSION_BACKEND=redis 需要 REDIS_URL 或 UPSTASH_REDIS_REST_URL/UPSTASH_REDIS_REST_TOKEN")
+    """建 Redis 客户端 —— 实现已抽到 pipeline.redis_client(与 artifact 值仓共享,避免循环引用)。"""
+    return build_redis_client()
 
 
 def _make_store() -> BaseSessionStore:

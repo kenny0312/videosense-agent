@@ -67,6 +67,10 @@ SESSION_DB_PATH = os.environ.get(
     "SESSION_DB_PATH", os.path.join(_REPO_ROOT, ".session_store.sqlite"))
 SESSION_TTL_SECONDS = int(os.environ.get("SESSION_TTL_SECONDS", str(24 * 3600)))  # 闲置超此秒数的会话懒清理
 
+# 跨轮 artifact【值】仓的 TTL(秒);默认随会话 TTL。Redis 值仓用 SET ... EX,到期自动删(无需定时任务)。
+# 想"只保留三天" → 设 SESSION_TTL_SECONDS=259200(连带值仓),或单独设 ARTIFACT_VALUE_TTL_SECONDS。
+ARTIFACT_VALUE_TTL_SECONDS = int(os.environ.get("ARTIFACT_VALUE_TTL_SECONDS", str(SESSION_TTL_SECONDS)))
+
 # 会话后端:sqlite(默认,本机单节点)| redis(共享外部存储,多实例/Cloud Run 跨副本续聊)。
 # 选 redis 仍守"潘多拉"隔离 —— 会话存在独立服务,planner 的 SQL(MCP 查 Neon)够不着。
 # redis 后端的连接二选一(工厂里 TCP 优先):

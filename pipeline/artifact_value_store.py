@@ -27,6 +27,8 @@ from abc import ABC, abstractmethod
 from collections import OrderedDict
 from typing import Any
 
+from pipeline import config
+
 log = logging.getLogger("pipeline.artifact_value_store")
 
 # 单个值序列化(UTF-8 JSON)的字节上限;超出则跳过存储(下一轮回退重算)。
@@ -122,5 +124,83 @@ class InMemoryArtifactValueStore(BaseArtifactValueStore):
             self._d.pop(key, None)
 
 
-# 进程级默认值仓(对照 session.py 的 STORE)。换后端:替换这一处的实例即可。
-VALUE_STORE: BaseArtifactValueStore = InMemoryArtifactValueStore()
+# ── Redis 值仓(共享、跨副本、带 TTL)──────────────────────────
+class RedisArtifactValueStore(BaseArtifactValueStore):
+    """artifact 值存进 Redis —— 形状 = `key_prefix+key → JSON blob`,镜像 session 仓。
+    与 InMemory 版唯一区别:【持久化 + 跨副本共享 + TTL 自动清理】(InMemory 重启即丢、不跨副本)。
+
+    **TTL 即清理**:put 用 `SET ... EX <ttl>`,到期 Redis 自动删 —— 不需要任何定时任务/cron。
+    想"只保留三天" → 把 ttl_seconds 设成 259200(见 config.ARTIFACT_VALUE_TTL_SECONDS)。
+    超 max_bytes 仍跳过(put 返回 False)。读写异常一律 fail-open(put→False / get→None),
+    与"取不到就在规划阶段不暴露 value_cached、走重算"的定位一致,不影响正确性。
+    client 只需 get/set(ex=)/delete —— redis-py 与 upstash-redis 都满足。
+    """
+
+    def __init__(self, client: Any, *, ttl_seconds: int = 0,
+                 max_bytes: int = MAX_VALUE_BYTES, key_prefix: str = "vs:artifact:") -> None:
+        self._r = client
+        self._ttl = ttl_seconds
+        self._max_bytes = max_bytes
+        self._prefix = key_prefix
+
+    def _k(self, key: str) -> str:
+        return f"{self._prefix}{key}"
+
+    def put(self, key: str, value: Any) -> bool:
+        try:
+            blob = json.dumps(value, ensure_ascii=False, default=str)
+        except Exception:
+            log.warning("artifact 值不可序列化,跳过存储: key=%s", key)
+            return False
+        if len(blob.encode("utf-8")) > self._max_bytes:
+            log.info("artifact 值超封顶,跳过存储(下一轮回退重算): key=%s", key)
+            return False
+        try:
+            if self._ttl and self._ttl > 0:
+                self._r.set(self._k(key), blob, ex=self._ttl)
+            else:
+                self._r.set(self._k(key), blob)
+            return True
+        except Exception as e:
+            log.warning("redis 值仓 put 失败(fail-open,本轮值未存): %r", e)
+            return False
+
+    def get(self, key: str) -> Any:
+        try:
+            blob = self._r.get(self._k(key))
+        except Exception as e:
+            log.warning("redis 值仓 get 失败(fail-open,退化为重算): %r", e)
+            return None
+        if not blob:
+            return None
+        try:
+            return json.loads(blob)
+        except Exception:
+            log.warning("artifact 值反序列化失败,视作缺失: key=%s", key)
+            return None
+
+    def delete(self, key: str) -> None:
+        try:
+            self._r.delete(self._k(key))
+        except Exception as e:
+            log.warning("redis 值仓 delete 失败(fail-open): %r", e)
+
+
+# ── 工厂:SESSION_BACKEND=redis 时用 Redis 值仓(复用同一套 Upstash),否则进程内存 ──
+def _make_value_store() -> BaseArtifactValueStore:
+    if config.SESSION_BACKEND == "redis":
+        from pipeline.redis_client import build_redis_client       # 惰性:只有 redis 后端才需要
+        try:
+            client = build_redis_client()
+        except ValueError:
+            # 只吞"没配 Redis 凭据"这一种 → 退回内存(与 session 仓在同条件下的姿态对齐)。
+            # 库缺失 / 坏 URL 等真·misconfig 照常向上抛、让进程响亮失败 —— 别静默降级成
+            # 进程本地(那会悄悄丢掉跨副本/持久化,只剩一行日志,极难发现)。
+            log.warning("SESSION_BACKEND=redis 但无 Redis 凭据 → artifact 值仓退回进程内存")
+            return InMemoryArtifactValueStore()
+        return RedisArtifactValueStore(client, ttl_seconds=config.ARTIFACT_VALUE_TTL_SECONDS)
+    return InMemoryArtifactValueStore()
+
+
+# 进程级默认值仓(对照 session.py 的 STORE)。换后端:改 SESSION_BACKEND / 这个工厂即可。
+VALUE_STORE: BaseArtifactValueStore = _make_value_store()
