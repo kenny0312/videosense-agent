@@ -17,5 +17,8 @@ RUN useradd -m appuser && chown -R appuser /app
 USER appuser
 
 ENV PYTHONUNBUFFERED=1 PYTHONUTF8=1
-# Cloud Run 通过 $PORT 注入端口(默认 8080);shell 形式以便展开变量
-CMD exec uvicorn api.server:app --host 0.0.0.0 --port ${PORT:-8080}
+# Cloud Run 通过 $PORT 注入端口(默认 8080);shell 形式以便展开变量。
+# --proxy-headers:认 Cloud Run 代理的 X-Forwarded-Proto/For → request.base_url 用 https
+#   (否则容器内只见 http,拼出来的 plot_url 是 http://)。--forwarded-allow-ips='*':
+#   Cloud Run 容器只经 Google 前端代理可达,信任所有上游是安全的。
+CMD exec uvicorn api.server:app --host 0.0.0.0 --port ${PORT:-8080} --proxy-headers --forwarded-allow-ips='*'
