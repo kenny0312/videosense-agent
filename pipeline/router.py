@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 
 from pipeline import config, usage
 from pipeline.code_generator import _strip_fence   # 复用同一套去围栏逻辑
+from pipeline.skills import loader as skills        # 大类(route)注册表:词表 + route↔intent
 
 log = logging.getLogger("pipeline.router")
 
@@ -33,10 +34,11 @@ SMALLTALK_REPLY = (
 
 
 class RouterVerdict(BaseModel):
-    decision:   str = "answer"          # "answer" | "refuse"
+    decision:   str = "answer"          # "answer" | "refuse" | "smalltalk"
     confidence: float = 0.0
     reason:     str = ""
-    intent:     str = "other"           # retrieve|aggregate|analyze|visualize|meta|other
+    intent:     str = "other"           # retrieve|aggregate|analyze|visualize|meta|other(兼容旧字段)
+    route:      str = ""                # 大类任务名,取自 skills/*.md(决定走哪个 workflow);闲聊/元/拒答可空
     turn_type:  str = "new"             # new|followup|meta(单轮恒 new)
     references: list[dict] = Field(default_factory=list)
 
@@ -47,6 +49,14 @@ def parse_verdict(raw: Any) -> RouterVerdict:
         v = RouterVerdict.model_validate(raw)
         if v.decision not in ("answer", "refuse", "smalltalk"):
             v.decision = "answer"
+        # route↔intent 互相回填(反向兼容:只给其一时补另一个,保证下游一致)。
+        if not v.route and v.intent not in ("", "other"):
+            v.route = skills.route_for_intent(v.intent)
+        if v.route and v.intent in ("", "other"):
+            v.intent = skills.intent_for(v.route)
+        # 模型给了未知 route → 丢弃(避免分派到不存在的大类),但保留 intent。
+        if v.route and v.route not in skills.known_routes():
+            v.route = ""
         return v
     except Exception:
         return RouterVerdict(decision="answer", confidence=0.0,
@@ -63,41 +73,42 @@ def should_refuse(v: RouterVerdict) -> bool:
 _FEWSHOT_BASE = [
     ("How many videos are there in total?",
      {"decision": "answer", "confidence": 0.95, "reason": "", "intent": "aggregate",
-      "turn_type": "new", "references": []}),
+      "route": "aggregate", "turn_type": "new", "references": []}),
     ("Find all videos that contain skiing.",
      {"decision": "answer", "confidence": 0.9, "reason": "", "intent": "retrieve",
-      "turn_type": "new", "references": []}),
+      "route": "retrieval", "turn_type": "new", "references": []}),
     ("who are you?",
      {"decision": "smalltalk", "confidence": 0.95, "reason": "", "intent": "other",
-      "turn_type": "new", "references": []}),
+      "route": "", "turn_type": "new", "references": []}),
 ]
 # 无记忆时:指代上文 / 元问题一律拒答
 _FEWSHOT_NOMEM = [
     ("what is the first video above",
      {"decision": "refuse", "confidence": 0.9,
       "reason": "“above”指向上一轮的结果,我没有会话记忆,无法确定是哪条。",
-      "intent": "retrieve", "turn_type": "new",
+      "intent": "retrieve", "route": "", "turn_type": "new",
       "references": [{"text": "above", "resolvable": False, "resolved_to": None}]}),
     ("how did you decide that?",
      {"decision": "refuse", "confidence": 0.85,
       "reason": "这是关于先前分析的元问题,但我没有可参考的上一轮分析。",
-      "intent": "meta", "turn_type": "new", "references": []}),
+      "intent": "meta", "route": "", "turn_type": "new", "references": []}),
 ]
 # 有记忆时:指代能在"已保存结果"里对上号 → 解析(turn_type=followup/meta、resolved_to 填 id)
 _FEWSHOT_MEM = [
     ("plot start time vs confidence for those",   # 已保存结果里有 a1(上一轮的滑雪视频)
      {"decision": "answer", "confidence": 0.85, "reason": "", "intent": "visualize",
-      "turn_type": "followup",
+      "route": "visualize", "turn_type": "followup",
       "references": [{"text": "those", "resolvable": True, "resolved_to": "a1"}]}),
     ("how did you get that number?",              # 元问题,且有可参考的上一轮结果
      {"decision": "answer", "confidence": 0.8, "reason": "", "intent": "meta",
-      "turn_type": "meta",
+      "route": "", "turn_type": "meta",
       "references": [{"text": "that number", "resolvable": True, "resolved_to": "a1"}]}),
 ]
 
 _SKELETON = {
     "decision": "answer|refuse|smalltalk", "confidence": 0.0, "reason": "一句话(与问题同语言)",
-    "intent": "retrieve|aggregate|analyze|visualize|meta|other", "turn_type": "new",
+    "intent": "retrieve|aggregate|analyze|visualize|meta|other",
+    "route": "<下面任务类别之一;闲聊/元问题/拒答留空>", "turn_type": "new",
     "references": [{"text": "...", "resolvable": True, "resolved_to": None}],
 }
 
@@ -117,11 +128,14 @@ def _router_prompt(question: str, schema: dict, tools: str,
     fewshot_list = _FEWSHOT_BASE + (_FEWSHOT_MEM if have_memory else _FEWSHOT_NOMEM)
     fewshot = "\n".join(f"问:{q}\n{json.dumps(a, ensure_ascii=False)}" for q, a in fewshot_list)
     return (
-        "你是一个视频分析查询的【路由器】。判断下面这个问题能否用现有工具和数据库回答,并分类意图。\n\n"
+        "你是一个视频分析查询的【路由器】。判断下面这个问题能否用现有工具和数据库回答,"
+        "若能答还要归到一个【任务大类(route)】。\n\n"
         f"{mem_note}\n\n"
         f"{mem_block}"
         f"# 数据库结构(只有这些表/列)\n{json.dumps(schema, ensure_ascii=False)}\n\n"
         f"# 可用工具\n{tools}\n\n"
+        "# 可用任务类别(route —— 给「能答的新/追问任务」挑最贴切的一个填入 route)\n"
+        f"{skills.render_catalog()}\n\n"
         "# 判断规则\n"
         "- 指代上文(this/that/those same/it/above/前面/刚才/上面/那批/第一个那个 等):\n"
         "    · 能在上面【已保存结果】里对上对应那条 → references 填 resolvable=true、resolved_to=该条 id,"
@@ -132,8 +146,10 @@ def _router_prompt(question: str, schema: dict, tools: str,
         "- 元问题(你怎么得出/用了什么方法/上一条怎么算的):有可参考的上一轮结果 → "
         "decision=\"answer\",intent=\"meta\",turn_type=\"meta\",resolved_to 指向那条;"
         "没有先前结果 → decision=\"refuse\",intent=\"meta\"。\n"
-        "- 身份/打招呼/闲聊(who are you / hi / 你是谁 / 你能做什么 等)→ decision=\"smalltalk\"(系统会给固定友好回复,你只需分类正确)。\n"
+        "- 身份/打招呼/闲聊(who are you / hi / 你是谁 / 你能做什么 等)→ decision=\"smalltalk\"(系统会据此生成友好回复,你只需分类正确;route 留空)。\n"
         "- 其余正常新问题 → decision=\"answer\",turn_type=\"new\"。\n"
+        "- route:凡 decision=\"answer\" 的【新/追问任务】,都要从上面「可用任务类别」里挑【最贴切的一个】填进 route;"
+        "闲聊、元问题(meta)、拒答一律把 route 留空 \"\"。\n"
         "- 【重要】拿不准时倾向 decision=\"answer\"(交给后面的规划器),只在确信做不到时才 refuse;confidence 反映把握。\n"
         "- 所有 reason 用友好的产品口吻,【不要】暴露任何内部组件名(如 router/planner/critic)。\n\n"
         f"# 只输出 JSON(不要解释、不要 markdown),格式:\n{json.dumps(_SKELETON, ensure_ascii=False)}\n\n"

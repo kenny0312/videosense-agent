@@ -100,17 +100,24 @@ def test_orch_answer_reaches_planner():
 def test_orch_smalltalk():
     from pipeline.router import SMALLTALK_REPLY
     orig = _stub_orch(RouterVerdict(decision="smalltalk", confidence=0.95))
+    orig_st = orch.smalltalk_reply
 
     class BoomPlanner:
         def __init__(self, *a, **k):
             raise AssertionError("smalltalk 时不应构造 Planner")
     orch.Planner = BoomPlanner
     try:
+        # 生成失败(返回 None)→ 回退固定俏皮回复
+        orch.smalltalk_reply = lambda q: None
         r = orch.run_query("who are you")
         assert r["status"] == "smalltalk", r["status"]
-        assert r["answer"] == SMALLTALK_REPLY
-        assert "Kenny Qiu" in r["answer"]
+        assert r["answer"] == SMALLTALK_REPLY and "Kenny Qiu" in r["answer"]
+        # 生成成功 → 用生成的【可变】回复(不再被锁死成一句)
+        orch.smalltalk_reply = lambda q: "嗨,我能帮你分析视频~"
+        r2 = orch.run_query("hi there")
+        assert r2["status"] == "smalltalk" and r2["answer"] == "嗨,我能帮你分析视频~", r2["answer"]
     finally:
+        orch.smalltalk_reply = orig_st
         _restore_orch(orig)
 
 

@@ -26,6 +26,8 @@ from pipeline.node_executor import NodeResult, execute_node
 from pipeline.node_specs import catalog_for_planner
 from pipeline.planner import Planner
 from pipeline.router import Router, should_refuse, SMALLTALK_REPLY
+from pipeline.skills import loader as skills
+from pipeline.skills.handlers import HANDLERS, smalltalk_reply
 from pipeline.trace import Trace
 from sandbox.client import SandboxClient
 
@@ -115,7 +117,7 @@ def run_query(nl: str, *, quiet_trace: bool = False,
         verdict = Router().judge(nl, schema=schema, tools=catalog_for_planner(),
                                  history=history_view, artifact_catalog=catalog_view)
         rstep.ok(decision=verdict.decision, intent=verdict.intent,
-                 conf=f"{verdict.confidence:.2f}")
+                 route=verdict.route or "-", conf=f"{verdict.confidence:.2f}")
     except Exception as e:
         # Router 自身出错 → fail-open:照常往下规划,不因 router 崩了卡住
         rstep.fail(error=repr(e))
@@ -123,10 +125,13 @@ def run_query(nl: str, *, quiet_trace: bool = False,
     sid = session.session_id if session else None
     ttype = getattr(verdict, "turn_type", "new") if verdict else "new"
     intent = getattr(verdict, "intent", "other") if verdict else "other"
+    route = getattr(verdict, "route", "") if verdict else ""
 
     if verdict is not None and verdict.decision == "smalltalk":
-        _remember("smalltalk", SMALLTALK_REPLY)
-        return _result(True, trace=trace, status="smalltalk", answer=SMALLTALK_REPLY,
+        # 不再回固定一句:小模型按人设生成可变回复,失败再回退到 SMALLTALK_REPLY 常量。
+        ans = smalltalk_reply(nl) or SMALLTALK_REPLY
+        _remember("smalltalk", ans)
+        return _result(True, trace=trace, status="smalltalk", answer=ans,
                        session_id=sid, turn_type=ttype)
     if verdict is not None and should_refuse(verdict):
         _remember("refused")
@@ -161,6 +166,28 @@ def run_query(nl: str, *, quiet_trace: bool = False,
     # 不暴露 value_cached,planner 自然走重算,不会发出注定取不到的 load_artifact)。
     context = (session.planner_context(resolved_ids, value_store=VALUE_STORE)
                if (session and resolved_ids) else None)
+
+    # ── 按 route 分派 workflow(打地基)──
+    # 现阶段四个大类(retrieval/aggregate/analyze/visualize)的 handler 都是 "planner",
+    # 直接落到下面的 Planner→DAG 主链路。某个大类要走【自定义 workflow】时:
+    #   ① skills/<name>.md 写 `handler: <key>`;② skills/handlers.py 的 HANDLERS 注册 <key>。
+    # 这里见到非 "planner" 的 handler 就按表分派,无需改动本函数的其它判断。
+    handler_key = skills.handler_for(route)
+    custom = HANDLERS.get(handler_key) if handler_key != "planner" else None
+    if custom is not None:
+        hstep = trace.step(f"Skill:{handler_key}")
+        try:
+            ans = custom(nl, verdict=verdict, session=session, context=context,
+                         schema=schema, resolved_ids=resolved_ids)
+            hstep.ok(route=route)
+        except Exception as e:
+            hstep.fail(error=repr(e))
+            _remember("error")
+            return _result(False, trace=trace, error=f"skill {handler_key} failed: {e!r}",
+                           session_id=sid, turn_type=ttype)
+        _remember("ok", ans)
+        return _result(True, trace=trace, status="ok", answer=ans,
+                       session_id=sid, turn_type=ttype)
 
     # ── Stage 4: 规划 ──
     step = trace.step("Plan DAG")
