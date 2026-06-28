@@ -418,6 +418,27 @@ function deleteChat(id, ev){
 }
 
 // ── 发送 ──────────────────────────────────────────────
+// SSE 流式消费(M6b):POST → 读 ReadableStream → 逐条 data: 事件;step/answer 给进度,result 给最终。
+// dag 路径不发 step 事件,只收 result —— 自动降级为"转圈到出结果"。
+async function streamQuery(q, sentSid, onEvent){
+  const r=await fetch('/v1/video_vibe_query/stream',{method:'POST',
+    headers:{'Content-Type':'application/json'}, body:JSON.stringify({query:q, session_id:sentSid})});
+  if(!r.ok || !r.body) throw new Error('stream HTTP '+r.status);
+  const reader=r.body.getReader(), dec=new TextDecoder();
+  let buf='', result=null;
+  for(;;){
+    const {value,done}=await reader.read(); if(done) break;
+    buf+=dec.decode(value,{stream:true});
+    let i;
+    while((i=buf.indexOf('\n\n'))>=0){
+      const block=buf.slice(0,i); buf=buf.slice(i+2);
+      const line=block.split('\n').find(l=>l.startsWith('data:')); if(!line) continue;
+      let ev; try{ ev=JSON.parse(line.slice(5).trim()); }catch(e){ continue; }
+      if(ev.type==='result') result=ev.result; else onEvent(ev);
+    }
+  }
+  return result;
+}
 async function send(text){
   const q = text!=null ? text : $('#q').value.trim();
   if(!q || sending) return;                    // in-flight 守卫:防狂按 Enter 重复发、并发建重复会话
@@ -425,13 +446,25 @@ async function send(text){
   $('#q').value=''; autosize(); addUser(q);
   $('#send').disabled=true;
   const card=assistantShell();
-  card.appendChild(el('<div class="think"><span class="spin"></span>规划 → 执行…</div>'));
+  const think=el('<div class="think"><span class="spin"></span><span class="tmsg">理解问题…</span></div>');
+  const steps=el('<div class="trace" style="margin-top:6px"></div>');
+  card.appendChild(think); card.appendChild(steps);
+  const onEvent=(ev)=>{
+    if(ev.type==='step'){
+      think.querySelector('.tmsg').textContent='执行中 · 第 '+(ev.step+1)+' 步';
+      (ev.tools||[]).forEach(t=>{
+        const row=el('<div class="tstep"></div>');
+        const dot=el('<span class="dot"></span>'); dot.style.background=t.ok?'var(--ok)':'var(--danger)'; row.appendChild(dot);
+        const nm=el('<span class="tname"></span>'); nm.textContent=(t.ok?'✓ ':'✗ ')+'调用 '+t.tool; row.appendChild(nm);
+        steps.appendChild(row);
+      });
+      scroll();
+    } else if(ev.type==='answer'){ think.querySelector('.tmsg').textContent='生成回答…'; }
+  };
   const t0=performance.now();
   const originId=activeId, originDraft=activeDraft, sentSid=sessionId;   // 快照:发起时的归属
   try{
-    const r=await fetch('/v1/video_vibe_query',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({query:q, session_id:sentSid})});
-    const d=await r.json();
+    const d=await streamQuery(q, sentSid, onEvent) || {status:'error', error:'no result'};
     const ms=Math.round(performance.now()-t0);
     // 路由到【发起时】的会话,而非 await 后的当前会话 —— 中途切换/删除都不会错配
     let c = originId ? chats.find(x=>x.id===originId) : chats.find(x=>x.id===d.session_id);
