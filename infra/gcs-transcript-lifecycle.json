@@ -1,0 +1,7 @@
+{
+  "_comment": "M4: GCS Object Lifecycle —— transcript/tool-results 自动清理(server 端,零 cron)。应用: gcloud storage buckets update gs://<GCS_BUCKET> --lifecycle-file=infra/gcs-transcript-lifecycle.json",
+  "rule": [
+    { "action": { "type": "Delete" }, "condition": { "age": 30, "matchesPrefix": ["transcripts/"] } },
+    { "action": { "type": "Delete" }, "condition": { "age": 7,  "matchesPrefix": ["tool-results/"] } }
+  ]
+}
