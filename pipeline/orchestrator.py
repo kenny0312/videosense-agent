@@ -19,7 +19,7 @@ import json
 import logging
 from typing import Any, TYPE_CHECKING
 
-from pipeline import mcp_client, usage
+from pipeline import mcp_client, usage, config
 from pipeline.artifact_value_store import VALUE_STORE
 from pipeline.dag_schema import DAG
 from pipeline.node_executor import NodeResult, execute_node
@@ -189,6 +189,36 @@ def run_query(nl: str, *, quiet_trace: bool = False,
                            session_id=sid, turn_type=ttype)
         _remember("ok", ans)
         return _result(True, trace=trace, status="ok", answer=ans,
+                       session_id=sid, turn_type=ttype)
+
+    # ── DAG→loop 灰度:VS_EXECUTOR=loop 走 probe-and-step 主循环(默认 dag,不受影响)──
+    if config.VS_EXECUTOR == "loop":
+        from pipeline import loop_driver
+        lstep = trace.step("Loop")
+        try:
+            lo = loop_driver.run_query_loop(nl, schema=schema, context=context, sandbox=sandbox,
+                                            trace=trace, session_id=sid, value_store=VALUE_STORE)
+            lstep.ok(steps=lo.steps, terminated=lo.terminated)
+        except Exception as e:
+            lstep.fail(error=repr(e))
+            _remember("error")
+            return _result(False, trace=trace, error=f"loop failed: {e!r}",
+                           session_id=sid, turn_type=ttype)
+        if lo.answer is None:
+            _remember("error")
+            return _result(False, trace=trace, error=f"loop 未收敛({lo.terminated})",
+                           session_id=sid, turn_type=ttype)
+        if session is not None and lo.dag is not None:
+            try:
+                art = session.register_artifact(lo.dag, lo.node_values, nl, intent,
+                                                value_store=VALUE_STORE)
+                _remember("ok", lo.answer, artifact_ids=[art.id])
+            except Exception as e:
+                log.warning("loop register_artifact 失败(fail-open): %r", e)
+                _remember("ok", lo.answer)
+        else:
+            _remember("ok", lo.answer)
+        return _result(True, trace=trace, dag=lo.dag, results=lo.results, answer=lo.answer,
                        session_id=sid, turn_type=ttype)
 
     # ── Stage 4: 规划 ──

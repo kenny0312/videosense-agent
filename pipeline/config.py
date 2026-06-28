@@ -37,6 +37,14 @@ CODEGEN_MODEL = os.environ.get("CODEGEN_MODEL", "gemini-2.5-pro")
 # 前置 Router(可答性/意图判定)用的小模型 —— 评判任务,小模型够用且便宜
 CRITIC_MODEL  = os.environ.get("CRITIC_MODEL", "gemini-2.5-flash")
 
+# ── 执行器(DAG→loop 迁移,M3)──────────────────
+# VS_EXECUTOR=dag(默认,现状 plan-then-execute)| loop(probe-and-step 主循环,灰度中)
+VS_EXECUTOR        = os.environ.get("VS_EXECUTOR", "dag").lower()
+# loop 大脑模型:M2 spike 结论 = flash 与 pro 正确率相同但更快,故默认 CRITIC_MODEL
+LOOP_MODEL         = os.environ.get("LOOP_MODEL", CRITIC_MODEL)
+MAX_LOOP_STEPS     = int(os.environ.get("MAX_LOOP_STEPS", "16"))    # 终止护栏:防死循环
+LOOP_REPEAT_LIMIT  = int(os.environ.get("LOOP_REPEAT_LIMIT", "2"))  # 同一(工具,参数)连续失败上限
+
 # ── AlloyDB ───────────────────────────────────
 ALLOYDB_HOST     = os.environ.get("ALLOYDB_HOST", "localhost")
 ALLOYDB_PORT     = int(os.environ.get("ALLOYDB_PORT", "5432"))
