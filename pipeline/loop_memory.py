@@ -1,13 +1,11 @@
-"""M5(DAG→loop):loop 路径的 CC 式 transcript 记忆 —— 记录 + 回放 + 压缩。
+"""loop 路径的 CC 式 transcript 记忆 —— 记录 + 回放 + 压缩(M5 引入,M7b 起是唯一记忆路径)。
 
-只作用于 loop 路径(VS_EXECUTOR=loop);dag 路径的 recipe/catalog 记忆原样不动。
 - 记录:每个 loop 轮把 user/tool_call/tool_result/answer 事件 append 进 transcript_store。
-- 回放:follow-up 时读 transcript 尾,组装成 loop 的上下文(【取代】recipe 块)。
+- 回放:follow-up 时读 transcript 尾,组装成 loop 的上一轮上下文(M7b 起【已无】recipe,纯靠回放)。
 - 压缩(决策④):尾巴超 token 高水位 → 把【超出最近 KEEP 轮】的老事件 LLM 摘要进一条
   running summary,压到低水位;最近若干轮 + 摘要保持。摘要器可注入(离线可测)。
 
-安全:resolve_references / followup 门 / register_artifact 仍走原 catalog(本步不动)→ 无破坏。
-recipe 仍被 derive(register_artifact),只是 loop 的【上下文】不再用它;彻底删 recipe 留 M7。
+catalog 仍在,但只作【指代解析】的 handle 索引(label/preview/值复用指针),不再含 recipe。
 """
 from __future__ import annotations
 

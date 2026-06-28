@@ -19,12 +19,11 @@ import json
 import logging
 from typing import Any, TYPE_CHECKING
 
-from pipeline import mcp_client, usage, config
+from pipeline import mcp_client, usage
 from pipeline.artifact_value_store import VALUE_STORE
 from pipeline.dag_schema import DAG
-from pipeline.node_executor import NodeResult, execute_node
+from pipeline.node_executor import NodeResult
 from pipeline.node_specs import catalog_for_planner
-from pipeline.planner import Planner
 from pipeline.router import Router, should_refuse, SMALLTALK_REPLY
 from pipeline.skills import loader as skills
 from pipeline.skills.handlers import HANDLERS, smalltalk_reply
@@ -68,30 +67,24 @@ def _result(ok: bool, *, trace: Trace, dag: DAG | None = None,
 
 
 def _explain_meta(session: "Session", resolved_ids: list[str]) -> str:
-    """meta 轮:纯 Python 模板说明上一轮"用了什么方法"(只描述配方,不编造为什么、不调模型)。"""
-    lines = ["我来说说上一轮是怎么算出来的:"]
+    """meta 轮:纯 Python 模板,用 catalog 句柄(label/kind/n/预览)说明上一轮【产出了什么】。
+    M7b 起 catalog 不再存 recipe/步骤链,故这里只据 handle 描述,不编造"怎么算的"、不调模型。"""
+    lines = ["我来说说上一轮的结果:"]
     for aid in resolved_ids:
         a = session.get_artifact(aid)
         if not a:
             continue
-        recipe = a.recipe or {}
-        if recipe.get("type") == "sql":
-            lines.append(f"· 『{a.label}』直接用这条 SQL 查的 ——\n    {recipe.get('sql', '')}")
-        elif recipe.get("type") == "dag":
-            if recipe.get("truncated"):
-                chain = recipe.get("chain", "")
-            else:
-                nodes = (recipe.get("dag") or {}).get("nodes", [])
-                chain = " → ".join(f"{n['id']}:{n['tool']}" for n in nodes)
-            lines.append(f"· 『{a.label}』走了这条步骤链 —— {chain}")
+        head = f"· 『{a.label}』产出了一个 {a.kind}"
         if a.n:
-            lines.append(f"    (结果共 {a.n} 条;预览 {json.dumps(a.preview, ensure_ascii=False)})")
-    lines.append("想知道某一步更细的逻辑就告诉我哪一步,我可以展开。")
+            head += f",共 {a.n} 条"
+        lines.append(head + "。")
+        if a.preview:
+            lines.append(f"    预览:{json.dumps(a.preview, ensure_ascii=False)}")
+    lines.append("想知道具体怎么得到的,我可以再跑一遍给你看每一步。")
     return "\n".join(lines)
 
 
 def run_query(nl: str, *, quiet_trace: bool = False,
-              planner: Planner | None = None,
               session: "Session | None" = None,
               owner: str = "anon", on_step=None) -> dict:
     usage.reset_usage()                  # 清空本轮 token 累加器(每请求一次)
@@ -166,11 +159,9 @@ def run_query(nl: str, *, quiet_trace: bool = False,
                               "说得更具体些(比如含哪个活动、第几条),我就能接着算。",
                        session_id=sid, turn_type="followup")
 
-    # 已解析的上一轮结果(配方+预览)打包给 Planner —— 复用策略=重算。
-    # 传入值仓:planner_context 据【活仓】算 value_cached(重启/跨副本/LRU 淘汰后值已不在 →
-    # 不暴露 value_cached,planner 自然走重算,不会发出注定取不到的 load_artifact)。
-    context = (session.planner_context(resolved_ids, value_store=VALUE_STORE)
-               if (session and resolved_ids) else None)
+    # M7b:planner_context 已删(loop 的上一轮上下文走 transcript 回放,见下方 build_loop_context)。
+    # context 仅供【自定义 skill handler】;现阶段四大类 handler 都走 loop,无 handler 在用 → 恒 None。
+    context = None
 
     # ── 按 route 分派 workflow(打地基)──
     # 现阶段四个大类(retrieval/aggregate/analyze/visualize)的 handler 都是 "planner",
@@ -194,99 +185,50 @@ def run_query(nl: str, *, quiet_trace: bool = False,
         return _result(True, trace=trace, status="ok", answer=ans,
                        session_id=sid, turn_type=ttype)
 
-    # ── M7:VS_EXECUTOR=loop(默认)走 probe-and-step 主循环;VS_EXECUTOR=dag 可回退旧路径 ──
-    if config.VS_EXECUTOR == "loop":
-        from pipeline import loop_driver, loop_memory
-        from pipeline.transcript_store import STORE as TX_STORE, gcs_blob_put
-        lstep = trace.step("Loop")
-        # M5:follow-up/meta 的上下文来自 transcript 回放(取代 recipe);新轮无回放
-        replay_ctx = None
-        if session is not None and ttype in ("followup", "meta"):
-            try:
-                replay_ctx = loop_memory.build_loop_context(
-                    TX_STORE, owner, sid, summarize=loop_memory.make_llm_summarizer())
-            except Exception as e:
-                log.warning("build_loop_context 失败(fail-open): %r", e)
+    # ── M7b:probe-and-step 主循环是【唯一】执行路径(旧 Planner→DAG 已删;dev CLI main.py 仍保留)──
+    from pipeline import loop_driver, loop_memory
+    from pipeline.transcript_store import STORE as TX_STORE, gcs_blob_put
+    lstep = trace.step("Loop")
+    # M5:follow-up/meta 的上一轮上下文来自 transcript 回放(取代 recipe);新轮无回放
+    replay_ctx = None
+    if session is not None and ttype in ("followup", "meta"):
         try:
-            lo = loop_driver.run_query_loop(nl, schema=schema, replay_context=replay_ctx,
-                                            sandbox=sandbox, trace=trace, session_id=sid,
-                                            value_store=VALUE_STORE, on_step=on_step)
-            lstep.ok(steps=lo.steps, terminated=lo.terminated)
+            replay_ctx = loop_memory.build_loop_context(
+                TX_STORE, owner, sid, summarize=loop_memory.make_llm_summarizer())
         except Exception as e:
-            lstep.fail(error=repr(e))
-            _remember("error")
-            return _result(False, trace=trace, error=f"loop failed: {e!r}",
-                           session_id=sid, turn_type=ttype)
-        if lo.answer is None:
-            _remember("error")
-            return _result(False, trace=trace, error=f"loop 未收敛({lo.terminated})",
-                           session_id=sid, turn_type=ttype)
-        artifact_ids = None
-        if session is not None and lo.dag is not None:
-            try:
-                art = session.register_artifact(lo.dag, lo.node_values, nl, intent,
-                                                value_store=VALUE_STORE)
-                artifact_ids = [art.id]
-            except Exception as e:
-                log.warning("loop register_artifact 失败(fail-open): %r", e)
-        _remember("ok", lo.answer, artifact_ids=artifact_ids)
-        # M5:把这一轮记进 transcript(CC 式耐久记忆;owner 作用域,大本体溢出 GCS)
-        if session is not None:
-            try:
-                loop_memory.record_loop_turn(TX_STORE, owner, sid, session._turn_no, nl,
-                                             lo.trace, lo.results, lo.answer, blob_put=gcs_blob_put)
-            except Exception as e:
-                log.warning("record_loop_turn 失败(fail-open): %r", e)
-        return _result(True, trace=trace, dag=lo.dag, results=lo.results, answer=lo.answer,
-                       session_id=sid, turn_type=ttype, loop_meta=loop_driver.loop_metrics(lo))
-
-    # ── Stage 4: 规划 ──
-    step = trace.step("Plan DAG")
+            log.warning("build_loop_context 失败(fail-open): %r", e)
     try:
-        planner = planner or Planner(schema=schema)   # 复用 router 取到的 schema(None 则 Planner 自取)
-        dag = planner.plan(nl, context=context) if context else planner.plan(nl)
-        step.ok(nodes=len(dag.nodes),
-                tools=",".join(n.tool for n in dag.nodes))
+        lo = loop_driver.run_query_loop(nl, schema=schema, replay_context=replay_ctx,
+                                        sandbox=sandbox, trace=trace, session_id=sid,
+                                        value_store=VALUE_STORE, on_step=on_step)
+        lstep.ok(steps=lo.steps, terminated=lo.terminated)
     except Exception as e:
-        step.fail(error=repr(e))
+        lstep.fail(error=repr(e))
         _remember("error")
-        return _result(False, trace=trace, error=f"planning failed: {e!r}",
+        return _result(False, trace=trace, error=f"loop failed: {e!r}",
                        session_id=sid, turn_type=ttype)
-
-    # ── 拓扑执行 ──
-    order = dag.topo_order()
-    results: dict[str, NodeResult] = {}
-
-    for node in order:
-        upstream = {dep: results[dep].value for dep in node.depends_on
-                    if dep in results}
-        # session_id + 值仓:仅 load_artifact 节点用到(跨轮值复用);其余节点忽略
-        res = execute_node(node, upstream, sandbox, trace, schema=planner.schema,
-                           session_id=sid, value_store=VALUE_STORE)
-        results[node.id] = res
-        if not res.ok:
-            _remember("error")
-            return _result(False, trace=trace, dag=dag, results=results,
-                           fail_node=node.id,
-                           error=f"node {node.id} ({node.tool}) failed: {res.stderr[:300]}",
-                           session_id=sid, turn_type=ttype)
-
-    # ── 汇总:最终节点的值即答案 ──
-    final = order[-1]
-    answer = results[final.id].value
-
-    # 成功 → 把结果登记为可指代的 artifact(复用策略=重算:存配方),再记这一轮
-    if session is not None:
-        artifact_ids = None
+    if lo.answer is None:
+        _remember("error")
+        return _result(False, trace=trace, error=f"loop 未收敛({lo.terminated})",
+                       session_id=sid, turn_type=ttype)
+    # 成功 → 把最终结果登记为可指代的 artifact(纯 handle;可复用类的真实值另存独立值仓)
+    artifact_ids = None
+    if session is not None and lo.final_tool is not None:
         try:
-            node_values = {nid: r.value for nid, r in results.items()}
-            # 传入值仓:可复用类 artifact 的真实值会另存进【独立值仓】(供下一轮 load_artifact 复用)
-            art = session.register_artifact(dag, node_values, nl, intent,
-                                            value_store=VALUE_STORE)
+            art = session.register_artifact(
+                final_tool=lo.final_tool, final_value=lo.final_value,
+                preview_value=lo.preview_value, question=nl, intent=intent,
+                value_store=VALUE_STORE)
             artifact_ids = [art.id]
         except Exception as e:
-            log.warning("session.register_artifact 失败(fail-open): %r", e)
-        _remember("ok", answer, artifact_ids=artifact_ids)
-
-    return _result(True, trace=trace, dag=dag, results=results, answer=answer,
-                   session_id=sid, turn_type=ttype)
+            log.warning("loop register_artifact 失败(fail-open): %r", e)
+    _remember("ok", lo.answer, artifact_ids=artifact_ids)
+    # M5:把这一轮记进 transcript(CC 式耐久记忆;owner 作用域,大本体溢出 GCS)
+    if session is not None:
+        try:
+            loop_memory.record_loop_turn(TX_STORE, owner, sid, session._turn_no, nl,
+                                         lo.trace, lo.results, lo.answer, blob_put=gcs_blob_put)
+        except Exception as e:
+            log.warning("record_loop_turn 失败(fail-open): %r", e)
+    return _result(True, trace=trace, results=lo.results, answer=lo.answer,
+                   session_id=sid, turn_type=ttype, loop_meta=loop_driver.loop_metrics(lo))

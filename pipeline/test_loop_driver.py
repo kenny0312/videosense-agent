@@ -106,23 +106,9 @@ def test_declarations_have_handles_without_mutating_specs():
     assert "data_result_id" not in SPECS["plot"].parameters["properties"]
 
 
-def test_synthesize_dag_skips_failed_and_links_deps():
-    trace = [
-        {"cid": "c0_0", "tool": "sql_query", "inputs": {"sql": "x"}, "uses": [], "ok": True},
-        {"cid": "c1_0", "tool": "plot", "inputs": {"kind": "scatter", "x": "a", "y": "b"},
-         "uses": ["c0_0"], "ok": True},
-    ]
-    dag = ld.synthesize_dag(trace)
-    assert dag is not None and len(dag.nodes) == 2
-    assert dag.nodes[1].depends_on == ["c0_0"]
-    bad = trace + [{"cid": "c2_0", "tool": "ols_regress", "inputs": {"y": "a", "x": ["b"]},
-                    "uses": ["c1_0"], "ok": False}]
-    assert len(ld.synthesize_dag(bad).nodes) == 2            # 失败步不进
-    assert ld.synthesize_dag([]) is None
-
-
 def test_loop_metrics():                                     # M6 审计指标
-    lo = ld.LoopOutcome(answer="x", steps=3, terminated="text", dag=None, node_values={},
+    lo = ld.LoopOutcome(answer="x", steps=3, terminated="text", final_tool="sql_query",
+                        final_value=None, preview_value=None,
                         results={}, trace=[{"tool": "sql_query"}, {"tool": "plot"},
                                            {"tool": "sql_query"}])
     assert ld.loop_metrics(lo) == {"steps": 3, "terminated": "text",

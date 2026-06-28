@@ -2,8 +2,8 @@
 会话记忆 / 跨轮 artifact 的轻量单元测试 —— 纯离线,不依赖 GCP / DB。
     python -m pipeline.test_session
 
-覆盖:配方派生(sql / dag / plot-final)、预览封顶、视图非对称、id 递增、
-容量淘汰、resolve_references 丢幻觉 id、store 幂等、history 记录。
+覆盖(M7b:catalog 纯 handle,无 recipe):artifact kind 推断、预览封顶、视图非对称、
+id 递增、容量淘汰、resolve_references 丢幻觉 id、store 幂等、history 记录、持久化往返。
 """
 from __future__ import annotations
 
@@ -18,15 +18,11 @@ try:
 except (AttributeError, OSError):
     pass
 
-from pipeline.dag_schema import parse_dag
 from pipeline import session as S
 from pipeline.session import Session, SessionStore
 
 
-def _dag(nodes):
-    return parse_dag({"nodes": nodes})
-
-
+# 旧 DAG fixture(节点列表)—— 仍用作 _reg 的输入形状,不再解析成 DAG。
 _SQL1 = [{"id": "n1", "tool": "sql_query",
           "inputs": {"sql": "SELECT id, predicate FROM video_facts"}, "depends_on": []}]
 _SQL_OLS = [
@@ -40,33 +36,46 @@ _SQL_PLOT = [
 ]
 
 
-# ── 配方派生 ───────────────────────────────────────────────
-def test_single_sql_makes_sql_recipe():
+def _reg(s, nodes, node_values, question, intent, **kw):
+    """把旧 (节点列表, node_values) fixture 适配到 M7b 的 register_artifact(final/preview)。
+    final = 最后一个节点;preview_value:plot-final 取上游非 plot 节点(plot 自身只有 {n_points}),
+    否则 = final 值。语义与旧 register 的 topo/plot-preview 完全一致。"""
+    final = nodes[-1]
+    final_tool = final["tool"]
+    final_value = node_values.get(final["id"])
+    preview_value = final_value
+    if final_tool == "plot":
+        for nd in reversed(nodes[:-1]):
+            if nd["tool"] != "plot":
+                preview_value = node_values.get(nd["id"])
+                break
+    return s.register_artifact(final_tool=final_tool, final_value=final_value,
+                               preview_value=preview_value, question=question,
+                               intent=intent, **kw)
+
+
+# ── artifact kind 推断 ─────────────────────────────────────
+def test_sql_artifact_is_table_kind():
     s = Session("t")
-    art = s.register_artifact(_dag(_SQL1), {"n1": [{"id": 1, "predicate": "skiing"}]},
-                              "Find skiing videos", "retrieve")
-    assert art.recipe["type"] == "sql", art.recipe
-    assert art.recipe["sql"] == "SELECT id, predicate FROM video_facts"
+    art = _reg(s, _SQL1, {"n1": [{"id": 1, "predicate": "skiing"}]},
+               "Find skiing videos", "retrieve")
     assert art.kind == "table"
+    assert not hasattr(art, "recipe")            # M7b:不再有 recipe 字段
 
 
-def test_multinode_makes_dag_recipe():
+def test_ols_artifact_is_scalar_kind():
     s = Session("t")
-    art = s.register_artifact(_dag(_SQL_OLS),
-                              {"n1": [{"x": 1, "y": 2}], "n2": {"r_squared": 0.9}},
-                              "regress y on x", "analyze")
-    assert art.recipe["type"] == "dag", art.recipe
-    assert len(art.recipe["dag"]["nodes"]) == 2
-    assert art.kind == "scalar"   # ols_regress final → 单 dict
+    art = _reg(s, _SQL_OLS, {"n1": [{"x": 1, "y": 2}], "n2": {"r_squared": 0.9}},
+               "regress y on x", "analyze")
+    assert art.kind == "scalar"                  # ols_regress final → 单 dict
 
 
-def test_plot_final_uses_dag_and_upstream_preview():
+def test_plot_final_uses_upstream_preview():
     s = Session("t")
     rows = [{"start": 1, "conf": 0.9}, {"start": 2, "conf": 0.8}]
-    art = s.register_artifact(_dag(_SQL_PLOT), {"n1": rows, "n2": {"n_points": 2}},
-                              "plot start vs conf", "visualize")
+    art = _reg(s, _SQL_PLOT, {"n1": rows, "n2": {"n_points": 2}},
+               "plot start vs conf", "visualize")
     assert art.kind == "plot"
-    assert art.recipe["type"] == "dag"
     # 预览来自上游数据节点 n1,而非 plot 节点的 {n_points}
     assert "start" in art.preview[0] and "conf" in art.preview[0]
     assert all("n_points" not in row for row in art.preview)
@@ -77,7 +86,7 @@ def test_plot_final_uses_dag_and_upstream_preview():
 def test_preview_caps_rows_cols_cells():
     s = Session("t")
     wide = [{f"c{i}": ("x" * 200) for i in range(12)} for _ in range(50)]
-    art = s.register_artifact(_dag(_SQL1), {"n1": wide}, "big", "retrieve")
+    art = _reg(s, _SQL1, {"n1": wide}, "big", "retrieve")
     assert art.n == 50                              # 真实行数保留
     assert len(art.preview) <= S.PREVIEW_ROWS       # 行封顶
     for row in art.preview:
@@ -86,41 +95,30 @@ def test_preview_caps_rows_cols_cells():
             assert len(v) <= S.PREVIEW_CELL         # 每格封顶
 
 
-# ── 视图非对称 ─────────────────────────────────────────────
-def test_catalog_view_omits_recipe():
+# ── 视图 ───────────────────────────────────────────────────
+def test_catalog_view_keys():
     s = Session("t")
-    s.register_artifact(_dag(_SQL1), {"n1": [{"id": 1}]}, "q", "retrieve")
+    _reg(s, _SQL1, {"n1": [{"id": 1}]}, "q", "retrieve")
     view = s.catalog_view()
     assert set(view[0].keys()) == {"id", "turn", "kind", "label", "preview", "n"}
-    assert "recipe" not in view[0]
+    assert "recipe" not in view[0]                  # 回归护栏:视图绝不含内部值/已废弃字段
 
 
 def test_empty_catalog_view_is_empty():
     assert Session("t").catalog_view() == []        # turn1 → Router have_memory=false
 
 
-def test_planner_context_includes_recipe_for_resolved_only():
-    s = Session("t")
-    for q in ("q1", "q2", "q3"):
-        s.register_artifact(_dag(_SQL1), {"n1": [{"id": 1}]}, q, "retrieve")
-    ctx = s.planner_context(["a2"])
-    arts = ctx["resolved_artifacts"]
-    assert len(arts) == 1 and arts[0]["id"] == "a2"
-    assert "recipe" in arts[0]
-
-
 # ── id 递增 / 容量淘汰 ─────────────────────────────────────
 def test_artifact_ids_monotonic():
     s = Session("t")
-    ids = [s.register_artifact(_dag(_SQL1), {"n1": [{"id": 1}]}, "q", "retrieve").id
-           for _ in range(3)]
+    ids = [_reg(s, _SQL1, {"n1": [{"id": 1}]}, "q", "retrieve").id for _ in range(3)]
     assert ids == ["a1", "a2", "a3"]
 
 
 def test_caps_evict_oldest():
     s = Session("t")
     for _ in range(S.MAX_ARTIFACTS + 3):
-        s.register_artifact(_dag(_SQL1), {"n1": [{"id": 1}]}, "q", "retrieve")
+        _reg(s, _SQL1, {"n1": [{"id": 1}]}, "q", "retrieve")
     assert len(s.catalog) == S.MAX_ARTIFACTS
     assert s.catalog[0].id == "a4"                  # a1..a3 被淘汰
     assert s.catalog[-1].id == f"a{S.MAX_ARTIFACTS + 3}"
@@ -129,7 +127,7 @@ def test_caps_evict_oldest():
 # ── resolve_references ────────────────────────────────────
 def test_resolve_references_drops_unknown_id():
     s = Session("t")
-    s.register_artifact(_dag(_SQL1), {"n1": [{"id": 1}]}, "q", "retrieve")   # a1
+    _reg(s, _SQL1, {"n1": [{"id": 1}]}, "q", "retrieve")   # a1
     v = types.SimpleNamespace(references=[{"resolved_to": "a1"},
                                           {"resolved_to": "a9"},   # 幻觉
                                           {"resolved_to": "a1"}])  # 重复
@@ -192,7 +190,7 @@ def test_referenced_ids_recorded():
 def test_catalog_view_trims_newest_first():
     s = Session("t")
     for _ in range(S.CATALOG_VIEW_MAX + 3):
-        s.register_artifact(_dag(_SQL1), {"n1": [{"id": 1}]}, "q", "retrieve")
+        _reg(s, _SQL1, {"n1": [{"id": 1}]}, "q", "retrieve")
     v = s.catalog_view()
     assert len(v) == S.CATALOG_VIEW_MAX
     assert v[0]["id"] == f"a{S.CATALOG_VIEW_MAX + 3}"       # newest-first
@@ -206,17 +204,27 @@ def test_persist_roundtrip():
         p = os.path.join(d, "s.sqlite")
         st = SessionStore(path=p)
         s = st.get_or_create("x")
-        s.register_artifact(_dag(_SQL1), {"n1": [{"id": 1, "predicate": "ski"}]}, "find ski", "retrieve")
+        _reg(s, _SQL1, {"n1": [{"id": 1, "predicate": "ski"}]}, "find ski", "retrieve")
         s.record_turn("find ski", None, "ok", [{"id": 1}], artifact_ids=["a1"])
         st.save(s)
 
         st2 = SessionStore(path=p)                  # 模拟重启:空缓存,从盘恢复
         s2 = st2.get_or_create("x")
-        assert s2.catalog and s2.catalog[0].id == "a1" and s2.catalog[0].recipe["type"] == "sql"
+        assert s2.catalog and s2.catalog[0].id == "a1" and s2.catalog[0].kind == "table"
         assert s2.history and s2.history[0].artifact_ids == ["a1"]
         assert s2._seq == 1 and s2._turn_no == 1
     finally:
         shutil.rmtree(d, ignore_errors=True)
+
+
+def test_from_dict_tolerates_legacy_recipe_field():
+    """M7b 前的 blob 里 catalog 项带 recipe;from_dict 应丢弃未知字段而非抛错。"""
+    s = Session("x")
+    _reg(s, _SQL1, {"n1": [{"id": 1}]}, "q", "retrieve")
+    blob = s.to_dict()
+    blob["catalog"][0]["recipe"] = {"type": "sql", "sql": "SELECT 1"}   # 注入旧字段
+    s2 = Session.from_dict(blob)
+    assert s2.catalog[0].id == "a1" and not hasattr(s2.catalog[0], "recipe")
 
 
 def test_inmemory_store_save_noop():
