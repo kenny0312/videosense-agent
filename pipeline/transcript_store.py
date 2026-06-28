@@ -155,3 +155,7 @@ def make_transcript_store() -> BaseTranscriptStore:
         except Exception as e:
             log.warning("transcript store 退回内存(redis 不可用): %r", e)
     return InMemoryTranscriptStore()
+
+
+# 模块级单例(像 VALUE_STORE):orchestrator 在 loop 路径用它记录/回放 transcript。
+STORE: BaseTranscriptStore = make_transcript_store()

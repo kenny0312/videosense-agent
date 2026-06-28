@@ -90,7 +90,8 @@ def _explain_meta(session: "Session", resolved_ids: list[str]) -> str:
 
 def run_query(nl: str, *, quiet_trace: bool = False,
               planner: Planner | None = None,
-              session: "Session | None" = None) -> dict:
+              session: "Session | None" = None,
+              owner: str = "anon") -> dict:
     usage.reset_usage()                  # 清空本轮 token 累加器(每请求一次)
     trace = Trace(quiet=quiet_trace)
     sandbox = SandboxClient()
@@ -193,11 +194,21 @@ def run_query(nl: str, *, quiet_trace: bool = False,
 
     # ── DAG→loop 灰度:VS_EXECUTOR=loop 走 probe-and-step 主循环(默认 dag,不受影响)──
     if config.VS_EXECUTOR == "loop":
-        from pipeline import loop_driver
+        from pipeline import loop_driver, loop_memory
+        from pipeline.transcript_store import STORE as TX_STORE, gcs_blob_put
         lstep = trace.step("Loop")
+        # M5:follow-up/meta 的上下文来自 transcript 回放(取代 recipe);新轮无回放
+        replay_ctx = None
+        if session is not None and ttype in ("followup", "meta"):
+            try:
+                replay_ctx = loop_memory.build_loop_context(
+                    TX_STORE, owner, sid, summarize=loop_memory.make_llm_summarizer())
+            except Exception as e:
+                log.warning("build_loop_context 失败(fail-open): %r", e)
         try:
-            lo = loop_driver.run_query_loop(nl, schema=schema, context=context, sandbox=sandbox,
-                                            trace=trace, session_id=sid, value_store=VALUE_STORE)
+            lo = loop_driver.run_query_loop(nl, schema=schema, replay_context=replay_ctx,
+                                            sandbox=sandbox, trace=trace, session_id=sid,
+                                            value_store=VALUE_STORE)
             lstep.ok(steps=lo.steps, terminated=lo.terminated)
         except Exception as e:
             lstep.fail(error=repr(e))
@@ -208,16 +219,22 @@ def run_query(nl: str, *, quiet_trace: bool = False,
             _remember("error")
             return _result(False, trace=trace, error=f"loop 未收敛({lo.terminated})",
                            session_id=sid, turn_type=ttype)
+        artifact_ids = None
         if session is not None and lo.dag is not None:
             try:
                 art = session.register_artifact(lo.dag, lo.node_values, nl, intent,
                                                 value_store=VALUE_STORE)
-                _remember("ok", lo.answer, artifact_ids=[art.id])
+                artifact_ids = [art.id]
             except Exception as e:
                 log.warning("loop register_artifact 失败(fail-open): %r", e)
-                _remember("ok", lo.answer)
-        else:
-            _remember("ok", lo.answer)
+        _remember("ok", lo.answer, artifact_ids=artifact_ids)
+        # M5:把这一轮记进 transcript(CC 式耐久记忆;owner 作用域,大本体溢出 GCS)
+        if session is not None:
+            try:
+                loop_memory.record_loop_turn(TX_STORE, owner, sid, session._turn_no, nl,
+                                             lo.trace, lo.results, lo.answer, blob_put=gcs_blob_put)
+            except Exception as e:
+                log.warning("record_loop_turn 失败(fail-open): %r", e)
         return _result(True, trace=trace, dag=lo.dag, results=lo.results, answer=lo.answer,
                        session_id=sid, turn_type=ttype)
 

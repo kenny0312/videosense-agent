@@ -214,6 +214,7 @@ class LoopOutcome:
     dag: "DAG | None"
     node_values: dict
     results: dict                            # cid -> ExecResult(有 .code/.artifact/.videos)
+    trace: list                              # [{cid,tool,inputs,uses,ok}] —— 供 M5 记 transcript
 
 
 _LOOP_SYSTEM = (
@@ -230,21 +231,21 @@ _LOOP_SYSTEM = (
 )
 
 
-def _loop_system(schema: dict, context: "dict | None") -> str:
+def _loop_system(schema: dict, replay_context: "str | None") -> str:
     s = _LOOP_SYSTEM + "\n# 数据库结构\n" + json.dumps(schema, ensure_ascii=False)
-    if context:
-        from pipeline.planner import _context_block       # 复用配方上下文(followup)
-        s += "\n\n" + _context_block(context)
+    if replay_context:                                    # M5:transcript 回放(取代 recipe 块)
+        s += "\n\n" + replay_context
     return s
 
 
-def run_query_loop(nl: str, *, schema: dict, context: "dict | None", sandbox, trace,
+def run_query_loop(nl: str, *, schema: dict, replay_context: "str | None", sandbox, trace,
                    session_id: "str | None", value_store) -> LoopOutcome:
-    """orchestrator 的 loop 入口:建会话 + 执行器 → run_loop → 合成 DAG + 收产物。"""
+    """orchestrator 的 loop 入口:建会话 + 执行器 → run_loop → 合成 DAG + 收产物。
+    replay_context(M5)= 从 transcript 回放出的多轮上下文(取代旧 recipe 块)。"""
     conv = GeminiConversation(config.LOOP_MODEL, loop_function_declarations(),
-                              _loop_system(schema, context))
+                              _loop_system(schema, replay_context))
     execute = _make_executor(sandbox, trace, schema, session_id, value_store)
     r = run_loop(nl, conv, execute)
     dag = synthesize_dag(r.trace)
     node_values = {cid: res.value for cid, res in r.ledger.items() if res.ok}
-    return LoopOutcome(r.answer, r.steps, r.terminated, dag, node_values, r.ledger)
+    return LoopOutcome(r.answer, r.steps, r.terminated, dag, node_values, r.ledger, r.trace)

@@ -44,6 +44,9 @@ VS_EXECUTOR        = os.environ.get("VS_EXECUTOR", "dag").lower()
 LOOP_MODEL         = os.environ.get("LOOP_MODEL", CRITIC_MODEL)
 MAX_LOOP_STEPS     = int(os.environ.get("MAX_LOOP_STEPS", "16"))    # 终止护栏:防死循环
 LOOP_REPEAT_LIMIT  = int(os.environ.get("LOOP_REPEAT_LIMIT", "2"))  # 同一(工具,参数)连续失败上限
+# M5 记忆:loop 路径 transcript 回放 + 压缩(决策④)
+LOOP_KEEP_TURNS           = int(os.environ.get("LOOP_KEEP_TURNS", "4"))            # 回放保最近 N 轮原文
+LOOP_CONTEXT_TOKEN_BUDGET = int(os.environ.get("LOOP_CONTEXT_TOKEN_BUDGET", "3000"))  # 超此触发 LLM 压缩
 
 # ── AlloyDB ───────────────────────────────────
 ALLOYDB_HOST     = os.environ.get("ALLOYDB_HOST", "localhost")
