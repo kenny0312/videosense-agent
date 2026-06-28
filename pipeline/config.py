@@ -38,8 +38,8 @@ CODEGEN_MODEL = os.environ.get("CODEGEN_MODEL", "gemini-2.5-pro")
 CRITIC_MODEL  = os.environ.get("CRITIC_MODEL", "gemini-2.5-flash")
 
 # ── 执行器(DAG→loop 迁移,M3)──────────────────
-# VS_EXECUTOR=dag(默认,现状 plan-then-execute)| loop(probe-and-step 主循环,灰度中)
-VS_EXECUTOR        = os.environ.get("VS_EXECUTOR", "dag").lower()
+# VS_EXECUTOR=loop(M7 起【默认】,probe-and-step 主循环)| dag(旧 plan-then-execute,可回退)
+VS_EXECUTOR        = os.environ.get("VS_EXECUTOR", "loop").lower()
 # loop 大脑模型:M2 spike 结论 = flash 与 pro 正确率相同但更快,故默认 CRITIC_MODEL
 LOOP_MODEL         = os.environ.get("LOOP_MODEL", CRITIC_MODEL)
 MAX_LOOP_STEPS     = int(os.environ.get("MAX_LOOP_STEPS", "16"))    # 终止护栏:防死循环

@@ -234,6 +234,8 @@ _LOOP_SYSTEM = (
     "- video_facts.matched 是布尔;查已确认事实加 AND matched = true。\n"
     "- 关系类查询(筛选/聚合/join/排序)用单个 sql_query 直接写完整 SQL。\n"
     "- 出图/科学计算的文本(SQL、plot 标题)一律用英文。\n"
+    "- 报【总数/数量】时必须真的 COUNT 过;列举或抽样(LIMIT)拿到的条数【不是】总数 —— "
+    "别把 LIMIT 的条数当成总数说出来。要给总数就单独 COUNT(*)。\n"
 )
 
 
