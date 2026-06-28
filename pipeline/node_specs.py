@@ -11,7 +11,7 @@
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -20,6 +20,15 @@ class NodeSpec:
     needs_sandbox: bool        # True → CodeGen + 沙箱;False → 主进程经 MCP
     planner_desc: str          # 给 Planner 看的工具说明
     codegen_hint: str = ""     # 给 CodeGen 看的实现提示(仅 needs_sandbox 用)
+    # M1(DAG→loop 迁移):工具【自身】输入的结构化 schema(OpenAPI 子集),供
+    # build_function_declarations() 转成 Gemini FunctionDeclaration。只声明标量/配置类
+    # 输入;上游数据如何注入由 loop 驱动(M3)按句柄约定处理,不在此声明。
+    parameters: dict = field(default_factory=dict)
+
+
+def _obj(props: dict, required: list[str] | None = None) -> dict:
+    """OpenAPI object schema 小工具。"""
+    return {"type": "object", "properties": props, "required": required or []}
 
 
 SPECS: dict[str, NodeSpec] = {
@@ -32,6 +41,10 @@ SPECS: dict[str, NodeSpec] = {
             "关系类操作(筛选/聚合/join/排序/分组)都用这一个节点直接写 SQL 表达,"
             "不要拆成多个节点。"
         ),
+        parameters=_obj(
+            {"sql": {"type": "string", "description": "完整只读 SELECT 语句"}},
+            ["sql"],
+        ),
     ),
     "threshold_sweep": NodeSpec(
         tool="threshold_sweep",
@@ -41,6 +54,14 @@ SPECS: dict[str, NodeSpec] = {
             "inputs.thresholds = 数值列表(如 [0.5,0.6,0.7,0.8,0.9])。"
             "主进程对每个阈值代入模板、经 MCP 查询,汇总为一张 "
             "[{threshold, <聚合列>}] 表返回。"
+        ),
+        parameters=_obj(
+            {
+                "sql_template": {"type": "string", "description": "含 {threshold} 占位符的 SQL"},
+                "thresholds": {"type": "array", "items": {"type": "number"},
+                               "description": "阈值数值列表"},
+            },
+            ["sql_template", "thresholds"],
         ),
     ),
     "show_video": NodeSpec(
@@ -54,6 +75,10 @@ SPECS: dict[str, NodeSpec] = {
             "当用户想【看 / 播放 / 展示 / 给我看】视频本身或某片段时,在 DAG 末尾加这个节点"
             "(通常上游是一个选出 video_id 的 sql_query)。最多展示前 8 个。"
         ),
+        parameters=_obj(
+            {"video_ids": {"type": "array", "items": {"type": "string"},
+                           "description": "要展示的 video_id 列表;省略则取上游节点结果行里的 video_id"}},
+        ),
     ),
     "load_artifact": NodeSpec(
         tool="load_artifact",
@@ -65,6 +90,11 @@ SPECS: dict[str, NodeSpec] = {
             "对它发 load_artifact —— 值已不在场,该节点会失败并使整轮失败(无自动重算回退)。"
             "适用面很窄:仅【重新呈现/重渲染刚算出的同一份结果】(如把上一轮回归结果再画一张图、"
             "换种排版展示)。只要数据/筛选/范围/时间有任何变化,就别用它,改用配方重算(写 sql_query 等)。"
+        ),
+        parameters=_obj(
+            {"artifact_id": {"type": "string",
+                             "description": "已解析且 value_cached=true 的上一轮 artifact id(如 a1)"}},
+            ["artifact_id"],
         ),
     ),
 
@@ -82,6 +112,14 @@ SPECS: dict[str, NodeSpec] = {
             "按 inputs['jitter_ms'] 加随机毫秒抖动;heart_rate 在 60~160 之间合理波动。"
             "用 random 种子保证可复现。最后 print(json.dumps(records))。"
         ),
+        parameters=_obj(
+            {
+                "rows": {"type": "integer", "description": "行数,默认 1000"},
+                "columns": {"type": "array", "items": {"type": "string"},
+                            "description": "字段列表(如 ['timestamp','heart_rate'])"},
+                "jitter_ms": {"type": "number", "description": "时间戳抖动毫秒"},
+            },
+        ),
     ),
     "merge_asof": NodeSpec(
         tool="merge_asof",
@@ -96,6 +134,14 @@ SPECS: dict[str, NodeSpec] = {
             "把时间列转成 pd.to_timedelta(seconds, unit='s') 再用 "
             "tolerance=pd.Timedelta(f\"{inputs['tolerance_ms']}ms\"), direction='nearest'。"
             "dropna 掉没匹配上的行。print(json.dumps(merged_records))。"
+        ),
+        parameters=_obj(
+            {
+                "left_on": {"type": "string", "description": "左表(视频侧)时间列名"},
+                "right_on": {"type": "string", "description": "右表(传感器侧)时间列名"},
+                "tolerance_ms": {"type": "number", "description": "近似匹配容差毫秒"},
+            },
+            ["left_on", "right_on", "tolerance_ms"],
         ),
     ),
     "interpolate": NodeSpec(
@@ -113,6 +159,14 @@ SPECS: dict[str, NodeSpec] = {
             "注意:某分组样本不足 2 个时 interp1d 会抛错,需跳过或保护。"
             "print(json.dumps(resampled_records))。"
         ),
+        parameters=_obj(
+            {
+                "target_hz": {"type": "number", "description": "目标重采样频率(Hz)"},
+                "columns": {"type": "array", "items": {"type": "string"},
+                            "description": "要插值的数值列"},
+            },
+            ["target_hz", "columns"],
+        ),
     ),
     "ols_regress": NodeSpec(
         tool="ols_regress",
@@ -128,6 +182,14 @@ SPECS: dict[str, NodeSpec] = {
             "print(json.dumps({'params': model.params.to_dict(), "
             "'r_squared': float(model.rsquared), 'pvalues': model.pvalues.to_dict(), "
             "'n': int(model.nobs)}))。所有数值转成 python float/int 再 json。"
+        ),
+        parameters=_obj(
+            {
+                "y": {"type": "string", "description": "因变量列名"},
+                "x": {"type": "array", "items": {"type": "string"},
+                      "description": "自变量列名列表"},
+            },
+            ["y", "x"],
         ),
     ),
     "plot": NodeSpec(
@@ -146,6 +208,15 @@ SPECS: dict[str, NodeSpec] = {
             "print(json.dumps({'svg': svg_string, 'n_points': len(rows)}))。"
             "不要写文件系统、不要 import matplotlib。"
         ),
+        parameters=_obj(
+            {
+                "kind": {"type": "string", "enum": ["scatter", "line"], "description": "图类型"},
+                "x": {"type": "string", "description": "x 轴列名"},
+                "y": {"type": "string", "description": "y 轴列名"},
+                "title": {"type": "string", "description": "图标题(用英文)"},
+            },
+            ["kind", "x", "y"],
+        ),
     ),
     "python": NodeSpec(
         tool="python",
@@ -158,6 +229,11 @@ SPECS: dict[str, NodeSpec] = {
             "按 inputs['instruction'] 的自然语言要求,对上游数据写分析代码,"
             "用 print() 输出结论(优先 print(json.dumps(...)) 便于下游解析)。"
         ),
+        parameters=_obj(
+            {"instruction": {"type": "string",
+                             "description": "用自然语言描述要对上游数据做的分析"}},
+            ["instruction"],
+        ),
     ),
 }
 
@@ -168,6 +244,26 @@ def needs_sandbox(tool: str) -> bool:
 
 def codegen_hint(tool: str) -> str:
     return SPECS[tool].codegen_hint
+
+
+def required_inputs(tool: str) -> tuple[str, ...]:
+    """该工具【必填】的输入字段(取自 parameters.required)。供 loop 的逐调用预检用(M3+)。"""
+    return tuple((SPECS[tool].parameters or {}).get("required", ()))
+
+
+def build_function_declarations(specs: "dict[str, NodeSpec] | None" = None) -> list[dict]:
+    """把 SPECS 转成 provider-agnostic 的 function-declaration 列表
+    （{name, description, parameters}）。loop 驱动（M3）再包成 Gemini FunctionDeclaration；
+    本函数【无 vertexai 依赖】,可离线单测。只声明工具自身输入,不含上游句柄。"""
+    specs = SPECS if specs is None else specs
+    return [
+        {
+            "name": spec.tool,
+            "description": " ".join(spec.planner_desc.split()),
+            "parameters": spec.parameters or {"type": "object", "properties": {}, "required": []},
+        }
+        for spec in specs.values()
+    ]
 
 
 def catalog_for_planner() -> str:
