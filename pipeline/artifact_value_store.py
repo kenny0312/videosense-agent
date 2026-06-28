@@ -12,11 +12,9 @@
 条数封顶(MAX_VALUE_ENTRIES),超出淘汰最旧 —— 值仓是优化,不是必需,宁可不存,也不让
 大对象/无界增长撑爆内存。
 
-【取不到 ≠ 自动重算】:本仓不提供"miss 自动回退重算"。真正的防线在【规划阶段】——
-session.planner_context 只在【活仓里确有此值】时才把该 artifact 标 value_cached,planner
-据此只对【值确实在场】的 artifact 发 load_artifact;值不在(重启/跨副本/LRU 淘汰)时不暴露
-value_cached,planner 自然改走配方重算。万一仍发了 load_artifact 却取不到值,该节点失败 →
-orchestrator 让【本轮失败】(不自动改规划重试)。
+【取不到 ≠ 自动重算】:本仓不提供"miss 自动回退重算"。M7b 起 loop 不预先探查活仓:模型
+按需对某个 artifact 发 load_artifact,值在场(沙箱算出/外部拉取类才存)就复用;值不在
+(重启/跨副本/LRU 淘汰)时该节点【软失败】回喂 loop —— loop 看到错误自然改走重算那一步。
 """
 from __future__ import annotations
 
@@ -64,10 +62,8 @@ class BaseArtifactValueStore(ABC):
         """取值;不存在返回 None。
 
         取不到(从未存过/已被 LRU 淘汰/换了副本或重启后内存已清空)时返回 None —— 这是
-        正常路径:planner_context 只在【活仓里确有此值】时才向 planner 暴露 value_cached,
-        故 planner 不会对缺失的值发 load_artifact。万一仍发了(陈旧上下文等),load_artifact
-        节点会失败,从而【让本轮失败】—— 本仓【不】自动重算回退,该回退由"不暴露 value_cached"
-        在规划阶段就避免。"""
+        正常路径:loop 的 load_artifact 节点取不到值就【软失败】回喂主循环,loop 看到错误
+        改走重算那一步。本仓【不】自动重算回退,把"缺失"消化在 loop 的下一步决策里。"""
         ...
 
     @abstractmethod

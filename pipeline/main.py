@@ -9,7 +9,7 @@
     SANDBOX_URL            默认 http://localhost:8080,生产用 Cloud Run URL
     SANDBOX_TOKEN          Cloud Run 时自动经 gcloud 取
 
-本入口:自然语言 → Planner 规划 DAG → 逐节点执行(数据走 MCP / 科学节点进沙箱,失败自愈)→ 答案。
+本入口:自然语言 → probe-and-step 主循环(每步选工具:数据走 MCP / 科学节点进沙箱,失败自愈)→ 答案。
 """
 from __future__ import annotations
 
@@ -39,8 +39,8 @@ logging.basicConfig(
 
 HEADER = """
 ======================================================
-  完整流水线:Planner → CodeGen → Sandbox(自愈)
-  自然语言 → DAG → 逐节点执行 → 答案
+  完整流水线:Router → probe-and-step 主循环(MCP / Sandbox 自愈)
+  自然语言 → 逐步选工具 → 收敛即答 → 答案
   多轮:同一会话里可接着问("把那批画出来"/"你怎么算的");':new' 开新会话清空上下文
   输入 'quit' / 'exit' / 'q' 退出
 ======================================================
@@ -67,9 +67,10 @@ def _print_result(r: dict):
         print(f"  {r['trace_summary']}")
         print()
         return
-    if r.get("dag"):
-        tools = " → ".join(n["tool"] for n in r["dag"]["nodes"])
-        print(f"  DAG: {len(r['dag']['nodes'])} 节点 [{tools}]")
+    if r.get("loop"):
+        lm = r["loop"]
+        tools = " → ".join(f"{k}×{v}" for k, v in lm.get("tool_calls", {}).items())
+        print(f"  Loop: {lm.get('steps')} 步 ({lm.get('terminated')}) [{tools}]")
     print(f"  {r['trace_summary']}")
 
     if r["ok"]:

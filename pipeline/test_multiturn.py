@@ -2,13 +2,13 @@
 多轮编排分支的轻量测试 —— 全用桩,不依赖 GCP / DB。
     python -m pipeline.test_multiturn
 
-覆盖 orchestrator 的多轮路径:
-  followup 解析成功 → Planner 收到含配方的 context
-  followup 解析不到真实结果 → 降级诚实拒答(不构造 Planner)
-  meta 有 prior → 纯模板方法说明(status=ok,不构造 Planner)
+覆盖 orchestrator 的多轮路径(M7b:执行路径=loop;上一轮上下文走 transcript 回放):
+  followup 解析成功 → 进入 loop(turn_type=followup)
+  followup 解析不到真实结果 → 降级诚实拒答(不进 loop)
+  meta 有 prior → 纯模板用 handle 说明上一轮产出(status=ok,不进 loop)
   meta 无 prior → 拒答
-  成功轮 → catalog 登记 1 个 artifact(配方=sql)+ history 记一轮
-  无 session → 向后兼容(到达 planner、session_id=None)
+  成功轮 → catalog 登记 1 个 artifact(纯 handle,无 recipe)+ history 记一轮
+  无 session → 向后兼容(到达 loop、session_id=None)
 """
 from __future__ import annotations
 
@@ -20,9 +20,10 @@ try:
 except (AttributeError, OSError):
     pass
 
+import pipeline.loop_driver as loop_driver
+import pipeline.loop_memory as loop_memory
 import pipeline.orchestrator as orch
-from pipeline.dag_schema import parse_dag
-from pipeline.node_executor import NodeResult
+from pipeline.loop_driver import LoopOutcome
 from pipeline.router import RouterVerdict
 from pipeline.session import Session
 
@@ -44,34 +45,45 @@ def _restore_router(saved):
     orch.mcp_client, orch.Router = saved
 
 
-def _seed(session, sql="SELECT id, predicate FROM video_facts WHERE predicate ILIKE '%ski%'"):
-    """给会话预置一个可指代的 artifact(a1,配方=sql)。"""
-    dag = parse_dag({"nodes": [{"id": "n1", "tool": "sql_query",
-                                "inputs": {"sql": sql}, "depends_on": []}]})
-    return session.register_artifact(dag, {"n1": [{"id": 1, "predicate": "skiing"}]},
-                                     "find skiing videos", "retrieve")
+def _stub_loop(run):
+    """把 loop 入口换成 run(返回 LoopOutcome 或抛异常),并让记忆侧 inert(离线、不打 LLM/网络)。"""
+    saved = (loop_driver.run_query_loop,
+             loop_memory.build_loop_context, loop_memory.record_loop_turn)
+    loop_driver.run_query_loop = run
+    loop_memory.build_loop_context = lambda *a, **k: None
+    loop_memory.record_loop_turn = lambda *a, **k: None
+    return saved
+
+
+def _restore_loop(saved):
+    (loop_driver.run_query_loop,
+     loop_memory.build_loop_context, loop_memory.record_loop_turn) = saved
+
+
+def _seed(session):
+    """给会话预置一个可指代的 artifact(a1,纯 handle)。"""
+    return session.register_artifact(
+        final_tool="sql_query", final_value=[{"id": 1, "predicate": "skiing"}],
+        preview_value=[{"id": 1, "predicate": "skiing"}],
+        question="find skiing videos", intent="retrieve")
 
 
 # ── followup ──────────────────────────────────────────────
-def test_followup_passes_context_to_planner():
+def test_followup_resolved_reaches_loop():
     s = Session("t"); _seed(s)
     v = RouterVerdict(decision="answer", turn_type="followup", intent="visualize",
                       references=[{"resolved_to": "a1", "text": "those", "resolvable": True}])
     saved = _stub_router(v)
 
-    class CtxPlanner:
-        schema = {}
-        def __init__(self, *a, **k): pass
-        def plan(self, nl, *, context=None):
-            assert context and context["resolved_artifacts"][0]["id"] == "a1", context
-            assert context["resolved_artifacts"][0]["recipe"]["type"] == "sql"
-            raise RuntimeError("REACHED_WITH_CONTEXT")
+    def boom(*a, **k):
+        raise RuntimeError("REACHED_LOOP")
+    sl = _stub_loop(boom)
     try:
-        r = orch.run_query("plot those", planner=CtxPlanner(), session=s)
-        assert r["status"] == "error" and "REACHED_WITH_CONTEXT" in r["error"], r
+        r = orch.run_query("plot those", session=s)
+        assert r["status"] == "error" and "REACHED_LOOP" in r["error"], r
         assert r["turn_type"] == "followup"
     finally:
-        _restore_router(saved)
+        _restore_loop(sl); _restore_router(saved)
 
 
 def test_followup_unresolvable_refuses():
@@ -80,16 +92,15 @@ def test_followup_unresolvable_refuses():
                       references=[{"resolved_to": "a1"}])   # a1 不存在(幻觉)
     saved = _stub_router(v)
 
-    class BoomPlanner:
-        def __init__(self, *a, **k):
-            raise AssertionError("不可解析的 followup 不应构造 Planner")
-    orig = orch.Planner; orch.Planner = BoomPlanner
+    def boom(*a, **k):
+        raise AssertionError("不可解析的 followup 不应进入 loop")
+    sl = _stub_loop(boom)
     try:
         r = orch.run_query("plot those", session=s)
         assert r["status"] == "refused", r
         assert r["turn_type"] == "followup"
     finally:
-        orch.Planner = orig; _restore_router(saved)
+        _restore_loop(sl); _restore_router(saved)
 
 
 # ── meta ──────────────────────────────────────────────────
@@ -99,17 +110,16 @@ def test_meta_with_prior_answers_not_refuse():
                       references=[{"resolved_to": "a1"}])
     saved = _stub_router(v)
 
-    class BoomPlanner:
-        def __init__(self, *a, **k):
-            raise AssertionError("meta 轮不应构造 Planner")
-    orig = orch.Planner; orch.Planner = BoomPlanner
+    def boom(*a, **k):
+        raise AssertionError("meta 轮不应进入 loop")
+    sl = _stub_loop(boom)
     try:
         r = orch.run_query("how did you get that", session=s)
         assert r["status"] == "ok", r
-        assert "SELECT" in r["answer"], r["answer"]       # 展示了上一轮 SQL
+        assert "skiing" in r["answer"], r["answer"]       # 用 handle 预览描述了上一轮产出
         assert r["turn_type"] == "meta"
     finally:
-        orch.Planner = orig; _restore_router(saved)
+        _restore_loop(sl); _restore_router(saved)
 
 
 def test_meta_no_prior_refuses():
@@ -130,43 +140,40 @@ def test_success_registers_artifact():
     s = Session("t")
     v = RouterVerdict(decision="answer", turn_type="new", intent="retrieve")
     saved = _stub_router(v)
-    orig_exec = orch.execute_node
 
-    def fake_exec(node, upstream, sandbox, trace, schema=None, **kwargs):
-        return NodeResult(node.id, node.tool, ok=True,
-                          value=[{"id": 1, "predicate": "skiing"}], attempts=1)
-    orch.execute_node = fake_exec
-
-    class OkPlanner:
-        schema = {"video_facts": [{"column": "id"}]}
-        def __init__(self, *a, **k): pass
-        def plan(self, nl, *, context=None):
-            return parse_dag({"nodes": [{"id": "n1", "tool": "sql_query",
-                "inputs": {"sql": "SELECT id FROM video_facts"}, "depends_on": []}]})
+    def fake_loop(nl, **kw):
+        return LoopOutcome(answer="共 1 条 skiing 视频", steps=1, terminated="text",
+                           final_tool="sql_query",
+                           final_value=[{"id": 1, "predicate": "skiing"}],
+                           preview_value=[{"id": 1, "predicate": "skiing"}],
+                           results={},
+                           trace=[{"cid": "c0_0", "tool": "sql_query",
+                                   "inputs": {}, "uses": [], "ok": True}])
+    sl = _stub_loop(fake_loop)
     try:
-        r = orch.run_query("find skiing", planner=OkPlanner(), session=s)
+        r = orch.run_query("find skiing", session=s)
         assert r["status"] == "ok", r
-        assert len(s.catalog) == 1 and s.catalog[0].recipe["type"] == "sql", s.catalog
+        assert len(s.catalog) == 1, s.catalog
+        assert not hasattr(s.catalog[0], "recipe"), "M7b:artifact 不应再带 recipe"
         assert s.history[-1].status == "ok" and s.history[-1].artifact_ids == ["a1"]
         assert r["session_id"] == "t"
     finally:
-        orch.execute_node = orig_exec; _restore_router(saved)
+        _restore_loop(sl); _restore_router(saved)
 
 
 def test_no_session_backcompat():
     v = RouterVerdict(decision="answer", turn_type="new", intent="retrieve")
     saved = _stub_router(v)
 
-    class ReachedPlanner:
-        def __init__(self, *a, **k): pass
-        def plan(self, nl, *, context=None):
-            raise RuntimeError("REACHED")
+    def boom(*a, **k):
+        raise RuntimeError("REACHED")
+    sl = _stub_loop(boom)
     try:
-        r = orch.run_query("how many videos", planner=ReachedPlanner())   # 无 session
+        r = orch.run_query("how many videos")   # 无 session
         assert r["status"] == "error" and "REACHED" in r["error"], r
         assert r["session_id"] is None and r["turn_type"] == "new"
     finally:
-        _restore_router(saved)
+        _restore_loop(sl); _restore_router(saved)
 
 
 def main() -> int:

@@ -22,7 +22,7 @@ except ImportError:                                 # 干净检出 / 仅装运�
 from pipeline import session as S
 from pipeline.session import (BaseSessionStore, RedisSessionStore, Session,
                               SessionStore, _build_redis_client, _make_store)
-from pipeline.test_session import _SQL1, _dag   # 复用 DAG fixture,不重复造
+from pipeline.test_session import _SQL1, _reg   # 复用 fixture + register 适配器
 
 
 def _client():
@@ -31,7 +31,7 @@ def _client():
 
 def _seed(store: BaseSessionStore, sid: str = "x") -> Session:
     s = store.get_or_create(sid)
-    s.register_artifact(_dag(_SQL1), {"n1": [{"id": 1, "predicate": "ski"}]}, "find ski", "retrieve")
+    _reg(s, _SQL1, {"n1": [{"id": 1, "predicate": "ski"}]}, "find ski", "retrieve")
     s.record_turn("find ski", None, "ok", [{"id": 1}], artifact_ids=["a1"])
     store.save(s)
     return s
@@ -44,7 +44,7 @@ def test_redis_roundtrip_shared_client():
     other = RedisSessionStore(client=c)             # 模拟另一副本:独立 store 对象,共享 redis
     s2 = other.get_or_create("x")
     assert s2.catalog and s2.catalog[0].id == "a1"
-    assert s2.catalog[0].recipe["type"] == "sql"
+    assert s2.catalog[0].kind == "table"
     assert s2.history and s2.history[0].artifact_ids == ["a1"]
     assert s2._seq == 1 and s2._turn_no == 1
 
@@ -265,7 +265,7 @@ def test_redis_works_with_upstash_rest_contract():
     _seed(st)
     s2 = st.get_or_create("x")                       # 无 L0 缓存 → 真从 fake 读回
     assert s2.catalog and s2.catalog[0].id == "a1"
-    assert s2.catalog[0].recipe["type"] == "sql"
+    assert s2.catalog[0].kind == "table"
     st.reset("x")
     assert st.get_or_create("x").history == []       # reset 后空
 

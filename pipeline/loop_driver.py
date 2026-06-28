@@ -4,10 +4,8 @@
 - `GeminiConversation` / `_make_executor` 是真实适配器(live 由 M2 spike 验过)。
   复用现有 `node_executor.execute_node` 当工具执行器;复用 M1 的
   `node_specs.build_function_declarations`,叠加 M2 验过的【上游句柄】参数。
-- ① 决策(见 docs/design):M3 阶段把成功调用链【合成一个极简 DAG】交给
-  `session.register_artifact`,故 recipe/记忆层原样不动;纯 transcript 化留到 M5。
-
-灰度:`config.VS_EXECUTOR=loop` 时由 orchestrator 走这里;默认 dag 路径不受影响。
+- M7b:register_artifact 已纯 handle 化(无 recipe / 不再合成 DAG);上一轮上下文走
+  transcript 回放(loop_memory)。loop 是 orchestrator 唯一执行路径。
 """
 from __future__ import annotations
 
@@ -18,7 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from pipeline import config
-from pipeline.dag_schema import ALL_TOOLS, DAG, Node
+from pipeline.dag_schema import ALL_TOOLS, Node
 from pipeline.node_executor import execute_node
 from pipeline.node_specs import build_function_declarations
 
@@ -200,25 +198,14 @@ def _make_executor(sandbox, trace, schema, session_id, value_store) -> Callable:
     return execute
 
 
-def synthesize_dag(trace: list[dict]) -> "DAG | None":
-    """① 决策:把成功调用链合成极简 DAG,交给 register_artifact(recipe 层不动)。"""
-    nodes, ok_ids = [], set()
-    for s in trace:
-        if not s["ok"]:
-            continue
-        deps = [u for u in s["uses"] if u in ok_ids]
-        nodes.append(Node(id=s["cid"], tool=s["tool"], inputs=s["inputs"], depends_on=deps))
-        ok_ids.add(s["cid"])
-    return DAG(nodes=nodes) if nodes else None
-
-
 @dataclass
 class LoopOutcome:
     answer: str | None
     steps: int
     terminated: str
-    dag: "DAG | None"
-    node_values: dict
+    final_tool: "str | None"                 # 最终成功步的工具(决定 artifact kind)
+    final_value: Any                         # 最终成功步的结果值
+    preview_value: Any                       # 预览/值复用依据(plot 时=上游 x/y,否则=final_value)
     results: dict                            # cid -> ExecResult(有 .code/.artifact/.videos)
     trace: list                              # [{cid,tool,inputs,uses,ok}] —— 供 M5 记 transcript
 
@@ -248,16 +235,28 @@ def _loop_system(schema: dict, replay_context: "str | None") -> str:
 
 def run_query_loop(nl: str, *, schema: dict, replay_context: "str | None", sandbox, trace,
                    session_id: "str | None", value_store, on_step=None) -> LoopOutcome:
-    """orchestrator 的 loop 入口:建会话 + 执行器 → run_loop → 合成 DAG + 收产物。
+    """orchestrator 的 loop 入口:建会话 + 执行器 → run_loop → 收产物(纯 handle,无合成 DAG)。
     replay_context(M5)= 从 transcript 回放出的多轮上下文(取代旧 recipe 块)。
     on_step(M6b)= 每步回调,供 SSE 流式。"""
     conv = GeminiConversation(config.LOOP_MODEL, loop_function_declarations(),
                               _loop_system(schema, replay_context))
     execute = _make_executor(sandbox, trace, schema, session_id, value_store)
     r = run_loop(nl, conv, execute, on_step=on_step)
-    dag = synthesize_dag(r.trace)
-    node_values = {cid: res.value for cid, res in r.ledger.items() if res.ok}
-    return LoopOutcome(r.answer, r.steps, r.terminated, dag, node_values, r.ledger, r.trace)
+    # 最终成功步 → artifact 的 kind/value;preview_value:plot-final 取上游数据
+    # (plot 自身 value 只有 {n_points},无复用价值),其余 = final_value。
+    final_tool = final_value = preview_value = None
+    ok_steps = [s for s in r.trace if s["ok"]]
+    if ok_steps:
+        last = ok_steps[-1]
+        final_tool, final_value = last["tool"], r.ledger[last["cid"]].value
+        preview_value = final_value
+        if final_tool == "plot":
+            for s in reversed(ok_steps[:-1]):
+                if s["tool"] != "plot":
+                    preview_value = r.ledger[s["cid"]].value
+                    break
+    return LoopOutcome(r.answer, r.steps, r.terminated, final_tool, final_value,
+                       preview_value, r.ledger, r.trace)
 
 
 def loop_metrics(lo: "LoopOutcome") -> dict:
