@@ -39,7 +39,7 @@ import threading
 import weakref
 
 from fastapi import FastAPI, Request, Response
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -216,3 +216,48 @@ def video_vibe_query(req: VibeQueryRequest, request: Request):
         log.warning("audit emit failed (fail-open)", exc_info=True)
 
     return result
+
+
+@app.post("/v1/video_vibe_query/stream")
+def video_vibe_query_stream(req: VibeQueryRequest, request: Request):
+    """SSE 流式(M6b):loop 多步往返时把每步进度实时推给前端,最后推一条 result。
+    仅 loop 路径有逐步 step 事件;dag 路径只会收到最终 result。"""
+    import queue as _queue
+    t0 = time.perf_counter()
+    q: "_queue.Queue" = _queue.Queue()
+    sid = req.session_id or uuid.uuid4().hex
+    owner = getattr(request.state, "app_user", "anon")
+
+    def work():
+        try:
+            with _session_lock(f"{owner}:{sid}"):
+                session = STORE.get_or_create(sid, owner=owner)
+                result = run_query(req.query, quiet_trace=True, session=session, owner=owner,
+                                   on_step=lambda ev: q.put(ev))
+                STORE.save(session, owner=owner)
+            result["session_id"] = sid
+            usage = result.pop("usage", {}) or {}
+            plot = result.pop("plot", {}) or {}
+            if plot:
+                fname = artifacts.save_local(plot, name=uuid.uuid4().hex[:12])
+                result["plot_url"] = (str(request.base_url).rstrip("/") + f"/plots/{fname}") if fname else None
+            q.put({"type": "result", "result": result})
+            try:
+                _audit(request, req, result, usage, int((time.perf_counter() - t0) * 1000))
+            except Exception:
+                log.warning("audit emit failed (fail-open)", exc_info=True)
+        except Exception as e:
+            q.put({"type": "error", "error": repr(e)})
+        finally:
+            q.put(None)                              # 结束哨兵
+
+    threading.Thread(target=work, daemon=True).start()
+
+    def gen():
+        while True:
+            ev = q.get()
+            if ev is None:
+                break
+            yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream")

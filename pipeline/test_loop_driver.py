@@ -127,3 +127,15 @@ def test_loop_metrics():                                     # M6 审计指标
                                            {"tool": "sql_query"}])
     assert ld.loop_metrics(lo) == {"steps": 3, "terminated": "text",
                                    "tool_calls": {"sql_query": 2, "plot": 1}}
+
+
+def test_on_step_callback_emits_events():                    # M6b:SSE 流式回调
+    events = []
+    conv = ScriptedConv([
+        ([Call("sql_query", {"sql": "x"}, [])], None),
+        ([], "done"),
+    ])
+    run_loop("q", conv, make_exec(), max_steps=8, on_step=events.append)
+    assert [e["type"] for e in events] == ["step", "answer"]
+    assert events[0]["tools"][0]["tool"] == "sql_query" and events[0]["tools"][0]["ok"] is True
+    assert events[1]["text"] == "done"
