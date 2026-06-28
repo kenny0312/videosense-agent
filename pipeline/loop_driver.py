@@ -113,7 +113,8 @@ class LoopResult:
 
 # ── 纯控制流(注入 conversation + execute,离线可测)──────────────
 def run_loop(user_query: str, conversation, execute: Callable, *,
-             max_steps: int | None = None, repeat_limit: int | None = None) -> LoopResult:
+             max_steps: int | None = None, repeat_limit: int | None = None,
+             on_step=None) -> LoopResult:
     max_steps = config.MAX_LOOP_STEPS if max_steps is None else max_steps
     repeat_limit = config.LOOP_REPEAT_LIMIT if repeat_limit is None else repeat_limit
     ledger: dict[str, ExecResult] = {}
@@ -125,8 +126,10 @@ def run_loop(user_query: str, conversation, execute: Callable, *,
         calls, text = conversation.send(msg)
         llm_calls += 1
         if not calls:                                        # 收敛:纯文本即答案
+            if on_step:
+                on_step({"type": "answer", "text": text or ""})
             return LoopResult(text or "", step, "text", trace, ledger, llm_calls)
-        responses = []
+        responses, step_tools = [], []
         for i, call in enumerate(calls):
             cid = f"c{step}_{i}"
             sig = (call.name,
@@ -139,11 +142,14 @@ def run_loop(user_query: str, conversation, execute: Callable, *,
             ledger[cid] = res
             trace.append({"cid": cid, "tool": call.name, "inputs": call.inputs,
                           "uses": call.uses, "ok": res.ok})
+            step_tools.append({"tool": call.name, "cid": cid, "ok": res.ok})
             if res.ok:
                 responses.append((call.name, {"result_id": cid, "preview": res.preview, "n": res.n}))
             else:
                 seen[sig] = seen.get(sig, 0) + 1
                 responses.append((call.name, {"result_id": cid, "error": (res.stderr or "")[:300]}))
+        if on_step:                                          # M6b:每步事件(供 SSE 流式)
+            on_step({"type": "step", "step": step, "tools": step_tools})
         msg = responses
     return LoopResult(None, max_steps, "max_steps", trace, ledger, llm_calls)
 
@@ -239,13 +245,14 @@ def _loop_system(schema: dict, replay_context: "str | None") -> str:
 
 
 def run_query_loop(nl: str, *, schema: dict, replay_context: "str | None", sandbox, trace,
-                   session_id: "str | None", value_store) -> LoopOutcome:
+                   session_id: "str | None", value_store, on_step=None) -> LoopOutcome:
     """orchestrator 的 loop 入口:建会话 + 执行器 → run_loop → 合成 DAG + 收产物。
-    replay_context(M5)= 从 transcript 回放出的多轮上下文(取代旧 recipe 块)。"""
+    replay_context(M5)= 从 transcript 回放出的多轮上下文(取代旧 recipe 块)。
+    on_step(M6b)= 每步回调,供 SSE 流式。"""
     conv = GeminiConversation(config.LOOP_MODEL, loop_function_declarations(),
                               _loop_system(schema, replay_context))
     execute = _make_executor(sandbox, trace, schema, session_id, value_store)
-    r = run_loop(nl, conv, execute)
+    r = run_loop(nl, conv, execute, on_step=on_step)
     dag = synthesize_dag(r.trace)
     node_values = {cid: res.value for cid, res in r.ledger.items() if res.ok}
     return LoopOutcome(r.answer, r.steps, r.terminated, dag, node_values, r.ledger, r.trace)

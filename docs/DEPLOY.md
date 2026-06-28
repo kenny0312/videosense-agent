@@ -62,7 +62,7 @@ gcloud run deploy videosense \
   --source . \
   --region us-central1 \
   --allow-unauthenticated \
-  --memory 1Gi --cpu 1 --timeout 120 \
+  --memory 1Gi --cpu 1 --timeout 300 \
   --min-instances 0 --max-instances 5 \
   --session-affinity \
   --set-env-vars "^@^GCP_PROJECT=$GCP_PROJECT@GCP_REGION=us-central1@ALLOYDB_HOST=$ALLOYDB_HOST@ALLOYDB_DB=$ALLOYDB_DB@ALLOYDB_USER=$ALLOYDB_USER@ALLOYDB_PASSWORD=$ALLOYDB_PASSWORD@GCS_BUCKET=$GCS_BUCKET@SESSION_BACKEND=redis@UPSTASH_REDIS_REST_URL=$UPSTASH_REDIS_REST_URL@UPSTASH_REDIS_REST_TOKEN=$UPSTASH_REDIS_REST_TOKEN@APP_ACCESS_KEYS=$APP_ACCESS_KEYS"
@@ -75,7 +75,7 @@ Get-Content neon.env | ForEach-Object { if ($_ -match '^\s*([A-Z_]+)=(.+)$') { $
 $APP_ACCESS_KEYS = "kenny:" + [guid]::NewGuid().ToString('N').Substring(0,12)
 Write-Host "登录口令(密码填冒号后那段): $APP_ACCESS_KEYS"
 $pairs = @("GCP_PROJECT=$($neon['GCP_PROJECT'])","GCP_REGION=us-central1","ALLOYDB_HOST=$($neon['ALLOYDB_HOST'])","ALLOYDB_DB=$($neon['ALLOYDB_DB'])","ALLOYDB_USER=$($neon['ALLOYDB_USER'])","ALLOYDB_PASSWORD=$($neon['ALLOYDB_PASSWORD'])","GCS_BUCKET=$($neon['GCS_BUCKET'])","SESSION_BACKEND=redis","UPSTASH_REDIS_REST_URL=$($neon['UPSTASH_REDIS_REST_URL'])","UPSTASH_REDIS_REST_TOKEN=$($neon['UPSTASH_REDIS_REST_TOKEN'])","APP_ACCESS_KEYS=$APP_ACCESS_KEYS") -join "@"
-gcloud run deploy videosense --source . --region us-central1 --allow-unauthenticated --memory 1Gi --cpu 1 --timeout 120 --min-instances 0 --max-instances 5 --session-affinity --set-env-vars "^@^$pairs"
+gcloud run deploy videosense --source . --region us-central1 --allow-unauthenticated --memory 1Gi --cpu 1 --timeout 300 --min-instances 0 --max-instances 5 --session-affinity --set-env-vars "^@^$pairs"
 ```
 
 部署完会输出一个 `https://videosense-xxxx-uc.a.run.app` 网址。

@@ -93,7 +93,7 @@ def _explain_meta(session: "Session", resolved_ids: list[str]) -> str:
 def run_query(nl: str, *, quiet_trace: bool = False,
               planner: Planner | None = None,
               session: "Session | None" = None,
-              owner: str = "anon") -> dict:
+              owner: str = "anon", on_step=None) -> dict:
     usage.reset_usage()                  # 清空本轮 token 累加器(每请求一次)
     trace = Trace(quiet=quiet_trace)
     sandbox = SandboxClient()
@@ -210,7 +210,7 @@ def run_query(nl: str, *, quiet_trace: bool = False,
         try:
             lo = loop_driver.run_query_loop(nl, schema=schema, replay_context=replay_ctx,
                                             sandbox=sandbox, trace=trace, session_id=sid,
-                                            value_store=VALUE_STORE)
+                                            value_store=VALUE_STORE, on_step=on_step)
             lstep.ok(steps=lo.steps, terminated=lo.terminated)
         except Exception as e:
             lstep.fail(error=repr(e))
