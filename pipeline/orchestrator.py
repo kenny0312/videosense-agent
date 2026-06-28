@@ -194,7 +194,7 @@ def run_query(nl: str, *, quiet_trace: bool = False,
         return _result(True, trace=trace, status="ok", answer=ans,
                        session_id=sid, turn_type=ttype)
 
-    # ── DAG→loop 灰度:VS_EXECUTOR=loop 走 probe-and-step 主循环(默认 dag,不受影响)──
+    # ── M7:VS_EXECUTOR=loop(默认)走 probe-and-step 主循环;VS_EXECUTOR=dag 可回退旧路径 ──
     if config.VS_EXECUTOR == "loop":
         from pipeline import loop_driver, loop_memory
         from pipeline.transcript_store import STORE as TX_STORE, gcs_blob_put
