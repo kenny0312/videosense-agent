@@ -41,7 +41,8 @@ def _result(ok: bool, *, trace: Trace, dag: DAG | None = None,
             answer: Any = None, results: dict[str, NodeResult] | None = None,
             fail_node: str | None = None, error: str = "",
             status: str | None = None, reason: str = "",
-            session_id: str | None = None, turn_type: str = "new") -> dict:
+            session_id: str | None = None, turn_type: str = "new",
+            loop_meta: dict | None = None) -> dict:
     results = results or {}
     generated_code = {nid: r.code for nid, r in results.items() if r.code}
     plot = next((r.artifact for r in results.values() if r.artifact), {})
@@ -61,6 +62,7 @@ def _result(ok: bool, *, trace: Trace, dag: DAG | None = None,
         "turn_type": turn_type,                           # new | followup | meta
         "trace": trace.as_list(),
         "trace_summary": trace.summary_line(),
+        "loop": loop_meta,                                # M6:loop 审计指标(steps/terminated/tool_calls);dag 路径为 None
         "usage": usage.summarize(),                       # 本轮 LLM token 总计 + 估算成本(含自愈重试)
     }
 
@@ -236,7 +238,7 @@ def run_query(nl: str, *, quiet_trace: bool = False,
             except Exception as e:
                 log.warning("record_loop_turn 失败(fail-open): %r", e)
         return _result(True, trace=trace, dag=lo.dag, results=lo.results, answer=lo.answer,
-                       session_id=sid, turn_type=ttype)
+                       session_id=sid, turn_type=ttype, loop_meta=loop_driver.loop_metrics(lo))
 
     # ── Stage 4: 规划 ──
     step = trace.step("Plan DAG")

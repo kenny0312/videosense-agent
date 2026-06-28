@@ -175,6 +175,14 @@ def _audit(request: Request, req: VibeQueryRequest, result: dict,
         "latency_ms":   latency_ms,
         "ts":           time.time(),
     }
+    # M6:loop 执行可观测 —— 步数/终止原因/工具直方图 + Trace 落服务端(原本只在响应体里)
+    _loop = result.get("loop") or {}
+    record["step_count"]        = _loop.get("steps")
+    record["terminated_reason"] = _loop.get("terminated")
+    record["tool_calls"]        = json.dumps(_loop.get("tool_calls", {}), ensure_ascii=False)
+    record["trace_summary"]     = result.get("trace_summary")
+    if result.get("status") == "error":                  # 失败轮落完整 trace,供事后重建
+        record["trace"]         = json.dumps(result.get("trace", []), ensure_ascii=False)
     record["message"] = (f'audit user={record["app_user"]} status={record["status"]} '
                          f'tokens={record["tokens_total"]} cost=${record["cost_usd"]}')
     print(json.dumps(record, ensure_ascii=False), flush=True)

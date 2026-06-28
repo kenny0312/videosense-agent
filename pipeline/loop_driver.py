@@ -249,3 +249,10 @@ def run_query_loop(nl: str, *, schema: dict, replay_context: "str | None", sandb
     dag = synthesize_dag(r.trace)
     node_values = {cid: res.value for cid, res in r.ledger.items() if res.ok}
     return LoopOutcome(r.answer, r.steps, r.terminated, dag, node_values, r.ledger, r.trace)
+
+
+def loop_metrics(lo: "LoopOutcome") -> dict:
+    """M6 审计指标:步数、终止原因、工具调用直方图(供 _audit 落服务端)。"""
+    from collections import Counter
+    return {"steps": lo.steps, "terminated": lo.terminated,
+            "tool_calls": dict(Counter(s["tool"] for s in lo.trace))}

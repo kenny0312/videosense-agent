@@ -119,3 +119,11 @@ def test_synthesize_dag_skips_failed_and_links_deps():
                     "uses": ["c1_0"], "ok": False}]
     assert len(ld.synthesize_dag(bad).nodes) == 2            # 失败步不进
     assert ld.synthesize_dag([]) is None
+
+
+def test_loop_metrics():                                     # M6 审计指标
+    lo = ld.LoopOutcome(answer="x", steps=3, terminated="text", dag=None, node_values={},
+                        results={}, trace=[{"tool": "sql_query"}, {"tool": "plot"},
+                                           {"tool": "sql_query"}])
+    assert ld.loop_metrics(lo) == {"steps": 3, "terminated": "text",
+                                   "tool_calls": {"sql_query": 2, "plot": 1}}
