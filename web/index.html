@@ -117,6 +117,11 @@
         <textarea id="q" rows="1" placeholder="问问你的视频库… (Enter 发送, Shift+Enter 换行)"></textarea>
         <button class="send" id="send">↑</button>
       </div>
+      <label id="prowrap" title="开启后,需要【看视频内容】的分析改用更强的 Pro 模型(更准、更慢、更贵);纯查库/计数不受影响"
+             style="display:inline-flex;align-items:center;gap:6px;margin-top:8px;font-size:12.5px;color:#8a8a8a;cursor:pointer;user-select:none">
+        <input type="checkbox" id="provideo" style="cursor:pointer;margin:0"> 🔍 Pro 视频分析
+        <span style="opacity:.65">更准 · 更慢</span>
+      </label>
     </div>
   </div>
   <div class="scrim" id="scrim"></div>
@@ -421,8 +426,9 @@ function deleteChat(id, ev){
 // SSE 流式消费(M6b):POST → 读 ReadableStream → 逐条 data: 事件;step/answer 给进度,result 给最终。
 // dag 路径不发 step 事件,只收 result —— 自动降级为"转圈到出结果"。
 async function streamQuery(q, sentSid, onEvent){
+  const _pro = !!(document.getElementById('provideo') && document.getElementById('provideo').checked);
   const r=await fetch('/v1/video_vibe_query/stream',{method:'POST',
-    headers:{'Content-Type':'application/json'}, body:JSON.stringify({query:q, session_id:sentSid})});
+    headers:{'Content-Type':'application/json'}, body:JSON.stringify({query:q, session_id:sentSid, pro_video:_pro})});
   if(!r.ok || !r.body) throw new Error('stream HTTP '+r.status);
   const reader=r.body.getReader(), dec=new TextDecoder();
   let buf='', result=null;

@@ -66,8 +66,11 @@ def _result(ok: bool, *, trace: Trace, dag: DAG | None = None,
 
 def run_query(nl: str, *, quiet_trace: bool = False,
               session: "Session | None" = None,
-              owner: str = "anon", on_step=None) -> dict:
+              owner: str = "anon", on_step=None, pro_video: bool = False) -> dict:
     usage.reset_usage()                  # 清空本轮 token 累加器(每请求一次)
+    # Pro 模式:本请求的 analyze_video 用 pro 模型;否则默认 flash。每请求开头都设(跨请求不串)。
+    from perception import analyze_video_contextual as _AVC
+    _AVC.MODEL_OVERRIDE.set(_AVC.PRO_MODEL if pro_video else None)
     trace = Trace(quiet=quiet_trace)
     sandbox = SandboxClient()
 
