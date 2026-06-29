@@ -43,17 +43,24 @@ def _restore_router(saved):
     orch.mcp_client, orch.Router = saved
 
 
+_REPLAY_SENTINEL = "# 多轮上下文\n## 第1轮\n用户:之前的问题"
+
+
 def _stub_loop(run):
-    """把 loop 入口换成 run(返回 LoopOutcome 或抛异常),并让记忆侧 inert(离线、不打 LLM/网络)。
-    记录 build_loop_context 是否被调到 + 调用时的 turn_type,便于断言"回放确实被取了"。"""
-    calls = {"replay": 0}
+    """把 loop 入口换成 run,并让记忆侧 inert(离线)。build_loop_context 返回一个【哨兵字符串】
+    (不是 None)→ 可断言它【真被透传】进 run_query_loop 的 replay_context,而不止"被调用"。"""
+    calls = {"replay": 0, "passed_ctx": "UNSET"}
     saved = (loop_driver.run_query_loop,
              loop_memory.build_loop_context, loop_memory.record_loop_turn)
-    loop_driver.run_query_loop = run
+
+    def _wrapped_run(nl, **kw):
+        calls["passed_ctx"] = kw.get("replay_context")     # 捕获编排层实际传进来的回放
+        return run(nl, **kw)
+    loop_driver.run_query_loop = _wrapped_run
 
     def _fake_ctx(*a, **k):
         calls["replay"] += 1
-        return None
+        return _REPLAY_SENTINEL
     loop_memory.build_loop_context = _fake_ctx
     loop_memory.record_loop_turn = lambda *a, **k: None
     return saved, calls
@@ -77,7 +84,8 @@ def test_followup_reaches_loop_and_replays():
         r = orch.run_query("plot those", session=s)
         assert r["status"] == "error" and "REACHED_LOOP" in r["error"], r
         assert r["turn_type"] == "followup"
-        assert calls["replay"] == 1                      # followup → 取了 transcript 回放
+        assert calls["replay"] == 1                       # followup → 取了 transcript 回放
+        assert calls["passed_ctx"] == _REPLAY_SENTINEL    # 且回放【真透传】进了 loop 的 replay_context
     finally:
         _restore_loop(sl); _restore_router(saved)
 
@@ -95,7 +103,8 @@ def test_meta_reaches_loop_and_replays():
         r = orch.run_query("how did you get that", session=s)
         assert r["status"] == "error" and "REACHED_LOOP" in r["error"], r
         assert r["turn_type"] == "meta"
-        assert calls["replay"] == 1                      # meta → 也取回放(由 loop 解释)
+        assert calls["replay"] == 1                       # meta → 也取回放(由 loop 解释)
+        assert calls["passed_ctx"] == _REPLAY_SENTINEL    # 回放透传进 loop
     finally:
         _restore_loop(sl); _restore_router(saved)
 
@@ -122,6 +131,7 @@ def test_new_success_reaches_loop_and_advances_turn():
         assert r["session_id"] == "t" and r["turn_type"] == "new"
         assert s._turn_no == 1                           # 轮号推进了(供 record_loop_turn)
         assert calls["replay"] == 0                      # new 轮不取回放
+        assert calls["passed_ctx"] is None               # 且传给 loop 的 replay_context 为 None
     finally:
         _restore_loop(sl); _restore_router(saved)
 
@@ -139,6 +149,17 @@ def test_no_session_backcompat():
         assert r["session_id"] is None and r["turn_type"] == "new"
     finally:
         _restore_loop(sl); _restore_router(saved)
+
+
+# ── 回放真正进了 loop 的 system prompt(_loop_system 拼接)─────────────
+def test_loop_system_splices_replay_context():
+    from pipeline.loop_driver import _loop_system
+    schema = {"video_facts": [{"column": "id"}]}
+    s_none = _loop_system(schema, None)
+    s_ctx = _loop_system(schema, _REPLAY_SENTINEL)
+    assert _REPLAY_SENTINEL not in s_none                 # 无回放 → system 不含它
+    assert _REPLAY_SENTINEL in s_ctx                      # 有回放 → 拼进 system prompt
+    assert s_ctx.startswith(s_none)                       # 规则+schema 段不变,回放追加在尾部
 
 
 def main() -> int:
