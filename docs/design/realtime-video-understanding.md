@@ -1,259 +1,256 @@
-# 设计文档：VideoSense 的按需 / 上下文驱动 / loop 感知视频理解工具
+# 设计文档 v2：VideoSense 的视频理解能力（通用原语 → 视频专家 agent-team）
 
-> 状态：Draft v1（待评审后动手）　范围：方向一
-> 一句话：给 VS 主循环加一个 **`analyze_video` 原语**，它接受 **context + 任意 question**，输出 **为 loop 决策而设计的结构化 result**（`answers_question / confidence / evidence / suggested_next`），让 agent 能回答"挑一个最帅的 wingsuit 给我看并说理由"这类当前**会被拒答**的问题。
+> 状态：**v2**（评审反馈已并入，P1 可动手）　范围：方向一
+> **v2 变更摘要**（相对 v1）：① 输出从死 schema → **最小信封**（`answer` 自由 + `enough` + `confidence`）；② 定位是**通用原语**（`question` 是参数，覆盖任意问题），非窄工具；③ 形态**分阶段**：in-process 原语 → FastMCP 视频专家 → multi-agent 团队；④ 打分 = **对话敲 rubric 再打**；⑤ 新增 **`clarify` 反问回路**；⑥ 配额保护 `MAX_VIDEOS_PER_REQUEST=5`。
+
+---
+
+## 0. 设计原则（评审共识）
+
+1. **别过度结构化、别把能力写死**——客户的问题千奇百怪（今天"帅不帅"、明天"几个人"、后天"我自己滑雪的视频"）。
+2. **但 loop 看的是工具结果的 preview**（`loop_driver._preview` 截到 ≈3×8×80），**决策关键信息必须短、靠前** → 这要求"一点点结构" = **最小信封**。
+3. **通用 > 专用**：一个"看视频回答**任意** question"的原语，胜过一堆窄工具。
+4. **先验证、后升格**：in-process 原语先证明价值；**接口为 agent-team 留好**，升格时 VS 主 loop 零改动。
 
 ---
 
 ## 1. 背景与目标 · 贯穿例子
 
-### 1.1 现状
-VS 的主循环是 **probe-and-step**（`pipeline/loop_driver.py: run_loop`）：每步 Loop LLM 看工具声明 → 发起一批 function call → 主进程执行 → 把 **压缩后的 result preview 回喂** → LLM 据此决定下一步，直到收敛成纯文本答案。
+VS 主循环是 **probe-and-step**（`pipeline/loop_driver.py: run_loop`）：每步 Loop LLM 看工具声明 → 发 function call → 主进程执行 → 把**压缩后的 result preview 回喂** → LLM 决定下一步，直到收敛成文本。
 
-今天 loop 能 `sql_query`（查结构化元数据 / 已落库的离线感知结果）、`show_video`（签 URL 播放）、以及一串分析工具（`plot / merge_asof / ...`）。但它**没有一个"现在去看一段视频、带着我此刻的问题去看"的能力**。视频内容理解只存在于**离线批处理**里（`perception/skydive_extract.py`、`perception/gemini_predicates.py`），prompt 写死、输出固定 schema，不可被 loop 按需驱动。
+今天 loop 能 `sql_query / show_video / plot / ...`，但**没有"现在带着我此刻的问题去看一段视频"的能力**——视频理解只在**离线批处理**里（`perception/`），prompt 写死、输出固定 schema。
 
-### 1.2 贯穿例子（North Star）
-> **"给出你觉得最帅的一个 wingsuit 视频并展示，给理由。"**
+**贯穿例子（North Star）**："给我看你觉得**最帅**的一个 wingsuit 视频，并说理由。" —— 今天 agent **会拒答**（"帅"不在任何列里）；它需要 agent **现场看视频、按用户认可的标准逐个判断、再比较选优**。
 
-这个问题今天 agent **会拒答**：因为"帅不帅"不在任何已落库的列里，没有 `WHERE cool_score > x` 可查。它本质上需要 **agent 现场看视频、带着"哪个最帅"这个主观问题逐个打分、再比较选优**。这正是本工具要解锁的能力。
-
-### 1.3 目标
-- **G1**　新增 loop 工具 `analyze_video(context, question, video ref[, time_range])`，**现场**调 Gemini 多模态看视频回答**任意**问题。
-- **G2**　工具输出是 **loop 友好的结构化 result**，不是终结性黑盒答案；loop 能据此判断"能答了吗 / 还要做什么"。
-- **G3**　复用既有接入链路（`node_specs / node_executor / loop_driver / show_video` 视频通道），不重写 orchestrator。
-- **非目标**：不改离线感知管线；不追求一次看 N 个长视频的极致成本（见 §8 给出可落地的缩减策略）。
+**目标**：G1 新增"看视频答**任意** question"的能力；G2 输出**最小信封**，loop 能判断"够了吗/还要做什么"，又不绑死模型；G3 复用既有接入链路，主 loop 不重写；G4 接口为 agent-team 升格预留。
 
 ---
 
-## 2. 为什么不能直接复用 perception 的 `analyze_video`（设计点 1）
+## 2. 为什么不能直接复用 perception 的 `analyze_video`
 
-现有 `perception/skydive_extract.py: analyze_video(model, gcs_uri)`（L81）与 `gemini_predicates.py` 同构，三处**硬伤**让它**无法**直接当 loop 工具：
+`perception/skydive_extract.py: analyze_video(model, gcs_uri)`（L81）三处硬伤：**prompt 写死**（只问 skydive 阶段）、**入参无 question/context 注入点**、**输出固定 `SkydiveExtraction` schema**（终结性、写库即止）。它是"离线批处理心智"；loop 要的是"带着此刻的问题与上下文去看这一段"。
 
-| 维度 | 现有 perception `analyze_video` | loop 工具需要的 |
-|---|---|---|
-| **Prompt** | **写死**在模块常量 `PROMPT` / `_build_prompt()`，只问 skydive 阶段与 jump_type | 运行期**动态**：把 `question` + `context` 拼进 prompt |
-| **入参** | 仅 `(model, gcs_uri)`，**无问题、无上下文注入点** | `question`（任意子任务）+ `context`（总目标 / 已知 / 为何分析 / 上一步发现）+ 可选 `time_range` |
-| **输出** | **固定单一 schema**（`SkydiveExtraction`：6 个阶段 + is_wingsuit + summary），是**终结性**的一条记录、写库即止 | **决策导向**：`answers_question / confidence / evidence / suggested_next`，让 loop 决定下一步 |
-
-> 一句话：perception 的版本是"**离线批处理**心智"——单次、固定、写库；loop 需要的是"**带着此刻的问题、此刻的上下文，去看这一段**"。
-
-**复用什么 / 新增什么**（精确边界）：
-
-- ✅ **复用 Gemini 调用范式**（来自 perception，逐字同构）：`Part.from_uri(uri=gcs_uri, mime_type="video/mp4")` → `model.generate_content([video_part, prompt], generation_config={response_mime_type:"application/json", temperature, max_output_tokens})` → 清理 ``` ``` ``` wrapper → `json.loads` → Pydantic 校验 → `RETRY_LIMIT` 重试。
-- 🆕 **新增**：动态 prompt 工厂（`question + context → prompt`）、`AnalyzeRequest` 入参、**`AnalyzeResult` 决策 schema**。
-- ⚠️ **Gemini 不原生支持** `start_time/end_time/fps` 参数（`Part.from_uri` 无此入口）。`time_range` 只能两条路落地：(a) **prompt 文本指令**"只关注 X–Y 秒"（软约束，不保证遵守）；(b) **客户端 ffmpeg 预裁剪**成短片再喂（硬约束、省 token，见 §8）。M0 先做 (a)，(b) 留作优化。
+**复用 / 新增边界**：
+- ✅ **复用 Gemini 调用范式**（逐字同构）：`Part.from_uri(uri, mime_type="video/mp4")` → `model.generate_content([video_part, prompt], generation_config={response_mime_type:"application/json", ...})` → 清理 wrapper → `json.loads` → Pydantic 校验 → `RETRY_LIMIT` 重试（模型默认 `gemini-2.5-flash` / `PERCEPTION_MODEL`）。
+- 🆕 **新增**：动态 prompt 工厂、`AnalyzeRequest` 入参、**最小信封 `AnalyzeResult`**。
+- ⚠️ Gemini `Part.from_uri` **无 start/end/fps 入口**：`time_range` 只能 (a) prompt 文本软约束，或 (b) ffmpeg 预裁（硬约束、省 token，见 §8）。M1 先 (a)。
 
 ---
 
-## 3. 核心设计：loop 感知的上下文化分析原语
+## 3. 核心设计：通用原语 + 最小信封
 
-### 3.1 输入：`AnalyzeRequest`
+### 3.1 它是"通用原语"，不是窄工具（回应"tool 别写死"）
+
+**`question` 是参数**——同一个 `analyze_video` 就能答"帅不帅 / 几个人 / 在干嘛 / 哪个更…"。这就是你要的灵活，只是打包成**一个通用原语**，而非每次现写代码。
+
+> 与现有能力的分工：**`analyze_video`（看视频答任意问题）+ `python` 逃生舱（任意数据处理，模型现写代码进沙箱）+（未来）视频 agent-team（深度多步）** 共同覆盖"千奇百怪"。
+> 为什么视频不能纯靠 `python` 逃生舱：**沙箱隔离（无网络/无 Gemini 凭证）**，跑不了多模态——所以必须有这个"能调 Gemini 的入口"。
+
+### 3.2 输入：`AnalyzeRequest`
 ```python
 class AnalyzeRequest(BaseModel):
-    video_id: str                       # 主键;主进程据此查 video_metadata 拿 gcs_uri(复用 show_video 同源)
-    question: str                       # 本次子任务,如 "这段 wingsuit 有多精彩(0-10)?给理由"
-    context: str | None = None          # loop 注入:总目标/已知/为何分析/上一步发现(见 §5)
-    time_range: tuple[float, float] | None = None   # 可选关注区间(prompt 软约束;M0)
-    rubric: str | None = None           # 可选评分标准,如 "近地飞行/穿越地形/编队=更帅"
+    video_id: str                       # 走【上游句柄】为主(见 §7.1):loop 用上一步选出的 result_id 驱动,可回溯
+    question: str                       # 本次子任务,任意:"这段 wingsuit 多精彩(0-10)+理由" / "几个人" / "在干嘛"
+    context: str | None = None          # loop 注入:总目标/已知/为何分析/上一步发现(见 §6)
+    rubric: str | None = None           # 评分/判断细则(来自 §5 与用户对话敲定)
+    time_range: tuple[float, float] | None = None   # 可选关注区间(M1 prompt 软约束)
 ```
-> 注意 `gcs_uri` **不**进 LLM 工具声明——loop 只给 `video_id`，主进程内部查表换 URI（与 `show_video` 同源，避免 LLM 处理 URI）。
 
-### 3.2 输出：为 loop 决策而设计的结构化 result（设计点 2）
+### 3.3 输出：**最小信封**（回应"强结构化会限制模型"）
 
-这是本设计的**灵魂**。输出**不是**"答案"，而是**让 loop 自己判断的证据包**：
-
+不是死 schema，是**主体自由 + 两个薄控制位**：
 ```python
-class Evidence(BaseModel):
-    ts: float | tuple[float, float]     # 时间戳/区间
-    what: str                           # 在这个时刻看到了什么(支撑 finding)
-
 class AnalyzeResult(BaseModel):
-    observations: list[str]             # 客观所见(不掺判断)
-    finding: str                        # 针对 question 的结论(如 "精彩度 8/10")
-    confidence: float                   # 0.0-1.0
-    answers_question: Literal["yes", "partial", "no"]   # ★ loop 的总开关
-    evidence: list[Evidence]            # 支撑 finding 的具体时刻
-    suggested_next: list[str] = []      # 若 partial/no:建议下一步("看 0:30-0:50 确认开伞"/"换更高码率版本")
+    answer: str                         # ★自由文本:模型完整回答,想怎么说怎么说。
+                                        #   要点【写在最前】——preview 只露前 ~80 字。
+                                        #   ("8/10,0:42 贴崖近地穿越" / "3 个人" / "后空翻接转体")
+    enough: Literal["yes", "partial", "no"]   # loop 唯一需要的钩子:够不够回答
+    confidence: float = 0.5             # 0-1
+    evidence_ts: float | None = None    # 可选:最关键证据时刻 → 透传给 show_video 的 start_ts(§7.3)
 ```
 
-**loop 读到它后的决策树**（loop LLM 自行执行，工具不替它决定）：
+**为什么这样既灵活又能用**：
+- `answer` **完全不约束** → 任意问题、任意形状的答案都装得下，模型自由推理（解决"被 schema 逼成填表"）。
+- `enough` 是 loop **唯一**需要的短钩子：`yes`→收口/进入比较；`partial`→再看一段（§5.3）；`no`→换视频/换工具/反问。
+- **过 preview 机制**：dict 的前几个字段都会进 preview，`answer` 截 80 字——所以 **prompt 强制要求模型把结论写在 `answer` 开头**，preview 就能露出要点；`enough/confidence/evidence_ts` 本就短，完整可见。
 
+### 3.4 Prompt 工厂（动态拼装）
 ```
-answers_question == "yes" 且 confidence 够   → 收口出答案 / 进入比较
-answers_question == "partial"                → 按 suggested_next 再分析(换时间段/换角度)
-answers_question == "no"                     → 换视频 / 换工具 / 向用户澄清
-```
-
-> 关键对比：perception 版返回"这是 wingsuit、有 6 个阶段"——**一个事实**；loop 版返回"精彩度 8/10，因为有近地穿越（evidence ts=42s），我有把握（conf 0.8），这个问题能答了（yes）"——**一个可被 loop 比较和决策的判断单元**。
-
-### 3.3 Prompt 工厂（动态拼装）
-```
-[系统] 你是视频内容分析助手。看这段视频,回答下面的问题。
-[上下文] {context}                       # 没有则省略
+[系统] 你是视频内容分析助手。看这段视频,回答问题。把【结论写在 answer 开头一句】,再展开。
+[上下文] {context}            # 没有则省略
 [问题]   {question}
-[关注区间] 只关注 {t0}-{t1} 秒(若给定)    # M0 软约束
-[评分标准] {rubric}                       # 若给定
-[输出]   严格输出 JSON,字段: observations, finding, confidence,
-         answers_question(yes|partial|no), evidence[{ts,what}], suggested_next[]
-         若信息不足以回答,answers_question 给 partial/no 并在 suggested_next 写清还需什么。
+[判断细则] {rubric}           # 若给定(来自与用户对话)
+[关注区间] 只看 {t0}-{t1} 秒  # 若给定(M1 软约束)
+[输出 JSON] answer(结论在前的自由文本) · enough(yes|partial|no) · confidence · evidence_ts(可选)
+           信息不足以回答 → enough=partial/no,并在 answer 写清还差什么。
 ```
 
 ---
 
-## 4. loop 如何编排：「挑最帅 wingsuit」端到端 trace
-
-下面是 `run_loop` 实际会跑出的 trace（每步 = 一次 Loop LLM 决策；result 回喂见 §6）。
+## 4. loop 编排：「挑最帅 wingsuit」端到端 trace
 
 ```
 用户: "给我看你觉得最帅的一个 wingsuit 视频,并说理由。"
 
-step 0  ── 缩候选 ────────────────────────────────────────────
-  call: sql_query(sql="SELECT video_id,title FROM video_metadata
-                       WHERE predicate ILIKE '%wingsuit%' LIMIT 12")
-  回喂: {result_id:"c0_0", preview:[{video_id:"v07",...},{video_id:"v11",...},...], n:9}
-  → LLM 看到 9 个候选(只 preview 3 行,但 n=9 告诉它真有 9 个)
+step A  ── clarify:细则未知,先反问(§5.1) ───────────────────────
+  loop 判断 "最帅" 主观、rubric 未知 → 不分析,先反问(status=clarify):
+  "你说的'帅'更看重哪点?① 近地飞行 ② 编队 ③ 运镜流畅 ④ 综合"
+  〔用户回:"近地飞行 + 运镜"〕                              # 下一轮带着这个继续(多轮记忆)
 
-step 1  ── 逐候选现场打分(同一步并行多 call) ──────────────────
-  call: analyze_video(video_id="v07",
-          question="这段 wingsuit 有多精彩? 0-10 打分并给理由",
-          context="用户要从若干 wingsuit 中挑唯一最帅的来展示;只需相对可比的精彩度",
-          rubric="近地飞行/穿越地形/编队/流畅运镜=更帅")
-  call: analyze_video(video_id="v11", question=..., context=..., rubric=...)
-  call: analyze_video(video_id="v19", question=..., context=..., rubric=...)
-  ...(top-K 见 §8,不必 9 个全跑)
-  回喂(每个一条):
-    c1_0 → preview:[{finding:"8/10 近地穿越峡谷",confidence:"0.8",
-                     answers_question:"yes", evidence:"[{ts:42,what:'贴崖穿越'}]"}], n=...
-    c1_1 → preview:[{finding:"5/10 高空平飞为主",confidence:"0.7",answers_question:"yes",...}]
-    c1_2 → preview:[{finding:"画面模糊,无法判断",confidence:"0.3",
-                     answers_question:"partial", suggested_next:"[换更高码率版本]"}]
+step 0  ── 缩候选 ───────────────────────────────────────────────
+  sql_query("SELECT video_id FROM ... WHERE is_wingsuit LIMIT ≤5")   # 配额 §9
+  回喂 preview: 5 个候选 id
 
-step 2  ── loop 自己比较 + 处理 partial ────────────────────────
-  LLM 读各 finding/confidence:v07=8 最高且 yes;v19 是 partial 但分低,不值得再分析
-  → 直接选 v07,不再追加分析(若最高分恰是 partial,会按 suggested_next 再补一步)
+step 1  ── 逐候选打分(同步并行;带 rubric) ──────────────────────
+  analyze_video(video_id=⟨候选句柄⟩,
+     question="这段 wingsuit 按用户标准多精彩? 0-10 + 理由",
+     context="从 5 个 wingsuit 里挑唯一最帅来展示;只需相对可比",
+     rubric="近地飞行 + 运镜流畅 优先")
+  ...(≤5 个并行)
+  回喂(每个最小信封):
+    c1_0 → answer:"8/10 0:42 贴崖近地穿越,运镜稳", enough:"yes", confidence:0.8, evidence_ts:42
+    c1_1 → answer:"5/10 高空平飞为主",           enough:"yes", confidence:0.7
+    c1_2 → answer:"画面模糊,无法判断",           enough:"partial", confidence:0.3
 
-step 3  ── 展示 + 给理由 ───────────────────────────────────────
-  call: show_video(video_ids=["v07"])          # 复用现有视频通道(§6.3)
-  回喂: {result_id:"c3_0", videos 侧信道带 signed_url}
+step 2  ── loop 比较 + 处理 partial(§5.3) ──────────────────────
+  c1_0=8 最高且 yes → 选它;c1_2 partial 但分低,不值得再看 → 直接定 c1_0
 
-step 4  ── 收口 ───────────────────────────────────────────────
-  LLM 输出纯文本(无 function call → run_loop 判定收敛):
-  "最帅的是《v07 — Chamonix Proximity》。它在 0:42 贴着峡谷崖壁做了一次近地穿越,
-   线路紧贴地形、运镜流畅,精彩度 8/10,明显高于其余候选(多为高空平飞)。已为你播放。"
+step 3  ── 展示(跳到最帅那一刻,§7.3) ──────────────────────────
+  show_video(video_ids=[⟨c1_0 句柄⟩], start_ts=42)   # evidence_ts 透传
+
+step 4  ── 收口 ─────────────────────────────────────────────────
+  "最帅的是这条:0:42 贴着峡谷崖壁做了一次近地穿越,运镜很稳,8/10,
+   明显高于其余(多为高空平飞)。已为你跳到那一刻播放。"
 ```
 
-要点：**工具从不替 loop 下"哪个最帅"的结论**——它只给每个视频一个可比较的判断单元，**比较与选优发生在 loop LLM**。这正是"为 loop 决策设计"的含义。
+**要点：工具从不替 loop 下"哪个最帅"的结论**——它只给每个视频一个可比较的最小信封，**比较与选优发生在 loop LLM**。
 
 ---
 
-## 5. 上下文注入设计（传什么 · 怎么控 token）
+## 5. 三个交互回路（把 clarify / rubric / partial 串起来）
 
-`context` 由 **loop LLM 自己填**（它在工具声明里看到这个参数，会按需写）。建议在 `planner_desc` 里引导它放：
+### 5.1 `clarify`：问题模糊 → 反问用户（回应决策 #7）
+当 question 主观/模糊（"最帅""好不好看"）且 `rubric` 未知时，loop **先反问**而非硬猜。机制：
+- 新增结果状态 **`clarify`**（与 `answer/refused/smalltalk` 并列）；其 `answer` 字段其实是**给用户的问题**。
+- 前端在 `refuse/answer` 之外渲染一个 **clarify 状态**（一句问 + 可选选项 chip）；用户回答 = 一个 followup 轮。
+- 下一轮，用户的澄清经**多轮记忆/transcript 回放**进入上下文，loop 据此**固化成 `rubric`** 继续。
 
-- **总目标**：用户最终想要什么（"挑唯一最帅的来展示"）——决定打分要**相对可比**而非绝对。
-- **已知信息**：上游已查到的事实（"这是 9 个 wingsuit 候选之一"）——避免重复发现。
-- **为何分析**：本次调用在大计划中的角色（"用于横向比较，不需详尽阶段拆解"）。
-- **上一步发现**：若是 partial 后的二次分析，带上"上次画面模糊，这次看 0:30-0:50"。
+### 5.2 rubric-via-dialogue（回应决策 #3）
+**不一次性硬打分**——先把用户认可的细则敲成一个 `rubric` 字符串，**同一把尺子**喂给本轮所有 `analyze_video`。顺带解决"跨视频可比性"。rubric 来源：用户在 §5.1 的回答 / 用户原话里已含的标准 / 默认通用细则（用户没要求时）。
 
-**控 token 三原则**：
-1. **context 是短文本**，不是把整个 transcript 倒进去；loop 自然只会摘要关键句（它也在为自己的 token 预算省）。
-2. **prompt 模板固定、变量插槽小**——视频本身才是 token 大头（见 §8），文字 context 占比极低。
-3. **rubric 复用**：同一轮多次 analyze 共用同一 rubric 字符串，靠 §8 的缓存键去重。
+### 5.3 `partial` 自纠
+`enough=="partial"` 且该候选还**值得**（如分高但某段没看清）→ loop 按需**再发一次** `analyze_video`（带 `time_range` 看具体段）。不值得（分低）就跳过。**自纠由 loop 决定，工具不替它决定。**
 
 ---
 
-## 6. 接入 VS：复用既有链路（不改 orchestrator）
+## 6. context 注入（传什么 · 控 token）
 
-### 6.0 【头号决策】工具形态：in-process tool（本文默认）vs 独立 FastMCP server
+`context` 由 **loop LLM 自己填**（它在工具声明看到该参数）。`planner_desc` 引导它放：**总目标**（"挑唯一最帅来展示"→ 打分要相对可比）、**已知**（"5 个候选之一"→ 免重复发现）、**为何分析**（"横向比较，不需详尽阶段拆解"）、**上一步发现**（partial 二次分析时带"上次模糊，这次看 0:30-0:50"）。
+控 token：context 是**短文本**（非整段 transcript）；视频本身才是 token 大头（§9）；rubric 同轮复用、靠 §9 缓存键去重。
 
-你最初提到"用 FastMCP 封装"。这里给出权衡 —— 本文 §6.1 默认按 **in-process tool** 写（和现有 `show_video / threshold_sweep` 一样，是 `node_executor` 里的一个函数）：
+---
 
-| | in-process tool（推荐 M1–M3） | 独立 FastMCP server |
+## 7. 接入 VS + 形态分阶段
+
+### 7.0 形态分阶段（回应质疑 3 + 决策 #1：先验证、给后续）
+
+| 阶段 | 形态 | 目的 |
 |---|---|---|
-| 形态 | `node_executor` 里一个 `_run_analyze_video()` | 单独进程 `video_understanding` server（FastMCP **3.4.2**，py≥3.10，`@mcp.tool` 返回 Pydantic）+ VS 加一个 MCP client |
-| 复杂度 | 最低，零新进程/传输 | 多一个进程 + stdio/http 传输 + client 生命周期 |
-| 复用性 | 仅 VS 内用 | 可被别的 client（别的 app / Claude Desktop）复用 |
-| 与现状一致 | ✅ 现有工具都是 in-process | 现有 `mcp_server` 是低层 stdio，再加个 FastMCP 风格不统一 |
+| **P1 验证**（M1–M3） | **in-process 通用原语**（最小信封） | 最快证明"现场看视频答任意问题"有价值，不绑死模型 |
+| **P2 升格** | 抽成独立 **FastMCP server = 视频专家**（`fastmcp` 3.4.2，`@mcp.tool` 直接返回 `AnalyzeResult` Pydantic），内部**自己一个 mini probe-and-step loop**（可多步：抽帧/对比/复看） | 视频理解能多步、能自纠错；VS 委派即可 |
+| **P3 团队化** | server 内部 **multi-agent 串/并联**（triage → 分头分析 → 汇总评审） | 复杂视频任务的深度与并行 |
 
-**建议**：M1–M3 先做 **in-process**（最快验证产品价值）；若将来想把"视频理解"做成可被多方调用的独立服务，再抽成 FastMCP server（`pip install fastmcp`，`@mcp.tool` 直接返回 `AnalyzeResult` Pydantic，自动生成 schema，无需手写）。**这是你要拍的头号决策**，下面 §6.1 按 in-process 写，抽 FastMCP 时仅 §6.1 的 #3 换成"调 MCP client"。
+> **接口不变是关键**：VS 主 loop 永远只发"`{question, context, video, rubric?}`"、拿回"最小信封"。所以从 P1 原语 → P2/P3 agent-team，**VS 主 loop 零改动**——这就是 agent-as-tool / sub-agent delegation：对 VS 它像"问视频专家一个问题"，内部是不是一支队伍 VS 不关心。
 
-### 6.1 四处接入清单（in-process）
+### 7.1 P1 四处接入（in-process，**句柄为主**，回应决策 #2）
 | # | 文件 | 改动 |
 |---|---|---|
-| 1 | `pipeline/node_specs.py`（`SPECS` 字典，L34+） | 加一条 `NodeSpec(tool="analyze_video", needs_sandbox=False, planner_desc=..., parameters=_obj({question, context, time_range, rubric}, ["question"]))`。`video_id` 既可作 `parameters` 标量，也可走上游句柄（见 #4）。 |
-| 2 | `pipeline/dag_schema.py`（L36/L43） | `DATA_TOOLS` 加 `"analyze_video"`；`ToolName` Literal 加 `"analyze_video"`。（`needs_sandbox=False` ⇒ 数据类，不是沙箱类。） |
-| 3 | `pipeline/node_executor.py`（`execute_node` 的 `if not needs_sandbox(...)` 分支） | 加 `elif node.tool == "analyze_video": res = _run_analyze_video(node, upstream)`；新增 `_run_analyze_video()`：查 `video_metadata` 拿 `gcs_uri`（复用 `_run_show_video` 同套 SQL）→ 调 §3 的新 perception 函数 → `return NodeResult(..., ok=True, value=AnalyzeResult.model_dump())`。 |
-| 4 | `pipeline/loop_driver.py`（`UPSTREAM_HANDLES`，L26） | 若希望 loop 用"上游某步选出的 video_id"驱动，加 `"analyze_video": ["video_result_id"]`（参照 `show_video` 已是可选句柄）。纯标量 `video_id` 入参则可不加。 |
+| 1 | `pipeline/node_specs.py`（`SPECS` L34+） | 加 `NodeSpec(tool="analyze_video", needs_sandbox=False, planner_desc=..., parameters=_obj({question, context, rubric, time_range}, ["question"]))` |
+| 2 | `pipeline/dag_schema.py`（L36/L43） | `DATA_TOOLS` + `ToolName` 加 `"analyze_video"` |
+| 3 | `pipeline/node_executor.py` | `elif node.tool=="analyze_video": _run_analyze_video(node, upstream)`；新函数查 `video_metadata` 拿 `gcs_uri`（复用 `_run_show_video` SQL）→ 调 `perception/analyze_video_contextual.py` → `NodeResult(value=AnalyzeResult.model_dump())` |
+| 4 | `pipeline/loop_driver.py`（`UPSTREAM_HANDLES` L26） | 加 `"analyze_video": ["video_result_id"]`（**句柄为主**：loop 用上一步 `sql_query` 选出的 id 驱动，**每步有 result_id 可追溯谁喂给谁**——debug/审计全靠它；标量 video_id 作兜底） |
 
-> 视频内容理解的 perception 逻辑本身放在 `perception/analyze_video_contextual.py`（新文件），`node_executor` 只做"查 URI + 调函数 + 包 NodeResult"的薄适配，与 perception 解耦。
+> 视频理解逻辑放 `perception/analyze_video_contextual.py`（新文件），`node_executor` 只做薄适配——**P2 升格时只换第 3 步为"调 MCP client"，其余不动。**
 
-### 6.2 结构化 result 如何作为 preview 回喂 loop（已核对机制）
-- `_run_analyze_video` 返回 `NodeResult(value=AnalyzeResult.model_dump())`（一个 dict）。
-- `loop_driver._make_executor`（L195）对它跑 `_preview(value)`：dict ⇒ 取前 8 个字段、每格截 80 字（L53-68）。`AnalyzeResult` 顶层字段（`finding/confidence/answers_question/...`）刚好落进这 8 列——**loop LLM 正好看到决策所需的关键字段**。
-- 回喂格式（L145）：`{result_id, preview, n}`——loop 据此决策。
-- 若担心 `observations/evidence` 太长被 80 字截断影响判断：把**最关键的决策字段**（`finding / confidence / answers_question`）做成**短字符串**放在最前，长证据放后面（会被截断但 loop 通常不需要逐字看；需要时它会追加一步换角度分析）。
+### 7.2 最小信封如何过 preview 回喂（已核对机制）
+`_run_analyze_video` 返回 `NodeResult(value={answer, enough, confidence, evidence_ts})`。`loop_driver._make_executor`（L195）跑 `_preview`：dict 取前 8 字段、每格 80 字（L53-68）→ loop 看到 `answer[:80]`（含前置结论）+ `enough` + `confidence` + `evidence_ts`。回喂格式 `{result_id, preview, n}`（L145）。**所以 prompt 必须强制"结论写 answer 开头"**（§3.4）。
 
-### 6.3 视频返回通道：原样复用 `show_video`
-展示环节**不**由本工具负责——loop 选定后另发一个 `show_video(video_ids=[最帅的])`。视频经 `NodeResult.videos`（侧信道，**绕过** preview）→ `ExecResult.videos`（L197）→ `orchestrator._result` L48/57 `videos` 字段 → 前端 `<video src=signed_url>`。**这条链已存在，零改动。**
+### 7.3 视频返回：复用 `show_video` + evidence 跳播（回应决策 #4）
+loop 选定后另发 `show_video(video_ids=[…], start_ts=evidence_ts)`。视频经 `NodeResult.videos`（侧信道，绕过 preview）→ `ExecResult.videos`（L197）→ `orchestrator._result` L48/57 → 前端 `<video>`（前端已支持 `start_ts` 跳播）。**链已存在，零改动。**
 
 ---
 
-## 7. 两种输入 × 两种输出
+## 8. 两种输入 × 两种输出 + 实时上传存储（回应决策 #5）
 
-|  | **输出：NL 答案** | **输出：视频返回** |
+|  | 输出：NL 答案 | 输出：视频返回 |
 |---|---|---|
-| **输入：GCS 已入库视频**（主路径，M0） | loop：`sql_query → analyze_video* → 文本收口` | loop：`...analyze_video* → show_video`（贯穿例子） |
-| **输入：用户实时多模态上传**（M5+） | 上传落 GCS（或临时桶）→ 拿到 `video_id/gcs_uri` → 同上 | 同左，外加 `show_video` 回放刚上传的片段 |
+| **GCS 已入库视频**（主路径 M1） | `sql → analyze_video* → 收口` | `...analyze_video* → show_video`（贯穿例子） |
+| **用户实时多模态上传**（M5） | 上传落 GCS → 拿临时 `video_id` → 同上 | 同左 + `show_video` 回放刚传的 |
 
-实时上传只需在入口处把用户文件落成一个**临时 `video_id`**（写 `video_metadata` 或一张 ephemeral 表），后续链路**完全复用** GCS 路径——`analyze_video` 不感知来源差异。
-
----
-
-## 8. 成本 / 延迟 / 缓存
-
-"看 N 个视频 = N 次多模态调用"是主要成本。落地缓解（按优先级）：
-
-1. **缩候选 top-K**：先 `sql_query` 用结构化元数据/已落库 predicate 把候选压到 ≤K（如 6），再逐个 analyze。**绝不**对全库视频盲扫。
-2. **同步并行**：同一 step 内 loop 发多条 `analyze_video` call，主进程并行起 Gemini 请求（`run_loop` 每步本就是一批 call）。
-3. **便宜模型 triage**：先用 `gemini-2.5-flash`（`PERCEPTION_MODEL` 默认）快速粗筛打分，只对 top-2~3 用更强模型复核（可选第二轮）。
-4. **time-range 采样**：长视频先问"哪段最可能精彩"，再只对该段（ffmpeg 预裁，§2）做细看——省 token。
-5. **`(video_id, question, time_range, rubric)` hash 缓存**：同一视频被同一问题重复问（同轮 retry / 跨轮）直接命中缓存，不重调 Gemini。缓存 `AnalyzeResult` JSON 即可。
-
-延迟预期：单次多模态约数秒~十几秒；top-K=6 并行 ≈ 一次的墙钟时间。给前端发 `on_step` 事件（`run_loop` 已支持 SSE 流式 L149）做进度反馈。
+**实时上传存储策略（你问有哪些）**，推荐 **(c)→(a)→(b)** 组合：
+- **(a) 临时前缀 + GCS lifecycle 自动删**：`gs://…/uploads/{user}/{uuid}.mp4`，bucket 规则 N 天过期（你已有 lifecycle 经验：transcripts）。
+- **(b) ephemeral 表 + TTL**：临时 `video_id` **不进** `video_metadata`（免污染正式语料）。
+- **(c) 前端直传签名 URL**：resumable signed URL 直传 GCS，**不经后端**（省后端带宽）。
+- **(d) 配额**：每用户每天 X 个 / 总大小上限。
 
 ---
 
-## 9. 开放问题（需拍板）
+## 9. 成本 / 延迟 / 缓存 / **配额保护**（回应决策 #6）
 
-0. **【头号】工具形态：in-process tool vs FastMCP server**（见 §6.0）。本文默认 in-process；你最初想要 FastMCP。建议先 in-process 验证产品价值，后续按需抽成 FastMCP server。
-1. **`video_id` 走标量入参还是上游句柄？** 句柄更"agentic"（loop 用上一步选出的 id），标量更简单。建议**两者都支持**（标量为主，句柄可选），与 `show_video` 一致。
-2. **分数可比性**：不同 video 各自独立打分，跨样本可比吗？是否需要"一次喂多段做相对排序"的变体（更省 call 但受 Gemini 多视频上下文长度限制）？建议 M1 评测后决定。
-3. **`evidence.ts` 与 `show_video` 跳播联动**：是否让 loop 把 `evidence` 里的 ts 透传给 `show_video` 的 `start_ts`，直接跳到"最帅那一刻"？（低成本增益，建议 M1 做。）
-4. **实时上传的存储与清理**：临时 `video_id` 的 TTL / 桶 / 配额策略。
-5. **token 上限保护**：单视频时长/大小硬上限（Gemini ~1GB 限制），超限时 fail-open 给 `answers_question:"no" + suggested_next:"视频过大，需切片"`。
-6. **`needs_clarification` 回路**：partial 时除了 loop 自动再分析，要不要允许 loop 反问用户？（影响交互设计。）
+"看 N 个视频 = N 次多模态调用"是主要成本。缓解（按优先级）：
+1. **缩候选 top-K**：先 `sql_query` 把候选压到 ≤K，绝不盲扫全库。
+2. **同步并行**：同一 step 内多条 `analyze_video` call 并行起 Gemini。
+3. **flash triage**：先 `gemini-2.5-flash` 粗筛，只对 top-2~3 用更强模型复核（可选第二轮）。
+4. **time-range 采样**：长视频先定位精彩段，再只细看该段（ffmpeg 预裁）。
+5. **`(video_id, question, time_range, rubric)` hash 缓存**：重复问直接命中，不重调 Gemini。
+
+**配额保护（先一个蠢但能用的）**：
+- 常量 **`MAX_VIDEOS_PER_REQUEST = 5`**：单请求 `show_video` + `analyze_video` 累计涉及视频数 ≤5；超了在**工具层截断** + 给 loop 提示（"超过上限，只处理前 5 个 / 请缩小范围"）。
+- **后续方案（让用户选）**：做成**按 plan 分级**（free=5 / pro=N）；触顶时返回一个结构化提示（`{type:"quota", limit:5, upgrade:true}`）供前端展示"想分析更多？→ 升级"。
+
+延迟：单次多模态数秒~十几秒；top-K=5 并行 ≈ 一次墙钟。靠 `on_step` SSE（`run_loop` L149）给前端进度。
 
 ---
 
-## 10. 里程碑 Roadmap
+## 10. 决策记录（评审已定）+ 仍开放
+
+**已定（本 v2 已并入）**：
+- #0 形态 = **先 in-process 原语，后升格 FastMCP 视频专家 / agent-team**（§7.0）。
+- #1 输出 = **最小信封**（§3.3）。
+- #2 video_id = **句柄为主，可回溯**（§7.1）。
+- #3 打分 = **对话敲 rubric 再打**（§5.2）。
+- #4 evidence_ts = **透传 show_video 跳播**（§7.3）。
+- #6 保护 = **`MAX_VIDEOS_PER_REQUEST=5` + 后续 plan 分级**（§9）。
+- #7 = **`clarify` 反问回路**（§5.1）。
+
+**仍开放**：
+- 跨视频"**一次喂多段做相对排序**"的变体（更省 call，但受 Gemini 多视频上下文长度限制）——M3 评测后定。
+- **P2 触发时机**：什么信号判定"该升格成多步视频专家"（如单次 analyze 的 partial 率、用户复杂度）。
+- clarify 的"**何时该反问 vs 直接用默认 rubric 干**"的阈值（太爱反问会烦人）。
+
+---
+
+## 11. Roadmap
 
 | 里程碑 | 内容 | 退出标准 |
 |---|---|---|
-| **M0 设计定稿** | 本文 + §9 拍板 | 评审通过 |
-| **M1 原语落地** | `perception/analyze_video_contextual.py`：`AnalyzeRequest / AnalyzeResult / 动态 prompt / 复用 Gemini 范式`；**离线单测**（mock Gemini，验 schema + partial/no 路径） | 单测绿;给定 (question,context) 产出合法 `AnalyzeResult` |
-| **M2 接入 loop** | §6.1 四处登记 + `_run_analyze_video` 适配 + preview 字段顺序调优 | 在 `run_loop` 里能被 LLM 调起、result 正确回喂 |
-| **M3 端到端「挑最帅」** | 贯穿例子全链路（sql→analyze*→show_video）跑通 | demo：拒答问题现在能答 + 播放 + 给理由 |
-| **M4 成本/缓存** | top-K、并行、`(video,question)` 缓存、flash triage | N=6 候选墙钟 ≈ 单次;重复问命中缓存 |
-| **M5 实时上传 + time-range** | 用户上传路径;ffmpeg 预裁切片 | 上传视频可被同链路分析 |
-| **M6 灰度 → 上线** | feature flag 灰度、usage 日志（接现有 token 计量）、回归 | 灰度无回归 → 全量;Looker 看用量 |
+| **M0 v2 定稿** | 本文 | 评审通过 |
+| **M1 原语** | `perception/analyze_video_contextual.py`：`AnalyzeRequest / AnalyzeResult(最小信封) / 动态 prompt / 复用 Gemini 范式`；离线单测（mock Gemini，验 yes/partial/no + answer 前置） | 单测绿 |
+| **M2 接入 loop** | §7.1 四处（句柄为主）+ `_run_analyze_video` + preview front-load + 配额截断 | loop 能调起、最小信封正确回喂 |
+| **M3 端到端「挑最帅」** | `clarify→rubric→analyze*→show_video(跳播)` 全链路 | demo：拒答问题现在能答 + 跳到关键时刻播放 + 给理由 |
+| **M4 成本/缓存/配额** | top-K、并行、flash triage、`(video,question)` 缓存、`MAX_VIDEOS_PER_REQUEST` + plan 提示 | N=5 并行 ≈ 单次；重复问命中缓存 |
+| **M5 实时上传** | 直传签名 URL + lifecycle 临时前缀 + ephemeral 表 + ffmpeg time-range | 上传视频可被同链路分析 |
+| **M6 升格 P2** | 抽成 FastMCP 视频专家 server（内部 mini-loop）；node_executor 第 3 步改调 MCP client | VS 委派、行为不回归 |
+| **M7 P3 团队化** | server 内 multi-agent 串/并联 | 复杂任务质量提升（远期） |
+| **M8 灰度 → 上线** | feature flag、usage 日志、回归 | 灰度无回归 → 全量 |
 
 ---
 
-### 已核实事实锚点（防编造，verify 通过）
-- loop 回喂契约 `{result_id, preview, n}`：`loop_driver.py` L145；`_preview` 3×8×80：L53-68。
-- 视频侧信道绕过 preview：`NodeResult.videos`(executor) → `ExecResult.videos` L197 → `orchestrator._result` L48/57。
-- 上游句柄注入 `result_id`：`loop_driver.py` `UPSTREAM_HANDLES` L26-34（`show_video` 为可选句柄样板）。
-- 四处接入约定：`node_specs.SPECS` L34、`dag_schema.DATA_TOOLS/ToolName` L36/L43、`node_executor.execute_node` 数据类分支、`loop_driver.UPSTREAM_HANDLES`。
-- perception 现状（须替换）：`skydive_extract.py: analyze_video(model, gcs_uri)` L81，prompt 写死、固定 `SkydiveExtraction` schema；Gemini 范式 `Part.from_uri + generate_content(response_mime_type=json)` 可复用。
-- `time_range`：Gemini `Part.from_uri` 无 start/end/fps 入口，仅 prompt 软约束或 ffmpeg 预裁。
-- FastMCP 当前版本：`fastmcp` 3.4.2（py≥3.10），`@mcp.tool` 可直接返回 Pydantic 模型自动生成 schema。
+### 已核实事实锚点（verify 通过）
+- loop 回喂 `{result_id, preview, n}`：`loop_driver.py` L145；`_preview` 3×8×80：L53-68。
+- 视频侧信道绕 preview：`NodeResult.videos` → `ExecResult.videos` L197 → `orchestrator._result` L48/57。
+- 句柄注入 `result_id`：`loop_driver.UPSTREAM_HANDLES` L26-34（`show_video` 为可选句柄样板）。
+- 四处接入：`node_specs.SPECS` L34、`dag_schema.DATA_TOOLS/ToolName` L36/L43、`node_executor.execute_node` 数据类分支、`loop_driver.UPSTREAM_HANDLES`。
+- perception 现状（须替换）：`skydive_extract.py: analyze_video(model, gcs_uri)` L81；Gemini 范式 `Part.from_uri + generate_content(response_mime_type=json)` 可复用。
+- `time_range`：Gemini `Part.from_uri` 无 start/end/fps，仅 prompt 软约束或 ffmpeg 预裁。
+- FastMCP：`fastmcp` 3.4.2（py≥3.10），`@mcp.tool` 可直接返回 Pydantic 自动生成 schema。
