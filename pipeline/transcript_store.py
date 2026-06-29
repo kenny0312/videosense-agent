@@ -23,7 +23,7 @@ from pipeline import config
 log = logging.getLogger("pipeline.transcript_store")
 
 OVERFLOW_BYTES = int(os.environ.get("TRANSCRIPT_OVERFLOW_BYTES", "8192"))   # 轴②:超此即溢出
-HOT_WINDOW     = int(os.environ.get("TRANSCRIPT_HOT_WINDOW", "200"))        # 热尾保留条数
+HOT_WINDOW     = int(os.environ.get("TRANSCRIPT_HOT_WINDOW", "500"))        # 热尾保留条数(够 ~60-100 轮走快路)
 
 
 def _scoped(owner: str, session_id: str) -> str:
@@ -114,9 +114,36 @@ class RedisGcsTranscriptStore(BaseTranscriptStore):
     def tail(self, key, n):
         try:
             rows = self._r.lrange(f"vs:tx:{key}", -n, -1) or []
-            return [json.loads(x) for x in rows]
+            events = [json.loads(x) for x in rows]
         except Exception as e:
             log.warning("transcript 热尾 tail 失败(fail-open): %r", e)
+            events = []
+        # CC 式全量注入的前提:热尾【不足】时从 GCS 全量回读(耐久真相)。但只在【确实可能不足】时
+        # 才碰 GCS,别让短会话每轮都白跑一趟:lrange 至多返回 HOT_WINDOW 条,故
+        #   · 0 < len < HOT_WINDOW → Redis 里就是【全量】(从没被 LTRIM 过)→ 不读 GCS;
+        #   · len == 0(过 TTL/空)或 len 顶到 HOT_WINDOW(被 LTRIM,更老的只在 GCS)→ 回读 GCS。
+        if (not events or len(events) >= self._hot) and len(events) < n:
+            gcs = self._tail_from_gcs(key, n)
+            if len(gcs) > len(events):
+                events = gcs
+        return events
+
+    def _tail_from_gcs(self, key, n):
+        """从 GCS 一事件一对象回读最近 n 条(seq 零填充 → 名字字典序即时间序)。best-effort。"""
+        try:
+            from google.cloud import storage
+            prefix = f"transcripts/{key.replace(':', '/')}/"
+            bkt = storage.Client(project=config.GCP_PROJECT).bucket(config.GCS_BUCKET)
+            blobs = sorted(bkt.list_blobs(prefix=prefix), key=lambda b: b.name)[-n:]
+            out = []
+            for b in blobs:
+                try:
+                    out.append(json.loads(b.download_as_text()))
+                except Exception:
+                    pass
+            return out
+        except Exception as e:
+            log.warning("transcript GCS 回读失败(fail-open): %r", e)
             return []
 
 
@@ -157,5 +184,5 @@ def make_transcript_store() -> BaseTranscriptStore:
     return InMemoryTranscriptStore()
 
 
-# 模块级单例(像 VALUE_STORE):orchestrator 在 loop 路径用它记录/回放 transcript。
+# 模块级单例:orchestrator 在 loop 路径用它记录/回放 transcript(唯一记忆)。
 STORE: BaseTranscriptStore = make_transcript_store()

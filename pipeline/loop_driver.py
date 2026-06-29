@@ -4,8 +4,8 @@
 - `GeminiConversation` / `_make_executor` 是真实适配器(live 由 M2 spike 验过)。
   复用现有 `node_executor.execute_node` 当工具执行器;复用 M1 的
   `node_specs.build_function_declarations`,叠加 M2 验过的【上游句柄】参数。
-- M7b:register_artifact 已纯 handle 化(无 recipe / 不再合成 DAG);上一轮上下文走
-  transcript 回放(loop_memory)。loop 是 orchestrator 唯一执行路径。
+- 记忆简化:不再 register_artifact / catalog / 值复用;唯一记忆 = transcript,上一轮上下文
+  走 transcript 回放(loop_memory)。loop 是 orchestrator 唯一执行路径。
 """
 from __future__ import annotations
 
@@ -182,7 +182,7 @@ class GeminiConversation:
         return calls, ("".join(texts) if texts else None)
 
 
-def _make_executor(sandbox, trace, schema, session_id, value_store) -> Callable:
+def _make_executor(sandbox, trace, schema, session_id) -> Callable:
     quota = {"analyzed": 0}                               # 配额:本请求 analyze_video 调用计数
     def execute(cid, name, inputs, upstream, uses):
         if name not in ALL_TOOLS:
@@ -199,7 +199,7 @@ def _make_executor(sandbox, trace, schema, session_id, value_store) -> Callable:
         except Exception as e:                               # 幻觉/坏参数 → 软失败回喂
             return ExecResult(ok=False, stderr=f"bad node {name}: {e}")
         nr = execute_node(node, upstream, sandbox, trace, schema=schema,
-                          session_id=session_id, value_store=value_store)
+                          session_id=session_id)
         pv, n = _preview(nr.value)
         return ExecResult(ok=nr.ok, value=nr.value, preview=pv, n=n, stderr=nr.stderr,
                           code=nr.code, artifact=nr.artifact, videos=nr.videos)
@@ -224,6 +224,14 @@ _LOOP_SYSTEM = (
     "(如 plot 的 data_result_id;merge_asof 的 left_result_id=左表/视频侧、"
     "right_result_id=右表/传感器侧)。\n"
     "拿到足够信息后,用【纯文本】回答用户,不要再调用工具。\n\n"
+    "# 指代与追问(指代解析现在归你做)\n"
+    "- 用户指代之前的结果(这个/那个/上面/刚才/那批/those/it/above 等)时:从上方【多轮上下文】回放里"
+    "找到对应那一条 —— 回放含每一步的完整 inputs(如某次 show_video 的 video_ids、某次 sql_query 的条件),"
+    "据此定位到具体的 result_id / 视频 id 再继续。\n"
+    "- 元问题(你怎么得出的/用了什么方法)同样据回放里那一轮的真实工具链来解释,不要编造步骤。\n"
+    "- 若回放里【找不到】能对上的那一条(或根本没有上文),就用纯文本反问让用户说具体些"
+    "(指哪一条 / 哪个视频),【不要瞎猜、不要随便挑一条】。\n"
+    "- 收口作答时,凡涉及具体视频/结果的,点名它(如视频 id),别只说「那个」。\n\n"
     "# 关键数据说明\n"
     "- video_facts.predicate 是英文活动描述,用 ILIKE 模糊匹配(中文先译英:滑雪→%skiing%/%snowboarding%)。\n"
     "- video_facts.matched 是布尔;查已确认事实加 AND matched = true。\n"
@@ -242,13 +250,13 @@ def _loop_system(schema: dict, replay_context: "str | None") -> str:
 
 
 def run_query_loop(nl: str, *, schema: dict, replay_context: "str | None", sandbox, trace,
-                   session_id: "str | None", value_store, on_step=None) -> LoopOutcome:
+                   session_id: "str | None", on_step=None) -> LoopOutcome:
     """orchestrator 的 loop 入口:建会话 + 执行器 → run_loop → 收产物(纯 handle,无合成 DAG)。
     replay_context(M5)= 从 transcript 回放出的多轮上下文(取代旧 recipe 块)。
     on_step(M6b)= 每步回调,供 SSE 流式。"""
     conv = GeminiConversation(config.LOOP_MODEL, loop_function_declarations(),
                               _loop_system(schema, replay_context))
-    execute = _make_executor(sandbox, trace, schema, session_id, value_store)
+    execute = _make_executor(sandbox, trace, schema, session_id)
     r = run_loop(nl, conv, execute, on_step=on_step)
     # 最终成功步 → artifact 的 kind/value;preview_value:plot-final 取上游数据
     # (plot 自身 value 只有 {n_points},无复用价值),其余 = final_value。

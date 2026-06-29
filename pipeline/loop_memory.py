@@ -5,7 +5,8 @@
 - 压缩(决策④):尾巴超 token 高水位 → 把【超出最近 KEEP 轮】的老事件 LLM 摘要进一条
   running summary,压到低水位;最近若干轮 + 摘要保持。摘要器可注入(离线可测)。
 
-catalog 仍在,但只作【指代解析】的 handle 索引(label/preview/值复用指针),不再含 recipe。
+记忆简化后:transcript 是【唯一】记忆,catalog/session-history 已删 —— 指代/meta 全靠这份回放,
+loop 自己在回放里定位 result_id / 视频 id(回放含完整 inputs)。
 """
 from __future__ import annotations
 
@@ -89,8 +90,10 @@ def compact(turns, *, keep, summarize):
 
 
 def build_loop_context(store, owner, session_id, *, keep=None, token_budget=None,
-                       summarize=None, max_tail=400) -> "str | None":
-    """读 transcript 尾 → (超预算则压缩) → loop 的多轮上下文字符串。空会话返回 None。"""
+                       summarize=None, max_tail=1000) -> "str | None":
+    """读 transcript 尾 → (超预算则压缩) → loop 的多轮上下文字符串。空会话返回 None。
+    CC 式:默认全量注入(token_budget≈窗口×0.6,见 config),只在逼近窗口才压缩。
+    max_tail 取较大值:热尾(HOT_WINDOW)装不下的更老历史由 store 从 GCS 全量回读补齐。"""
     keep = config.LOOP_KEEP_TURNS if keep is None else keep
     token_budget = config.LOOP_CONTEXT_TOKEN_BUDGET if token_budget is None else token_budget
     events = store.tail(_scoped(owner, session_id), max_tail)

@@ -15,12 +15,10 @@
 """
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any, TYPE_CHECKING
 
 from pipeline import mcp_client, usage
-from pipeline.artifact_value_store import VALUE_STORE
 from pipeline.dag_schema import DAG
 from pipeline.node_executor import NodeResult
 from pipeline.node_specs import catalog_for_planner
@@ -66,24 +64,6 @@ def _result(ok: bool, *, trace: Trace, dag: DAG | None = None,
     }
 
 
-def _explain_meta(session: "Session", resolved_ids: list[str]) -> str:
-    """meta 轮:纯 Python 模板,用 catalog 句柄(label/kind/n/预览)说明上一轮【产出了什么】。
-    M7b 起 catalog 不再存 recipe/步骤链,故这里只据 handle 描述,不编造"怎么算的"、不调模型。"""
-    lines = ["我来说说上一轮的结果:"]
-    for aid in resolved_ids:
-        a = session.get_artifact(aid)
-        if not a:
-            continue
-        head = f"· 『{a.label}』产出了一个 {a.kind}"
-        if a.n:
-            head += f",共 {a.n} 条"
-        lines.append(head + "。")
-        if a.preview:
-            lines.append(f"    预览:{json.dumps(a.preview, ensure_ascii=False)}")
-    lines.append("想知道具体怎么得到的,我可以再跑一遍给你看每一步。")
-    return "\n".join(lines)
-
-
 def run_query(nl: str, *, quiet_trace: bool = False,
               session: "Session | None" = None,
               owner: str = "anon", on_step=None) -> dict:
@@ -91,20 +71,7 @@ def run_query(nl: str, *, quiet_trace: bool = False,
     trace = Trace(quiet=quiet_trace)
     sandbox = SandboxClient()
 
-    # 会话视图:单轮(session=None)→ 全 None,Router/记录路径与单轮完全一致
-    history_view = session.history_view() if session else None
-    catalog_view = session.catalog_view() if session else None
-    resolved_ids: list = []          # 本轮解析到的真实 artifact id(下面解析后赋值;用于冻结指代)
-
-    def _remember(status: str, answer: Any = None, artifact_ids: list | None = None) -> None:
-        """把这一轮记进 history(含拒答/失败轮,供后续 meta/指代);session 层出错 fail-open。"""
-        if session is None:
-            return
-        try:
-            session.record_turn(nl, verdict, status, answer,
-                                 artifact_ids=artifact_ids, referenced_ids=resolved_ids)
-        except Exception as e:
-            log.warning("session.record_turn 失败(fail-open): %r", e)
+    resolved_ids: list = []          # 兼容自定义 skill handler 形参;指代解析已下放给 loop
 
     # ── 前置 Router:判可答性 + 意图(不可答则拒,跳过昂贵 planner)──
     rstep = trace.step("Route")
@@ -112,8 +79,7 @@ def run_query(nl: str, *, quiet_trace: bool = False,
     verdict = None
     try:
         schema = mcp_client.get_schema()
-        verdict = Router().judge(nl, schema=schema, tools=catalog_for_planner(),
-                                 history=history_view, artifact_catalog=catalog_view)
+        verdict = Router().judge(nl, schema=schema, tools=catalog_for_planner())
         rstep.ok(decision=verdict.decision, intent=verdict.intent,
                  route=verdict.route or "-", conf=f"{verdict.confidence:.2f}")
     except Exception as e:
@@ -122,42 +88,20 @@ def run_query(nl: str, *, quiet_trace: bool = False,
 
     sid = session.session_id if session else None
     ttype = getattr(verdict, "turn_type", "new") if verdict else "new"
-    intent = getattr(verdict, "intent", "other") if verdict else "other"
     route = getattr(verdict, "route", "") if verdict else ""
 
     if verdict is not None and verdict.decision == "smalltalk":
         # 不再回固定一句:小模型按人设生成可变回复,失败再回退到 SMALLTALK_REPLY 常量。
         ans = smalltalk_reply(nl) or SMALLTALK_REPLY
-        _remember("smalltalk", ans)
         return _result(True, trace=trace, status="smalltalk", answer=ans,
                        session_id=sid, turn_type=ttype)
     if verdict is not None and should_refuse(verdict):
-        _remember("refused")
         return _result(False, trace=trace, status="refused", reason=verdict.reason,
                        session_id=sid, turn_type=ttype)
 
-    # ── 多轮:解析指代 —— 只信 catalog 真实 id(集合成员),不信模型的 resolvable ──
-    resolved_ids = session.resolve_references(verdict) if (session and verdict) else []
-
-    # meta:解释上一轮"用了什么方法"(纯模板,不再规划、不调模型)
-    if ttype == "meta":
-        if resolved_ids:
-            ans = _explain_meta(session, resolved_ids)
-            _remember("ok", ans)
-            return _result(True, trace=trace, status="ok", answer=ans,
-                           session_id=sid, turn_type="meta")
-        _remember("refused")                          # 没有可参考的上一轮分析 → 诚实拒答
-        return _result(False, trace=trace, status="refused",
-                       reason="这是关于先前分析的元问题,但我没有可参考的上一轮结果。",
-                       session_id=sid, turn_type="meta")
-
-    # followup 却解析不到任何真实结果 → 诚实拒答,不瞎规划
-    if ttype == "followup" and session is not None and not resolved_ids:
-        _remember("refused")
-        return _result(False, trace=trace, status="refused",
-                       reason="你像是在指代之前的某条结果,但我没法确定具体是哪一条 —— "
-                              "说得更具体些(比如含哪个活动、第几条),我就能接着算。",
-                       session_id=sid, turn_type="followup")
+    # 记忆简化:meta 与 followup 不再在此前置解析/拒答 —— 一律落到下方 loop,
+    # 由 loop 用 transcript 回放(build_loop_context)自己解析"这个/那个"、解释"怎么算的";
+    # 回放里定位不到时,loop 自己 clarify(见 loop_driver._LOOP_SYSTEM),不在这里提前拒。
 
     # M7b:planner_context 已删(loop 的上一轮上下文走 transcript 回放,见下方 build_loop_context)。
     # context 仅供【自定义 skill handler】;现阶段四大类 handler 都走 loop,无 handler 在用 → 恒 None。
@@ -178,10 +122,8 @@ def run_query(nl: str, *, quiet_trace: bool = False,
             hstep.ok(route=route)
         except Exception as e:
             hstep.fail(error=repr(e))
-            _remember("error")
             return _result(False, trace=trace, error=f"skill {handler_key} failed: {e!r}",
                            session_id=sid, turn_type=ttype)
-        _remember("ok", ans)
         return _result(True, trace=trace, status="ok", answer=ans,
                        session_id=sid, turn_type=ttype)
 
@@ -189,9 +131,11 @@ def run_query(nl: str, *, quiet_trace: bool = False,
     from pipeline import loop_driver, loop_memory
     from pipeline.transcript_store import STORE as TX_STORE, gcs_blob_put
     lstep = trace.step("Loop")
-    # M5:follow-up/meta 的上一轮上下文来自 transcript 回放(取代 recipe);新轮无回放
+    # 回放【不再被 Router 轮型卡】(方案 A):有会话历史就建(空会话 build_loop_context 返回 None),
+    # 由 loop 自己据回放判断要不要解析指代/复用/重算。这样 Router 漏判裸代词("它")误标 new 时,
+    # loop 仍拿得到上文、不会饿着反问。Router 只管分流 + 给客户端标 turn_type,不再当记忆开关。
     replay_ctx = None
-    if session is not None and ttype in ("followup", "meta"):
+    if session is not None:
         try:
             replay_ctx = loop_memory.build_loop_context(
                 TX_STORE, owner, sid, summarize=loop_memory.make_llm_summarizer())
@@ -200,33 +144,21 @@ def run_query(nl: str, *, quiet_trace: bool = False,
     try:
         lo = loop_driver.run_query_loop(nl, schema=schema, replay_context=replay_ctx,
                                         sandbox=sandbox, trace=trace, session_id=sid,
-                                        value_store=VALUE_STORE, on_step=on_step)
+                                        on_step=on_step)
         lstep.ok(steps=lo.steps, terminated=lo.terminated)
     except Exception as e:
         lstep.fail(error=repr(e))
-        _remember("error")
         return _result(False, trace=trace, error=f"loop failed: {e!r}",
                        session_id=sid, turn_type=ttype)
     if lo.answer is None:
-        _remember("error")
         return _result(False, trace=trace, error=f"loop 未收敛({lo.terminated})",
                        session_id=sid, turn_type=ttype)
-    # 成功 → 把最终结果登记为可指代的 artifact(纯 handle;可复用类的真实值另存独立值仓)
-    artifact_ids = None
-    if session is not None and lo.final_tool is not None:
-        try:
-            art = session.register_artifact(
-                final_tool=lo.final_tool, final_value=lo.final_value,
-                preview_value=lo.preview_value, question=nl, intent=intent,
-                value_store=VALUE_STORE)
-            artifact_ids = [art.id]
-        except Exception as e:
-            log.warning("loop register_artifact 失败(fail-open): %r", e)
-    _remember("ok", lo.answer, artifact_ids=artifact_ids)
-    # M5:把这一轮记进 transcript(CC 式耐久记忆;owner 作用域,大本体溢出 GCS)
+    # 记忆简化:不再登记 catalog/值仓 —— 唯一记忆 = transcript。推进轮号后把这一轮落 transcript
+    # (CC 式耐久记忆;owner 作用域,大本体溢出 GCS)。
     if session is not None:
         try:
-            loop_memory.record_loop_turn(TX_STORE, owner, sid, session._turn_no, nl,
+            turn_no = session.next_turn()
+            loop_memory.record_loop_turn(TX_STORE, owner, sid, turn_no, nl,
                                          lo.trace, lo.results, lo.answer, blob_put=gcs_blob_put)
         except Exception as e:
             log.warning("record_loop_turn 失败(fail-open): %r", e)
