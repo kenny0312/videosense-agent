@@ -37,7 +37,12 @@ def test_parse_malformed_failopen():
 
 def test_parse_missing_defaults():
     v = parse_verdict({})
-    assert v.decision == "answer" and v.turn_type == "new" and v.references == []
+    assert v.decision == "answer" and v.turn_type == "new"
+
+
+def test_parse_bad_turn_type_failopen():
+    v = parse_verdict({"decision": "answer", "turn_type": "banana"})
+    assert v.turn_type == "new"   # 未知轮型 → 归 new
 
 
 def test_parse_smalltalk_ok():

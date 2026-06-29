@@ -1,13 +1,14 @@
-"""
-前置 Router(小模型 critic)—— 在 planner 之前判断:这题能不能答 + 意图分类。
+"""前置 Router(小模型 critic)—— planner 之前的【便宜分流门】:判可答性 + 意图 + 轮型。
 
-无记忆(单轮)时:catalog/history 为空 → have_memory=false,引用上文(this/above/那批…)一律 refuse。
-多轮(已实现):judge() 收 history / artifact_catalog 视图并【渲染进 prompt】;指代能在已保存结果里
-              对上号就解析(turn_type=followup/meta、references.resolved_to 填 artifact id),由
-              orchestrator 再校验 id 真实性、把配方传给 planner;对不上号则照旧诚实拒答。
-输出契约一开始就为多轮留好字段(turn_type / references),这轮只补输入与少量规则,未改契约。
+记忆简化后职责收窄:Router 只做 **分流分类**,【不再解析指代】。
+  - decision:  answer | refuse | smalltalk
+  - intent / route:  归大类(决定走哪个 workflow)
+  - turn_type: new | followup | meta —— 纯按问题的语言线索判断(有"这个/那个/上面/刚才"→followup;
+               "你怎么算的"→meta;否则 new)。**具体指代哪条结果,交给 loop 用 transcript 回放自己解析**
+               (回放里含完整 inputs/result_id);解析不到时由 loop 自己 clarify,不在这里提前拒答。
 
-结构仿 sql_fixer / code_generator(vertexai + GenerativeModel),用小模型 CRITIC_MODEL。
+所以 Router 不再吃 catalog/history,也不产 references/resolved_to —— 一份持久 transcript 即记忆。
+结构仿 sql_fixer / code_generator(vertexai + GenerativeModel),小模型 CRITIC_MODEL。
 所有失败路径 fail-open(默认 answer)—— Router 出问题绝不卡正常查询。
 """
 from __future__ import annotations
@@ -16,7 +17,7 @@ import json
 import logging
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from pipeline import config, usage
 from pipeline.code_generator import _strip_fence   # 复用同一套去围栏逻辑
@@ -39,8 +40,7 @@ class RouterVerdict(BaseModel):
     reason:     str = ""
     intent:     str = "other"           # retrieve|aggregate|analyze|visualize|meta|other(兼容旧字段)
     route:      str = ""                # 大类任务名,取自 skills/*.md(决定走哪个 workflow);闲聊/元/拒答可空
-    turn_type:  str = "new"             # new|followup|meta(单轮恒 new)
-    references: list[dict] = Field(default_factory=list)
+    turn_type:  str = "new"             # new|followup|meta(指代具体哪条由 loop 回放解析,这里只分类)
 
 
 def parse_verdict(raw: Any) -> RouterVerdict:
@@ -49,6 +49,8 @@ def parse_verdict(raw: Any) -> RouterVerdict:
         v = RouterVerdict.model_validate(raw)
         if v.decision not in ("answer", "refuse", "smalltalk"):
             v.decision = "answer"
+        if v.turn_type not in ("new", "followup", "meta"):
+            v.turn_type = "new"
         # route↔intent 互相回填(反向兼容:只给其一时补另一个,保证下游一致)。
         if not v.route and v.intent not in ("", "other"):
             v.route = skills.route_for_intent(v.intent)
@@ -68,89 +70,58 @@ def should_refuse(v: RouterVerdict) -> bool:
     return v.decision == "refuse" and v.confidence >= REFUSE_MIN_CONFIDENCE
 
 
-# few-shot:用真 dict→json.dumps,避免 f-string 大括号转义。
-# 基础例子(单/多轮通用)
-_FEWSHOT_BASE = [
+# few-shot:用真 dict→json.dumps,避免 f-string 大括号转义。指代/元问题只判 turn_type,不填 resolved_to。
+_FEWSHOT = [
     ("How many videos are there in total?",
      {"decision": "answer", "confidence": 0.95, "reason": "", "intent": "aggregate",
-      "route": "aggregate", "turn_type": "new", "references": []}),
+      "route": "aggregate", "turn_type": "new"}),
     ("Find all videos that contain skiing.",
      {"decision": "answer", "confidence": 0.9, "reason": "", "intent": "retrieve",
-      "route": "retrieval", "turn_type": "new", "references": []}),
+      "route": "retrieval", "turn_type": "new"}),
     ("who are you?",
      {"decision": "smalltalk", "confidence": 0.95, "reason": "", "intent": "other",
-      "route": "", "turn_type": "new", "references": []}),
-]
-# 无记忆时:指代上文 / 元问题一律拒答
-_FEWSHOT_NOMEM = [
-    ("what is the first video above",
-     {"decision": "refuse", "confidence": 0.9,
-      "reason": "“above”指向上一轮的结果,我没有会话记忆,无法确定是哪条。",
-      "intent": "retrieve", "route": "", "turn_type": "new",
-      "references": [{"text": "above", "resolvable": False, "resolved_to": None}]}),
-    ("how did you decide that?",
-     {"decision": "refuse", "confidence": 0.85,
-      "reason": "这是关于先前分析的元问题,但我没有可参考的上一轮分析。",
-      "intent": "meta", "route": "", "turn_type": "new", "references": []}),
-]
-# 有记忆时:指代能在"已保存结果"里对上号 → 解析(turn_type=followup/meta、resolved_to 填 id)
-_FEWSHOT_MEM = [
-    ("plot start time vs confidence for those",   # 已保存结果里有 a1(上一轮的滑雪视频)
+      "route": "", "turn_type": "new"}),
+    ("plot start time vs confidence for those",   # 含"those"指代上文 → 追问;指哪批交给 loop 解析
      {"decision": "answer", "confidence": 0.85, "reason": "", "intent": "visualize",
-      "route": "visualize", "turn_type": "followup",
-      "references": [{"text": "those", "resolvable": True, "resolved_to": "a1"}]}),
-    ("how did you get that number?",              # 元问题,且有可参考的上一轮结果
+      "route": "visualize", "turn_type": "followup"}),
+    ("这个视频里有几个人?",                          # 含"这个"指代上文 → 追问
+     {"decision": "answer", "confidence": 0.85, "reason": "", "intent": "analyze",
+      "route": "analyze", "turn_type": "followup"}),
+    ("how did you get that number?",               # 元问题 → meta
      {"decision": "answer", "confidence": 0.8, "reason": "", "intent": "meta",
-      "route": "", "turn_type": "meta",
-      "references": [{"text": "that number", "resolvable": True, "resolved_to": "a1"}]}),
+      "route": "", "turn_type": "meta"}),
 ]
 
 _SKELETON = {
     "decision": "answer|refuse|smalltalk", "confidence": 0.0, "reason": "一句话(与问题同语言)",
     "intent": "retrieve|aggregate|analyze|visualize|meta|other",
-    "route": "<下面任务类别之一;闲聊/元问题/拒答留空>", "turn_type": "new",
-    "references": [{"text": "...", "resolvable": True, "resolved_to": None}],
+    "route": "<下面任务类别之一;闲聊/元问题/拒答留空>", "turn_type": "new|followup|meta",
 }
 
 
-def _router_prompt(question: str, schema: dict, tools: str,
-                   history: list | None, catalog: list | None) -> str:
-    have_memory = bool(history or catalog)
-    mem_note = ("你有对话历史和已保存的上一轮结果(见下),可据此解析指代。" if have_memory
-                else "你【没有】之前对话的记忆,也没有任何已保存的上一轮结果。")
-    mem_block = ""
-    if have_memory:
-        mem_block = (
-            f"# 对话历史(最近在后)\n{json.dumps(history or [], ensure_ascii=False)}\n\n"
-            "# 已保存的上一轮结果(可被指代;每条有唯一 id,resolved_to 必须填这里出现过的 id)\n"
-            f"{json.dumps(catalog or [], ensure_ascii=False)}\n\n"
-        )
-    fewshot_list = _FEWSHOT_BASE + (_FEWSHOT_MEM if have_memory else _FEWSHOT_NOMEM)
-    fewshot = "\n".join(f"问:{q}\n{json.dumps(a, ensure_ascii=False)}" for q, a in fewshot_list)
+def _router_prompt(question: str, schema: dict, tools: str) -> str:
+    fewshot = "\n".join(f"问:{q}\n{json.dumps(a, ensure_ascii=False)}" for q, a in _FEWSHOT)
     return (
         "你是一个视频分析查询的【路由器】。判断下面这个问题能否用现有工具和数据库回答,"
-        "若能答还要归到一个【任务大类(route)】。\n\n"
-        f"{mem_note}\n\n"
-        f"{mem_block}"
+        "若能答还要归到一个【任务大类(route)】,并判断它是【新问题/追问/元问题】。\n\n"
         f"# 数据库结构(只有这些表/列)\n{json.dumps(schema, ensure_ascii=False)}\n\n"
         f"# 可用工具\n{tools}\n\n"
         "# 可用任务类别(route —— 给「能答的新/追问任务」挑最贴切的一个填入 route)\n"
         f"{skills.render_catalog()}\n\n"
         "# 判断规则\n"
-        "- 指代上文(this/that/those same/it/above/前面/刚才/上面/那批/第一个那个 等):\n"
-        "    · 能在上面【已保存结果】里对上对应那条 → references 填 resolvable=true、resolved_to=该条 id,"
-        "decision=\"answer\",turn_type=\"followup\";指代含糊或匹配多条时取【最近】(id 序号最大)那条。\n"
-        "    · 没有记忆、或在已保存结果里找不到对应条目 → references 填 resolvable=false、resolved_to=null,"
-        "decision=\"refuse\"。\n"
+        "- 轮型 turn_type:\n"
+        "    · 指代上文(this/that/those/same/it/above/前面/刚才/上面/那批/第一个那个/这个 等)→ "
+        "turn_type=\"followup\",decision=\"answer\"。【你只需判断「这是追问」,不要去猜具体指哪条】——"
+        "完整对话上下文会在后续环节提供,由它精确解析;就算指代含糊也别拒,交给后续澄清。\n"
+        "    · 元问题(你怎么得出/用了什么方法/上一条怎么算的)→ turn_type=\"meta\",intent=\"meta\","
+        "decision=\"answer\"。\n"
+        "    · 其余正常新问题 → turn_type=\"new\",decision=\"answer\"。\n"
         "- 问题要的数据/分析在上面的表和工具里【根本做不到】→ decision=\"refuse\",reason 说明做不到。\n"
-        "- 元问题(你怎么得出/用了什么方法/上一条怎么算的):有可参考的上一轮结果 → "
-        "decision=\"answer\",intent=\"meta\",turn_type=\"meta\",resolved_to 指向那条;"
-        "没有先前结果 → decision=\"refuse\",intent=\"meta\"。\n"
-        "- 身份/打招呼/闲聊(who are you / hi / 你是谁 / 你能做什么 等)→ decision=\"smalltalk\"(系统会据此生成友好回复,你只需分类正确;route 留空)。\n"
-        "- 其余正常新问题 → decision=\"answer\",turn_type=\"new\"。\n"
+        "- 身份/打招呼/闲聊(who are you / hi / 你是谁 / 你能做什么 等)→ decision=\"smalltalk\""
+        "(系统会据此生成友好回复,你只需分类正确;route 留空)。\n"
         "- route:凡 decision=\"answer\" 的【新/追问任务】,都要从上面「可用任务类别」里挑【最贴切的一个】填进 route;"
         "闲聊、元问题(meta)、拒答一律把 route 留空 \"\"。\n"
-        "- 【重要】拿不准时倾向 decision=\"answer\"(交给后面的规划器),只在确信做不到时才 refuse;confidence 反映把握。\n"
+        "- 【重要】拿不准时倾向 decision=\"answer\"(交给后面的环节),只在确信做不到时才 refuse;confidence 反映把握。\n"
         "- 所有 reason 用友好的产品口吻,【不要】暴露任何内部组件名(如 router/planner/critic)。\n\n"
         f"# 只输出 JSON(不要解释、不要 markdown),格式:\n{json.dumps(_SKELETON, ensure_ascii=False)}\n\n"
         f"# 例子\n{fewshot}\n\n"
@@ -167,11 +138,9 @@ class Router:
         vertexai.init(project=config.GCP_PROJECT, location=config.GCP_REGION)
         self.model = GenerativeModel(config.CRITIC_MODEL)
 
-    def judge(self, question: str, *, schema: dict, tools: str,
-              history: list | None = None,
-              artifact_catalog: list | None = None) -> RouterVerdict:
+    def judge(self, question: str, *, schema: dict, tools: str) -> RouterVerdict:
         resp = self.model.generate_content(
-            _router_prompt(question, schema, tools, history, artifact_catalog),
+            _router_prompt(question, schema, tools),
             generation_config={"response_mime_type": "application/json", "temperature": 0.0},
         )
         usage.add_usage(resp, config.CRITIC_MODEL)

@@ -66,24 +66,6 @@ def _result(ok: bool, *, trace: Trace, dag: DAG | None = None,
     }
 
 
-def _explain_meta(session: "Session", resolved_ids: list[str]) -> str:
-    """meta 轮:纯 Python 模板,用 catalog 句柄(label/kind/n/预览)说明上一轮【产出了什么】。
-    M7b 起 catalog 不再存 recipe/步骤链,故这里只据 handle 描述,不编造"怎么算的"、不调模型。"""
-    lines = ["我来说说上一轮的结果:"]
-    for aid in resolved_ids:
-        a = session.get_artifact(aid)
-        if not a:
-            continue
-        head = f"· 『{a.label}』产出了一个 {a.kind}"
-        if a.n:
-            head += f",共 {a.n} 条"
-        lines.append(head + "。")
-        if a.preview:
-            lines.append(f"    预览:{json.dumps(a.preview, ensure_ascii=False)}")
-    lines.append("想知道具体怎么得到的,我可以再跑一遍给你看每一步。")
-    return "\n".join(lines)
-
-
 def run_query(nl: str, *, quiet_trace: bool = False,
               session: "Session | None" = None,
               owner: str = "anon", on_step=None) -> dict:
@@ -91,10 +73,7 @@ def run_query(nl: str, *, quiet_trace: bool = False,
     trace = Trace(quiet=quiet_trace)
     sandbox = SandboxClient()
 
-    # 会话视图:单轮(session=None)→ 全 None,Router/记录路径与单轮完全一致
-    history_view = session.history_view() if session else None
-    catalog_view = session.catalog_view() if session else None
-    resolved_ids: list = []          # 本轮解析到的真实 artifact id(下面解析后赋值;用于冻结指代)
+    resolved_ids: list = []          # 记忆简化:指代解析已下放给 loop(transcript 回放),这里恒空
 
     def _remember(status: str, answer: Any = None, artifact_ids: list | None = None) -> None:
         """把这一轮记进 history(含拒答/失败轮,供后续 meta/指代);session 层出错 fail-open。"""
@@ -112,8 +91,7 @@ def run_query(nl: str, *, quiet_trace: bool = False,
     verdict = None
     try:
         schema = mcp_client.get_schema()
-        verdict = Router().judge(nl, schema=schema, tools=catalog_for_planner(),
-                                 history=history_view, artifact_catalog=catalog_view)
+        verdict = Router().judge(nl, schema=schema, tools=catalog_for_planner())
         rstep.ok(decision=verdict.decision, intent=verdict.intent,
                  route=verdict.route or "-", conf=f"{verdict.confidence:.2f}")
     except Exception as e:
@@ -136,28 +114,9 @@ def run_query(nl: str, *, quiet_trace: bool = False,
         return _result(False, trace=trace, status="refused", reason=verdict.reason,
                        session_id=sid, turn_type=ttype)
 
-    # ── 多轮:解析指代 —— 只信 catalog 真实 id(集合成员),不信模型的 resolvable ──
-    resolved_ids = session.resolve_references(verdict) if (session and verdict) else []
-
-    # meta:解释上一轮"用了什么方法"(纯模板,不再规划、不调模型)
-    if ttype == "meta":
-        if resolved_ids:
-            ans = _explain_meta(session, resolved_ids)
-            _remember("ok", ans)
-            return _result(True, trace=trace, status="ok", answer=ans,
-                           session_id=sid, turn_type="meta")
-        _remember("refused")                          # 没有可参考的上一轮分析 → 诚实拒答
-        return _result(False, trace=trace, status="refused",
-                       reason="这是关于先前分析的元问题,但我没有可参考的上一轮结果。",
-                       session_id=sid, turn_type="meta")
-
-    # followup 却解析不到任何真实结果 → 诚实拒答,不瞎规划
-    if ttype == "followup" and session is not None and not resolved_ids:
-        _remember("refused")
-        return _result(False, trace=trace, status="refused",
-                       reason="你像是在指代之前的某条结果,但我没法确定具体是哪一条 —— "
-                              "说得更具体些(比如含哪个活动、第几条),我就能接着算。",
-                       session_id=sid, turn_type="followup")
+    # 记忆简化:meta 与 followup 不再在此前置解析/拒答 —— 一律落到下方 loop,
+    # 由 loop 用 transcript 回放(build_loop_context)自己解析"这个/那个"、解释"怎么算的";
+    # 回放里定位不到时,loop 自己 clarify(见 loop_driver._LOOP_SYSTEM),不在这里提前拒。
 
     # M7b:planner_context 已删(loop 的上一轮上下文走 transcript 回放,见下方 build_loop_context)。
     # context 仅供【自定义 skill handler】;现阶段四大类 handler 都走 loop,无 handler 在用 → 恒 None。

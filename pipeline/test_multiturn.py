@@ -2,12 +2,10 @@
 多轮编排分支的轻量测试 —— 全用桩,不依赖 GCP / DB。
     python -m pipeline.test_multiturn
 
-覆盖 orchestrator 的多轮路径(M7b:执行路径=loop;上一轮上下文走 transcript 回放):
-  followup 解析成功 → 进入 loop(turn_type=followup)
-  followup 解析不到真实结果 → 降级诚实拒答(不进 loop)
-  meta 有 prior → 纯模板用 handle 说明上一轮产出(status=ok,不进 loop)
-  meta 无 prior → 拒答
-  成功轮 → catalog 登记 1 个 artifact(纯 handle,无 recipe)+ history 记一轮
+记忆简化后(transcript 是唯一记忆,catalog/session-history 已删):
+  followup → 一律进 loop(指代由 loop 用 transcript 回放自解析,不在编排层前置拒)
+  meta     → 一律进 loop(由 loop 据回放解释"怎么算的",不再走模板早返回)
+  new + 成功 → 进 loop、出答案、推进轮号、写 transcript(record_loop_turn)
   无 session → 向后兼容(到达 loop、session_id=None)
 """
 from __future__ import annotations
@@ -46,13 +44,19 @@ def _restore_router(saved):
 
 
 def _stub_loop(run):
-    """把 loop 入口换成 run(返回 LoopOutcome 或抛异常),并让记忆侧 inert(离线、不打 LLM/网络)。"""
+    """把 loop 入口换成 run(返回 LoopOutcome 或抛异常),并让记忆侧 inert(离线、不打 LLM/网络)。
+    记录 build_loop_context 是否被调到 + 调用时的 turn_type,便于断言"回放确实被取了"。"""
+    calls = {"replay": 0}
     saved = (loop_driver.run_query_loop,
              loop_memory.build_loop_context, loop_memory.record_loop_turn)
     loop_driver.run_query_loop = run
-    loop_memory.build_loop_context = lambda *a, **k: None
+
+    def _fake_ctx(*a, **k):
+        calls["replay"] += 1
+        return None
+    loop_memory.build_loop_context = _fake_ctx
     loop_memory.record_loop_turn = lambda *a, **k: None
-    return saved
+    return saved, calls
 
 
 def _restore_loop(saved):
@@ -60,83 +64,44 @@ def _restore_loop(saved):
      loop_memory.build_loop_context, loop_memory.record_loop_turn) = saved
 
 
-def _seed(session):
-    """给会话预置一个可指代的 artifact(a1,纯 handle)。"""
-    return session.register_artifact(
-        final_tool="sql_query", final_value=[{"id": 1, "predicate": "skiing"}],
-        preview_value=[{"id": 1, "predicate": "skiing"}],
-        question="find skiing videos", intent="retrieve")
-
-
-# ── followup ──────────────────────────────────────────────
-def test_followup_resolved_reaches_loop():
-    s = Session("t"); _seed(s)
-    v = RouterVerdict(decision="answer", turn_type="followup", intent="visualize",
-                      references=[{"resolved_to": "a1", "text": "those", "resolvable": True}])
+# ── followup:进 loop,且取了回放(不再前置拒)───────────────
+def test_followup_reaches_loop_and_replays():
+    s = Session("t")  # 无需预置任何 catalog —— 记忆全在 transcript
+    v = RouterVerdict(decision="answer", turn_type="followup", intent="visualize")
     saved = _stub_router(v)
 
     def boom(*a, **k):
         raise RuntimeError("REACHED_LOOP")
-    sl = _stub_loop(boom)
+    sl, calls = _stub_loop(boom)
     try:
         r = orch.run_query("plot those", session=s)
         assert r["status"] == "error" and "REACHED_LOOP" in r["error"], r
         assert r["turn_type"] == "followup"
+        assert calls["replay"] == 1                      # followup → 取了 transcript 回放
     finally:
         _restore_loop(sl); _restore_router(saved)
 
 
-def test_followup_unresolvable_refuses():
-    s = Session("t")  # catalog 空
-    v = RouterVerdict(decision="answer", turn_type="followup", intent="visualize",
-                      references=[{"resolved_to": "a1"}])   # a1 不存在(幻觉)
+# ── meta:进 loop(不再模板早返回),且取了回放 ─────────────
+def test_meta_reaches_loop_and_replays():
+    s = Session("t")
+    v = RouterVerdict(decision="answer", turn_type="meta", intent="meta")
     saved = _stub_router(v)
 
     def boom(*a, **k):
-        raise AssertionError("不可解析的 followup 不应进入 loop")
-    sl = _stub_loop(boom)
-    try:
-        r = orch.run_query("plot those", session=s)
-        assert r["status"] == "refused", r
-        assert r["turn_type"] == "followup"
-    finally:
-        _restore_loop(sl); _restore_router(saved)
-
-
-# ── meta ──────────────────────────────────────────────────
-def test_meta_with_prior_answers_not_refuse():
-    s = Session("t"); _seed(s)
-    v = RouterVerdict(decision="answer", turn_type="meta", intent="meta",
-                      references=[{"resolved_to": "a1"}])
-    saved = _stub_router(v)
-
-    def boom(*a, **k):
-        raise AssertionError("meta 轮不应进入 loop")
-    sl = _stub_loop(boom)
+        raise RuntimeError("REACHED_LOOP")
+    sl, calls = _stub_loop(boom)
     try:
         r = orch.run_query("how did you get that", session=s)
-        assert r["status"] == "ok", r
-        assert "skiing" in r["answer"], r["answer"]       # 用 handle 预览描述了上一轮产出
+        assert r["status"] == "error" and "REACHED_LOOP" in r["error"], r
         assert r["turn_type"] == "meta"
+        assert calls["replay"] == 1                      # meta → 也取回放(由 loop 解释)
     finally:
         _restore_loop(sl); _restore_router(saved)
 
 
-def test_meta_no_prior_refuses():
-    s = Session("t")  # 无任何上一轮结果
-    v = RouterVerdict(decision="answer", turn_type="meta", intent="meta",
-                      references=[{"resolved_to": "a1"}])
-    saved = _stub_router(v)
-    try:
-        r = orch.run_query("how did you decide", session=s)
-        assert r["status"] == "refused", r
-        assert r["turn_type"] == "meta"
-    finally:
-        _restore_router(saved)
-
-
-# ── 成功登记 / 向后兼容 ───────────────────────────────────
-def test_success_registers_artifact():
+# ── new + 成功:进 loop、出答案、推进轮号 ───────────────────
+def test_new_success_reaches_loop_and_advances_turn():
     s = Session("t")
     v = RouterVerdict(decision="answer", turn_type="new", intent="retrieve")
     saved = _stub_router(v)
@@ -149,14 +114,14 @@ def test_success_registers_artifact():
                            results={},
                            trace=[{"cid": "c0_0", "tool": "sql_query",
                                    "inputs": {}, "uses": [], "ok": True}])
-    sl = _stub_loop(fake_loop)
+    sl, calls = _stub_loop(fake_loop)
     try:
         r = orch.run_query("find skiing", session=s)
         assert r["status"] == "ok", r
-        assert len(s.catalog) == 1, s.catalog
-        assert not hasattr(s.catalog[0], "recipe"), "M7b:artifact 不应再带 recipe"
-        assert s.history[-1].status == "ok" and s.history[-1].artifact_ids == ["a1"]
-        assert r["session_id"] == "t"
+        assert r["answer"] == "共 1 条 skiing 视频"
+        assert r["session_id"] == "t" and r["turn_type"] == "new"
+        assert s._turn_no == 1                           # 轮号推进了(供 record_loop_turn)
+        assert calls["replay"] == 0                      # new 轮不取回放
     finally:
         _restore_loop(sl); _restore_router(saved)
 
@@ -167,7 +132,7 @@ def test_no_session_backcompat():
 
     def boom(*a, **k):
         raise RuntimeError("REACHED")
-    sl = _stub_loop(boom)
+    sl, calls = _stub_loop(boom)
     try:
         r = orch.run_query("how many videos")   # 无 session
         assert r["status"] == "error" and "REACHED" in r["error"], r
