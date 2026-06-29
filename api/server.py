@@ -239,7 +239,7 @@ def video_vibe_query_stream(req: VibeQueryRequest, request: Request):
                                    on_step=lambda ev: q.put(ev), pro_video=req.pro_video)
                 STORE.save(session, owner=owner)
             result["session_id"] = sid
-            usage = result.pop("usage", {}) or {}
+            usage = result.get("usage", {}) or {}        # get(非 pop):留在 result 里给前端 context 监控
             plot = result.pop("plot", {}) or {}
             if plot:
                 fname = artifacts.save_local(plot, name=uuid.uuid4().hex[:12])

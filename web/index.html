@@ -7,6 +7,7 @@
     --bg:#0a0b0d; --surface:#141619; --surface2:#1b1e22; --border:#272b31;
     --text:#e7eaee; --muted:#9aa3ad; --hint:#6b7480; --accent:#4f8cff; --accent-dim:#1d2c4d;
     --ok:#3ecf8e; --warn:#e0a23b; --danger:#e25c5c; --radius:12px;
+    --pro:#b794f6; --pro-dim:#2a2235;
   }
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--text);
@@ -90,6 +91,13 @@
   textarea{flex:1;border:none;background:transparent;color:var(--text);resize:none;font:15px/1.5 inherit;outline:none;max-height:140px}
   .send{width:34px;height:34px;border-radius:9px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:18px;flex-shrink:0;display:flex;align-items:center;justify-content:center}
   .send:disabled{opacity:.4;cursor:not-allowed}
+  .cwrap{flex:1;max-width:860px;display:flex;flex-direction:column;gap:7px}
+  .cfoot{display:flex;align-items:center;justify-content:space-between;padding:0 3px}
+  .propill{display:inline-flex;align-items:center;gap:5px;font-size:12px;padding:3px 11px;border-radius:999px;cursor:pointer;background:none;border:1px solid var(--border);color:var(--muted);line-height:1.5}
+  .propill:hover{color:var(--text);border-color:#3a3550}
+  .propill.on{background:var(--pro-dim);border-color:transparent;color:var(--pro)}
+  .cmon{display:inline-flex;align-items:center;gap:8px}
+  .cm-txt{font-size:12px;color:var(--hint);font-variant-numeric:tabular-nums}
   .empty{color:var(--hint);text-align:center;margin:auto;font-size:14px}
   .empty .ex{display:inline-block;margin:4px;padding:6px 12px;border:1px solid var(--border);border-radius:999px;cursor:pointer;color:var(--muted)}
   .empty .ex:hover{color:var(--text);border-color:#333a42}
@@ -113,15 +121,25 @@
     </header>
     <div class="thread" id="thread"></div>
     <div class="composer">
-      <div class="box">
-        <textarea id="q" rows="1" placeholder="问问你的视频库… (Enter 发送, Shift+Enter 换行)"></textarea>
-        <button class="send" id="send">↑</button>
+      <div class="cwrap">
+        <div class="box">
+          <textarea id="q" rows="1" placeholder="问问你的视频库… (Enter 发送, Shift+Enter 换行)"></textarea>
+          <button class="send" id="send">↑</button>
+        </div>
+        <div class="cfoot">
+          <button id="proPill" class="propill" type="button" aria-pressed="false"
+                  title="Pro 视频分析:看视频内容的分析改用更强的 pro 模型(更准·更慢);纯查库/计数不受影响">⚡ Pro</button>
+          <span class="cmon" title="本轮 token · 估算成本 · 记忆回放占上下文窗口的比例">
+            <span class="cm-txt" id="cmtxt">就绪</span>
+            <svg width="30" height="30" viewBox="0 0 30 30" aria-label="回放占用">
+              <circle cx="15" cy="15" r="12" fill="none" stroke="var(--border)" stroke-width="2.5"></circle>
+              <circle id="cmarc" cx="15" cy="15" r="12" fill="none" stroke="var(--pro)" stroke-width="2.5"
+                      stroke-dasharray="75.4" stroke-dashoffset="75.4" stroke-linecap="round" transform="rotate(-90 15 15)"></circle>
+              <text id="cmpct" x="15" y="18.2" text-anchor="middle" font-size="8.5" fill="var(--hint)">0%</text>
+            </svg>
+          </span>
+        </div>
       </div>
-      <label id="prowrap" title="开启后,需要【看视频内容】的分析改用更强的 Pro 模型(更准、更慢、更贵);纯查库/计数不受影响"
-             style="display:inline-flex;align-items:center;gap:6px;margin-top:8px;font-size:12.5px;color:#8a8a8a;cursor:pointer;user-select:none">
-        <input type="checkbox" id="provideo" style="cursor:pointer;margin:0"> 🔍 Pro 视频分析
-        <span style="opacity:.65">更准 · 更慢</span>
-      </label>
     </div>
   </div>
   <div class="scrim" id="scrim"></div>
@@ -426,9 +444,8 @@ function deleteChat(id, ev){
 // SSE 流式消费(M6b):POST → 读 ReadableStream → 逐条 data: 事件;step/answer 给进度,result 给最终。
 // dag 路径不发 step 事件,只收 result —— 自动降级为"转圈到出结果"。
 async function streamQuery(q, sentSid, onEvent){
-  const _pro = !!(document.getElementById('provideo') && document.getElementById('provideo').checked);
   const r=await fetch('/v1/video_vibe_query/stream',{method:'POST',
-    headers:{'Content-Type':'application/json'}, body:JSON.stringify({query:q, session_id:sentSid, pro_video:_pro})});
+    headers:{'Content-Type':'application/json'}, body:JSON.stringify({query:q, session_id:sentSid, pro_video:proOn})});
   if(!r.ok || !r.body) throw new Error('stream HTTP '+r.status);
   const reader=r.body.getReader(), dec=new TextDecoder();
   let buf='', result=null;
@@ -472,6 +489,7 @@ async function send(text){
   try{
     const d=await streamQuery(q, sentSid, onEvent) || {status:'error', error:'no result'};
     const ms=Math.round(performance.now()-t0);
+    updateContext(d);
     // 路由到【发起时】的会话,而非 await 后的当前会话 —— 中途切换/删除都不会错配
     let c = originId ? chats.find(x=>x.id===originId) : chats.find(x=>x.id===d.session_id);
     if(!originId && !c){                        // draft 首次落地 → 新建(用后端 session_id 当 id)
@@ -503,6 +521,20 @@ $('#toggle').onclick=()=>$('#shell').classList.toggle('nosb');
 $('#scrim').onclick=()=>$('#shell').classList.add('nosb');
 $('#q').addEventListener('input',autosize);
 $('#q').addEventListener('keydown',e=>{ if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();} });
+
+// ── Pro 模式开关 + context 监控环 ──
+let proOn=false;
+$('#proPill').onclick=()=>{ proOn=!proOn; const p=$('#proPill'); p.classList.toggle('on',proOn); p.setAttribute('aria-pressed',proOn?'true':'false'); };
+function fmtTok(n){ return n>=1000 ? (n/1000).toFixed(n>=10000?0:1)+'k' : String(n||0); }
+function updateContext(d){
+  const u=(d&&d.usage)||{}, ctx=(d&&d.context)||null, txt=$('#cmtxt');
+  if(u.tokens_total!=null) txt.textContent = fmtTok(u.tokens_total)+' tok · $'+(u.cost_usd!=null?Number(u.cost_usd).toFixed(3):'0.000');
+  if(ctx && ctx.budget){
+    const pct=Math.max(0,Math.min(100, Math.round(ctx.replay_tokens/ctx.budget*100)));
+    $('#cmarc').setAttribute('stroke-dashoffset', (75.4*(1-pct/100)).toFixed(1));
+    $('#cmpct').textContent=pct+'%';
+  }
+}
 
 renderSidebar();
 if(chats.length) openChat(chats[0].id); else newChat();
