@@ -74,3 +74,43 @@ def test_non_tool_result_never_overflows():
 def test_factory_default_inmemory(monkeypatch):
     monkeypatch.setattr(ts.config, "SESSION_BACKEND", "sqlite")
     assert isinstance(ts.make_transcript_store(), InMemoryTranscriptStore)
+
+
+# ── GCS 回读【门控】:热尾不足时才碰 GCS(短会话别每轮白跑 GCS)──────────────
+import json
+
+from pipeline.transcript_store import RedisGcsTranscriptStore
+
+
+class _FakeRedis:
+    def __init__(self, items): self._items = items           # items = JSON 字符串列表
+    def lrange(self, key, start, end):                        # 模拟 lrange(key, -n, -1)
+        return self._items[start:] if start < 0 else self._items[start:end + 1]
+
+
+def _redis_store(n_redis: int, hot: int = 500) -> RedisGcsTranscriptStore:
+    st = RedisGcsTranscriptStore.__new__(RedisGcsTranscriptStore)   # 跳过 __init__(免建真 Redis)
+    st._r = _FakeRedis([json.dumps({"turn": i}) for i in range(n_redis)])
+    st._hot = hot
+    st._ttl = 0
+    return st
+
+
+def test_tail_no_gcs_when_hot_has_full_history():
+    st = _redis_store(5)                                      # 5 < hot(500) → Redis 即全量
+    hits = {"n": 0}
+    st._tail_from_gcs = lambda k, n: hits.__setitem__("n", hits["n"] + 1) or []
+    evs = st.tail("k", 1000)
+    assert len(evs) == 5 and hits["n"] == 0                   # 完全没碰 GCS
+
+
+def test_tail_reads_gcs_when_hot_empty():
+    st = _redis_store(0)                                      # 过 TTL / 空
+    st._tail_from_gcs = lambda k, n: [{"turn": 1}, {"turn": 2}]
+    assert len(st.tail("k", 1000)) == 2                       # 回读 GCS
+
+
+def test_tail_reads_gcs_when_hot_trimmed_to_window():
+    st = _redis_store(500, hot=500)                           # 顶到 HOT_WINDOW → 被 LTRIM
+    st._tail_from_gcs = lambda k, n: [{"turn": i} for i in range(800)]
+    assert len(st.tail("k", 1000)) == 800                     # 取 GCS 更全的(更老的只在 GCS)

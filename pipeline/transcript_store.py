@@ -118,9 +118,11 @@ class RedisGcsTranscriptStore(BaseTranscriptStore):
         except Exception as e:
             log.warning("transcript 热尾 tail 失败(fail-open): %r", e)
             events = []
-        # CC 式全量注入的前提:热尾被 LTRIM 到 HOT_WINDOW、或已过 TTL → 想要的比热尾里有的多,
-        # 就从 GCS 全量回读(耐久真相),让"过 24h / 超热窗"仍能完整回放。GCS 失败一律 fail-open。
-        if len(events) < n:
+        # CC 式全量注入的前提:热尾【不足】时从 GCS 全量回读(耐久真相)。但只在【确实可能不足】时
+        # 才碰 GCS,别让短会话每轮都白跑一趟:lrange 至多返回 HOT_WINDOW 条,故
+        #   · 0 < len < HOT_WINDOW → Redis 里就是【全量】(从没被 LTRIM 过)→ 不读 GCS;
+        #   · len == 0(过 TTL/空)或 len 顶到 HOT_WINDOW(被 LTRIM,更老的只在 GCS)→ 回读 GCS。
+        if (not events or len(events) >= self._hot) and len(events) < n:
             gcs = self._tail_from_gcs(key, n)
             if len(gcs) > len(events):
                 events = gcs
