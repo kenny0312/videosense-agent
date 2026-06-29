@@ -17,7 +17,7 @@ import json
 import os
 from typing import Callable, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, field_validator
 
 PERCEPTION_MODEL = os.environ.get("PERCEPTION_MODEL", "gemini-2.5-flash")
 RETRY_LIMIT = 2
@@ -32,11 +32,55 @@ class AnalyzeRequest(BaseModel):
     time_range: tuple[float, float] | None = None   # 关注区间(M1:prompt 软约束)
 
 
+def _to_seconds(v) -> float | None:
+    """把模型五花八门的时间戳(42 / "0:20" / "1:02:03" / ["0:20"])统一成秒;无法解析 → None。"""
+    if isinstance(v, (list, tuple)):
+        v = v[0] if v else None
+    if v is None:
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    s = str(v).strip()
+    if not s or s.lower() in ("null", "none"):
+        return None
+    try:
+        if ":" in s:                                # H:MM:SS / M:SS
+            sec = 0.0
+            for p in s.split(":"):
+                sec = sec * 60 + float(p)
+            return sec
+        return float(s)
+    except Exception:
+        return None
+
+
 class AnalyzeResult(BaseModel):
+    """最小信封。只有 answer 是硬要求;enough/confidence/evidence_ts 全【宽松容错】——
+    模型给得不规范(枚举写错、置信度越界、时间戳是 "0:20"/数组)也不让整条结果失败:
+    信封的意义就是稳,把"够不够回答"这个钩子和自由文本答案稳稳交给 loop。"""
     answer: str                                     # 自由文本;结论写在【最前】(preview 只露前 ~80 字)
     enough: Literal["yes", "partial", "no"] = "no"  # loop 的钩子:这段视频够不够回答 question
-    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
-    evidence_ts: float | None = None                # 可选:最关键时刻(秒)→ 透传给 show_video 跳播
+    confidence: float = 0.5                          # 0-1
+    evidence_ts: float | None = None                # 最关键时刻(秒)→ 透传给 show_video 跳播
+
+    @field_validator("enough", mode="before")
+    @classmethod
+    def _coerce_enough(cls, v):
+        s = str(v).strip().lower()
+        return s if s in ("yes", "partial", "no") else "no"   # 非法枚举 → 保守判 no
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def _coerce_conf(cls, v):
+        try:
+            return max(0.0, min(1.0, float(v)))               # 越界 → 夹紧到 [0,1]
+        except Exception:
+            return 0.5
+
+    @field_validator("evidence_ts", mode="before")
+    @classmethod
+    def _coerce_ts(cls, v):
+        return _to_seconds(v)
 
 
 # ── 动态 prompt 工厂 ────────────────────────────────────────
@@ -58,7 +102,7 @@ def build_prompt(req: AnalyzeRequest) -> str:
         "  answer: 结论在前的自由文本回答\n"
         '  enough: "yes" | "partial" | "no" —— 这段视频是否足以回答上面的问题\n'
         "  confidence: 0-1\n"
-        "  evidence_ts: 支撑结论的最关键时刻(秒),没有就 null\n"
+        "  evidence_ts: 支撑结论的最关键时刻【秒数,纯数字如 20】,没有就 null(不要用 0:20 格式、不要数组)\n"
         "信息不足以回答时,enough 给 partial/no,并在 answer 写清还差什么。"
     )
     return "\n\n".join(parts)

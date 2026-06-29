@@ -84,16 +84,37 @@ def test_fail_open_on_generate_raises():
     assert r.enough == "no" and "API down" in r.answer
 
 
-def test_invalid_enough_value_fails_open():
+def test_invalid_enough_coerced_to_no():
+    # 非法枚举【不】让整条失败:enough 容错为 no,answer 保留(不是 fail-open 失败文案)
     r = analyze(AnalyzeRequest(question="x"), "gs://b/v.mp4",
                 generate=_gen({"answer": "a", "enough": "maybe", "confidence": 0.5}))
-    assert r.enough == "no"                                  # 非法枚举 → 校验失败 → fail-open
+    assert r.enough == "no" and r.answer == "a"
 
 
-def test_out_of_range_confidence_fails_open():
+def test_out_of_range_confidence_clamped():
     r = analyze(AnalyzeRequest(question="x"), "gs://b/v.mp4",
                 generate=_gen({"answer": "a", "enough": "yes", "confidence": 9}))
-    assert r.enough == "no"                                  # confidence>1 → 校验失败 → fail-open
+    assert r.enough == "yes" and r.answer == "a" and r.confidence == 1.0   # 夹紧,不失败
+
+
+def test_evidence_ts_coercion():
+    # 真模型常给 "M:SS" / 数组 / 乱串 —— 统一成秒,无法解析 → None,且【不】拖垮整条结果
+    def ts(payload):
+        return analyze(AnalyzeRequest(question="x"), "gs://b/v.mp4",
+                       generate=_gen({"answer": "a", "enough": "yes", "evidence_ts": payload})).evidence_ts
+    assert ts("0:20") == 20.0
+    assert ts("1:02:03") == 3723.0
+    assert ts(["0:20"]) == 20.0
+    assert ts(42) == 42.0
+    assert ts("不知道") is None
+    assert ts(None) is None
+
+
+def test_missing_answer_fails_open():
+    # answer 是唯一硬要求:缺了就 fail-open
+    r = analyze(AnalyzeRequest(question="x"), "gs://b/v.mp4",
+                generate=_gen({"enough": "yes", "confidence": 0.9}))
+    assert r.enough == "no"
 
 
 def main() -> int:
