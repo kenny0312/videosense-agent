@@ -147,6 +147,28 @@ VideoSense 现在同时维护**两套互不相同的记忆系统**:
 
 ---
 
+## 5.5 回放策略:CC 式「全量注入 + 临窗压缩」(本轮新增决策)
+
+**现状问题(过早优化)**:`build_loop_context` 现在 `LOOP_CONTEXT_TOKEN_BUDGET=3000`(`config.py:47`)就触发 LLM 压缩。但 `LOOP_MODEL` 默认 = `gemini-2.5-flash`,**context window = 1M token**。3000 只用了窗口 **~0.3%**,绝大多数历史被过早摘要丢精度 —— 与「transcript 是全量真相」的目标自相矛盾,也是 #4 类指代/解释不稳的隐性放大器。
+
+**改为(参考 CC):**
+- **默认全量注入**:整段 transcript 回放原文塞进 loop,不在 3000 就摘要。
+- **只在逼近 context window 时压缩**:预算从固定 3000 改为**跟 LOOP_MODEL 窗口挂钩**,留头寸给 system+schema+tools+本轮步骤+输出:
+  - 新增 `LOOP_CONTEXT_WINDOW`(flash=1_000_000,随 LOOP_MODEL 配)+ `LOOP_CONTEXT_BUDGET_FRACTION`(默认 ~0.6,留 40% 头寸给输出/本轮增长)→ 回放预算 ≈ 600k;旧 `LOOP_CONTEXT_TOKEN_BUDGET` 退役或当下限兜底。
+  - 逼近预算才 `compact`:**最近 KEEP 轮留原文 + 更老的 LLM 摘要,压完重新塞回窗口**(沿用现有 `compact`/`make_llm_summarizer`,只改触发阈值,不改机制)。
+  - 留头寸的理由(同 CC):窗口不能填满 —— 得给本轮 ≤16 步的工具往返 + 模型输出留位置,所以压在 ~0.6 而非 1.0。
+- **配套(把 §5 那条从"可选"升级为"必做")**:全量注入要能拿到**热尾 200 之外**的历史 → `build_loop_context`/`tail` 必须有「热尾 miss → GCS 全量回读」;`max_tail`(现 400)随之改为"按预算从 GCS 拉"。
+
+**收益**:flash 窗口极大,逐轮摘要是过早优化;能全量就全量、临窗才压。改完 followup 看到的是高保真全历史,指代/meta 更稳,且语义上与"一份持久 transcript 即记忆"自洽。
+
+## 5.6 后续(UI · 非本 PR):右下角 context 窗口实时监控(仿 CC)
+
+- 在前端右下角加一个**实时 context 占用条**:当前会话 token 用量 / 窗口占比 / 是否已触发压缩。
+- 数据基本现成:后端**已按请求记 token 用量**(见 usage 审计 → Cloud Logging)。只需把**本会话累计用量 + 窗口上限**随 API 响应(或 SSE)回前端,前端渲染成进度条即可。
+- 归入方向一之后的 UI 迭代,不阻塞本记忆简化 PR。
+
+---
+
 ## 6. 开放问题 / 需拍板
 
 1. **值复用(load_artifact)去留** — 改键到 transcript `event_id`(loop 引用某轮 `tool_result` 的 event_id 取真实值),**还是**暂时下线(miss 本就 fail-open 重算)?**决策依据**:实测 load_artifact 命中频率;若极低则下线,省掉整个 `artifact_value_store.py` + 19+13 个测试。
@@ -160,7 +182,7 @@ VideoSense 现在同时维护**两套互不相同的记忆系统**:
 
 > 原则:**先让 loop 自己解析指代并验证 ≥ 现状,再删 catalog,最后删 session**。每步独立可上线、可回退。
 
-- **M0 验证(不改线上)**:在 test_loop_memory 加用例,给 loop 一段 `build_loop_context` 回放,验证它能据 event_id 解析"这个/那个"、能据回放解释 meta。补 `build_loop_context` 的 **GCS 全量回读** fallback(§5)。**门槛:loop 自做指代/meta 准确率 ≥ 现状 catalog 路径**,否则停。
+- **M0 验证 + 回放策略(不改线上行为)**:在 test_loop_memory 加用例,给 loop 一段 `build_loop_context` 回放,验证它能据 event_id 解析"这个/那个"、能据回放解释 meta。**配套两项(§5.5)**:① 回放预算从 3000 改为窗口挂钩(`LOOP_CONTEXT_WINDOW`×`FRACTION`≈600k,CC 式全量+临窗压);② 补 `build_loop_context`/`tail` 的 **GCS 全量回读** fallback(§5,全量注入的前提)。**门槛:loop 自做指代/meta 准确率 ≥ 现状 catalog 路径**,否则停。
 - **M1 指代/meta 迁回 loop(并行双跑)**:orchestrator 在 followup/meta 仍走 loop,但**额外**让 loop 自解析,与 catalog 路径结果对比打点(不改对外行为)。验证 ≥ 现状。
 - **M2 切换 + 删指代门**:Router 去掉 resolved_to 逻辑,只产 turn_type;删 `resolve_references` 调用、followup resolved_ids 拒答门、`_explain_meta` 模板;followup 指代不到 → loop 自 clarify。删/改对应 router + multiturn 测试。
 - **M3 删 catalog**:删 `register_artifact` / `catalog_view` / `catalog` 字段;Router 不再吃 catalog/history。值复用按 §6 决策:改键 event_id 或下线 load_artifact。改 test_session / test_artifact_value_reuse。
