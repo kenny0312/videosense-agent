@@ -50,17 +50,19 @@ def sign_gcs_uri(gcs_uri: str | None, ttl_minutes: int = DEFAULT_TTL_MIN) -> str
         kwargs: dict = {"version": "v4",
                         "expiration": timedelta(minutes=ttl_minutes),
                         "method": "GET"}
-        # 服务账号路径(Cloud Run):刷新拿 token + email,走 IAM signBlob 签名,无需私钥文件
+        # 服务账号路径(Cloud Run):【必须先 refresh 再读 email】—— compute 凭证的
+        # service_account_email 在刷新前是占位 "default"(signBlob 会报
+        # "Invalid form of account ID default"),刷新后才解析成真实邮箱;
+        # 然后走 IAM signBlob 签名,无需私钥文件。
+        try:
+            creds.refresh(ga_requests.Request())
+        except Exception:
+            pass
         email = getattr(creds, "service_account_email", None)
-        if email:
-            try:
-                creds.refresh(ga_requests.Request())
-            except Exception:
-                pass
-            token = getattr(creds, "token", None)
-            if token:
-                kwargs["service_account_email"] = email
-                kwargs["access_token"] = token
+        token = getattr(creds, "token", None)
+        if email and email != "default" and token:
+            kwargs["service_account_email"] = email
+            kwargs["access_token"] = token
         return blob.generate_signed_url(**kwargs)
     except Exception as e:
         log.warning("签名失败(fail-open,返回不可播放): %r", e)
