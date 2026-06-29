@@ -131,9 +131,11 @@ def run_query(nl: str, *, quiet_trace: bool = False,
     from pipeline import loop_driver, loop_memory
     from pipeline.transcript_store import STORE as TX_STORE, gcs_blob_put
     lstep = trace.step("Loop")
-    # M5:follow-up/meta 的上一轮上下文来自 transcript 回放(取代 recipe);新轮无回放
+    # 回放【不再被 Router 轮型卡】(方案 A):有会话历史就建(空会话 build_loop_context 返回 None),
+    # 由 loop 自己据回放判断要不要解析指代/复用/重算。这样 Router 漏判裸代词("它")误标 new 时,
+    # loop 仍拿得到上文、不会饿着反问。Router 只管分流 + 给客户端标 turn_type,不再当记忆开关。
     replay_ctx = None
-    if session is not None and ttype in ("followup", "meta"):
+    if session is not None:
         try:
             replay_ctx = loop_memory.build_loop_context(
                 TX_STORE, owner, sid, summarize=loop_memory.make_llm_summarizer())

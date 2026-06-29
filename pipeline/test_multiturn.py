@@ -5,8 +5,8 @@
 记忆简化后(transcript 是唯一记忆,catalog/session-history 已删):
   followup → 一律进 loop(指代由 loop 用 transcript 回放自解析,不在编排层前置拒)
   meta     → 一律进 loop(由 loop 据回放解释"怎么算的",不再走模板早返回)
-  new + 成功 → 进 loop、出答案、推进轮号、写 transcript(record_loop_turn)
-  无 session → 向后兼容(到达 loop、session_id=None)
+  方案A:回放【不被 Router 轮型卡】—— 有会话就建回放(连被误标 new 的也给),由 loop 自己判
+  无 session → 向后兼容(到达 loop、session_id=None、不建回放)
 """
 from __future__ import annotations
 
@@ -109,10 +109,11 @@ def test_meta_reaches_loop_and_replays():
         _restore_loop(sl); _restore_router(saved)
 
 
-# ── new + 成功:进 loop、出答案、推进轮号 ───────────────────
-def test_new_success_reaches_loop_and_advances_turn():
+# ── 方案A:回放不被 Router 轮型卡 —— 即使被误标成 new,有会话就仍取回放透传给 loop ──
+# (回归护栏:Router 漏判裸代词"它"标成 new 时,loop 仍拿得到上文,不会饿着反问)
+def test_session_turn_gets_replay_even_when_tagged_new():
     s = Session("t")
-    v = RouterVerdict(decision="answer", turn_type="new", intent="retrieve")
+    v = RouterVerdict(decision="answer", turn_type="new", intent="retrieve")   # 故意 new(模拟误判)
     saved = _stub_router(v)
 
     def fake_loop(nl, **kw):
@@ -125,13 +126,13 @@ def test_new_success_reaches_loop_and_advances_turn():
                                    "inputs": {}, "uses": [], "ok": True}])
     sl, calls = _stub_loop(fake_loop)
     try:
-        r = orch.run_query("find skiing", session=s)
+        r = orch.run_query("它是什么类型?", session=s)     # 裸代词,Router 桩成 new
         assert r["status"] == "ok", r
         assert r["answer"] == "共 1 条 skiing 视频"
         assert r["session_id"] == "t" and r["turn_type"] == "new"
         assert s._turn_no == 1                           # 轮号推进了(供 record_loop_turn)
-        assert calls["replay"] == 0                      # new 轮不取回放
-        assert calls["passed_ctx"] is None               # 且传给 loop 的 replay_context 为 None
+        assert calls["replay"] == 1                      # 关键:轮型=new 也建了回放
+        assert calls["passed_ctx"] == _REPLAY_SENTINEL   # 且回放透传进了 loop(没被轮型卡掉)
     finally:
         _restore_loop(sl); _restore_router(saved)
 
@@ -147,6 +148,7 @@ def test_no_session_backcompat():
         r = orch.run_query("how many videos")   # 无 session
         assert r["status"] == "error" and "REACHED" in r["error"], r
         assert r["session_id"] is None and r["turn_type"] == "new"
+        assert calls["replay"] == 0 and calls["passed_ctx"] is None   # 无会话 → 不建回放
     finally:
         _restore_loop(sl); _restore_router(saved)
 
