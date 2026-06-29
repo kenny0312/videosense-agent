@@ -208,6 +208,46 @@ def _run_show_video(node: Node, upstream: dict[str, Any]) -> NodeResult:
                       value=f"🎬 为你准备了 {n} 个视频{note}")
 
 
+def _run_analyze_video(node: Node, upstream: dict[str, Any]) -> NodeResult:
+    """主进程节点:用多模态模型【现场看一段视频】回答 inputs.question,返回最小信封。
+    选定【单个】视频:优先 inputs.video_id,否则取上游结果行里的第一个 video_id;查 video_metadata
+    拿 gcs_uri 后调 perception.analyze(失败已在库内 fail-open → enough=no,绝不抛)。"""
+    from perception.analyze_video_contextual import AnalyzeRequest, analyze
+
+    question = str(node.inputs.get("question") or "").strip()
+    if not question:
+        return NodeResult(node.id, node.tool, ok=False, attempts=1,
+                          stderr="analyze_video 需要 inputs.question")
+
+    vid = node.inputs.get("video_id")
+    if not vid:                                       # 兜底:从上游结果行取第一个 video_id
+        items = _collect_items(node, upstream)
+        vid = items[0]["video_id"] if items else None
+    vid = str(vid) if vid else ""
+    if not vid or not _VIDEO_ID_RE.match(vid):        # 白名单校验(防注入)
+        return NodeResult(node.id, node.tool, ok=False, attempts=1,
+                          stderr="analyze_video 需要一个具体 video_id(inputs.video_id 或上游含 video_id)")
+
+    try:
+        rows = mcp_client.query_db(
+            f"SELECT gcs_uri FROM video_metadata WHERE video_id = '{vid}' LIMIT 1")
+    except Exception as e:
+        return NodeResult(node.id, node.tool, ok=False, attempts=1,
+                          stderr=f"analyze_video 查 video_metadata 失败: {e!r}")
+    gcs = rows[0].get("gcs_uri") if rows else None
+    if not gcs:
+        return NodeResult(node.id, node.tool, ok=False, attempts=1,
+                          stderr=f"找不到 video_id={vid} 的 gcs_uri")
+
+    req = AnalyzeRequest(question=question,
+                         context=node.inputs.get("context"),
+                         rubric=node.inputs.get("rubric"))
+    result = analyze(req, gcs)                        # 看视频 → 最小信封
+    # value:video_id 在前、answer 紧随 → loop preview 露出"哪个视频 + 结论(前置)+ enough"
+    return NodeResult(node.id, node.tool, ok=True, attempts=1,
+                      value={"video_id": vid, **result.model_dump()})
+
+
 def _run_threshold_sweep(node: Node) -> NodeResult:
     """Stage 9 动态探针:主进程当 MCP 代理,逐阈值代入模板查询并汇总。"""
     template = node.inputs.get("sql_template", "")
@@ -297,6 +337,8 @@ def execute_node(node: Node, upstream: dict[str, Any],
                 res = _run_threshold_sweep(node)
             elif node.tool == "show_video":
                 res = _run_show_video(node, upstream)
+            elif node.tool == "analyze_video":
+                res = _run_analyze_video(node, upstream)
             else:
                 raise ValueError(f"未知数据工具: {node.tool}")
             step.ok(rows=len(res.videos) if res.videos else

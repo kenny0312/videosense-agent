@@ -46,6 +46,9 @@ LOOP_REPEAT_LIMIT  = int(os.environ.get("LOOP_REPEAT_LIMIT", "2"))  # 同一(工
 LOOP_KEEP_TURNS           = int(os.environ.get("LOOP_KEEP_TURNS", "4"))            # 回放保最近 N 轮原文
 LOOP_CONTEXT_TOKEN_BUDGET = int(os.environ.get("LOOP_CONTEXT_TOKEN_BUDGET", "3000"))  # 超此触发 LLM 压缩
 
+# 方向一:单请求最多【现场分析】的视频数(配额护栏;M2 stopgap,后续按 plan 分级,见设计 §9)
+MAX_VIDEOS_PER_REQUEST    = int(os.environ.get("MAX_VIDEOS_PER_REQUEST", "5"))
+
 # ── AlloyDB ───────────────────────────────────
 ALLOYDB_HOST     = os.environ.get("ALLOYDB_HOST", "localhost")
 ALLOYDB_PORT     = int(os.environ.get("ALLOYDB_PORT", "5432"))
