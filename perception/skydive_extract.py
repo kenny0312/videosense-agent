@@ -113,6 +113,13 @@ def _present_phases(row: dict) -> str:
 
 
 def main() -> None:
+    import argparse
+    ap = argparse.ArgumentParser(description="跳伞阶段离线抽取(可按 GCS 前缀限定)")
+    ap.add_argument("--prefix", default=os.environ.get("PERCEPTION_PREFIX", ""),
+                    help="只抽 gcs_uri 含此子串的视频(如 videos/skydive/);留空=全部未抽取的")
+    ap.add_argument("--max", type=int, default=MAX_VIDEOS, help=f"最多抽几个(默认 {MAX_VIDEOS})")
+    args = ap.parse_args()
+
     password = os.environ.get("ALLOYDB_PASSWORD") or input("DB 密码 (Neon/AlloyDB): ")
     DB_CONFIG["password"] = password
 
@@ -128,16 +135,23 @@ def main() -> None:
     cur.execute(create_table_sql())          # 表不存在则建(幂等)
     conn.commit()
 
-    # 断点续跑:跳过已抽取过的视频
-    cur.execute(f"""
-        SELECT vm.video_id, vm.gcs_uri
-        FROM video_metadata vm
-        WHERE vm.video_id NOT IN (SELECT video_id FROM skydive_segments)
-        ORDER BY vm.video_id
-        LIMIT {MAX_VIDEOS};
-    """)
+    # 断点续跑:跳过已抽取过的视频;--prefix 时只抽该 GCS 前缀下的(如某个 collection)
+    if args.prefix:
+        cur.execute(
+            "SELECT vm.video_id, vm.gcs_uri FROM video_metadata vm "
+            "WHERE vm.gcs_uri LIKE %s "
+            "AND vm.video_id NOT IN (SELECT video_id FROM skydive_segments) "
+            "ORDER BY vm.video_id LIMIT %s",
+            (f"%{args.prefix}%", args.max))
+    else:
+        cur.execute(
+            "SELECT vm.video_id, vm.gcs_uri FROM video_metadata vm "
+            "WHERE vm.video_id NOT IN (SELECT video_id FROM skydive_segments) "
+            "ORDER BY vm.video_id LIMIT %s",
+            (args.max,))
     videos = cur.fetchall()
-    print(f"\n待抽取视频: {len(videos)} 个\n")
+    scope = f"(前缀 {args.prefix})" if args.prefix else "(全部未抽取)"
+    print(f"\n待抽取视频 {scope}: {len(videos)} 个\n")
 
     written = failed = 0
     ins = insert_sql("%s")
