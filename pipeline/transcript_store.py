@@ -23,7 +23,7 @@ from pipeline import config
 log = logging.getLogger("pipeline.transcript_store")
 
 OVERFLOW_BYTES = int(os.environ.get("TRANSCRIPT_OVERFLOW_BYTES", "8192"))   # 轴②:超此即溢出
-HOT_WINDOW     = int(os.environ.get("TRANSCRIPT_HOT_WINDOW", "200"))        # 热尾保留条数
+HOT_WINDOW     = int(os.environ.get("TRANSCRIPT_HOT_WINDOW", "500"))        # 热尾保留条数(够 ~60-100 轮走快路)
 
 
 def _scoped(owner: str, session_id: str) -> str:
@@ -114,9 +114,34 @@ class RedisGcsTranscriptStore(BaseTranscriptStore):
     def tail(self, key, n):
         try:
             rows = self._r.lrange(f"vs:tx:{key}", -n, -1) or []
-            return [json.loads(x) for x in rows]
+            events = [json.loads(x) for x in rows]
         except Exception as e:
             log.warning("transcript 热尾 tail 失败(fail-open): %r", e)
+            events = []
+        # CC 式全量注入的前提:热尾被 LTRIM 到 HOT_WINDOW、或已过 TTL → 想要的比热尾里有的多,
+        # 就从 GCS 全量回读(耐久真相),让"过 24h / 超热窗"仍能完整回放。GCS 失败一律 fail-open。
+        if len(events) < n:
+            gcs = self._tail_from_gcs(key, n)
+            if len(gcs) > len(events):
+                events = gcs
+        return events
+
+    def _tail_from_gcs(self, key, n):
+        """从 GCS 一事件一对象回读最近 n 条(seq 零填充 → 名字字典序即时间序)。best-effort。"""
+        try:
+            from google.cloud import storage
+            prefix = f"transcripts/{key.replace(':', '/')}/"
+            bkt = storage.Client(project=config.GCP_PROJECT).bucket(config.GCS_BUCKET)
+            blobs = sorted(bkt.list_blobs(prefix=prefix), key=lambda b: b.name)[-n:]
+            out = []
+            for b in blobs:
+                try:
+                    out.append(json.loads(b.download_as_text()))
+                except Exception:
+                    pass
+            return out
+        except Exception as e:
+            log.warning("transcript GCS 回读失败(fail-open): %r", e)
             return []
 
 

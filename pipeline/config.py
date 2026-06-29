@@ -43,8 +43,14 @@ LOOP_MODEL         = os.environ.get("LOOP_MODEL", CRITIC_MODEL)
 MAX_LOOP_STEPS     = int(os.environ.get("MAX_LOOP_STEPS", "16"))    # 终止护栏:防死循环
 LOOP_REPEAT_LIMIT  = int(os.environ.get("LOOP_REPEAT_LIMIT", "2"))  # 同一(工具,参数)连续失败上限
 # M5 记忆:loop 路径 transcript 回放 + 压缩(决策④)
-LOOP_KEEP_TURNS           = int(os.environ.get("LOOP_KEEP_TURNS", "4"))            # 回放保最近 N 轮原文
-LOOP_CONTEXT_TOKEN_BUDGET = int(os.environ.get("LOOP_CONTEXT_TOKEN_BUDGET", "3000"))  # 超此触发 LLM 压缩
+# CC 式「全量注入 + 临窗压缩」:默认把整段回放原文喂 loop,只在【逼近 context window】时才压缩。
+# 预算跟 LOOP_MODEL 的窗口挂钩(flash=1M),留头寸(FRACTION)给 system+schema+tools+本轮步骤+输出,
+# 故压在 ~0.6 而非填满 → 回放高水位 ≈ 600k(旧值 3000 等于只用窗口 0.3%,过早摘要丢精度)。
+LOOP_KEEP_TURNS              = int(os.environ.get("LOOP_KEEP_TURNS", "4"))            # 压缩时保最近 N 轮原文
+LOOP_CONTEXT_WINDOW          = int(os.environ.get("LOOP_CONTEXT_WINDOW", "1000000"))  # LOOP_MODEL 的 context window
+LOOP_CONTEXT_BUDGET_FRACTION = float(os.environ.get("LOOP_CONTEXT_BUDGET_FRACTION", "0.6"))
+LOOP_CONTEXT_TOKEN_BUDGET    = int(os.environ.get(                                   # 回放压缩高水位(默认 = 窗口×FRACTION)
+    "LOOP_CONTEXT_TOKEN_BUDGET", str(int(LOOP_CONTEXT_WINDOW * LOOP_CONTEXT_BUDGET_FRACTION))))
 
 # 方向一:单请求最多【现场分析】的视频数(配额护栏;M2 stopgap,后续按 plan 分级,见设计 §9)
 MAX_VIDEOS_PER_REQUEST    = int(os.environ.get("MAX_VIDEOS_PER_REQUEST", "5"))
