@@ -1,7 +1,7 @@
 """共享:按 config 里的凭据建一个 Redis 客户端。
 
-session 仓(RedisSessionStore)与 artifact 值仓(RedisArtifactValueStore)都用它 —— 抽到这里
-避免重复,也避免 session.py ↔ artifact_value_store.py 的循环引用(本模块只依赖 config)。
+session 仓(RedisSessionStore)与 transcript 存储(RedisGcsTranscriptStore)都用它 —— 抽到这里
+避免重复,也避免循环引用(本模块只依赖 config)。
 
 两种客户端(redis-py TCP / upstash-redis REST)都暴露同样的 get/set(ex=)/delete,对上层等价。
 惰性导入:只装你实际用到的那个库即可。

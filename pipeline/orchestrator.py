@@ -15,12 +15,10 @@
 """
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any, TYPE_CHECKING
 
 from pipeline import mcp_client, usage
-from pipeline.artifact_value_store import VALUE_STORE
 from pipeline.dag_schema import DAG
 from pipeline.node_executor import NodeResult
 from pipeline.node_specs import catalog_for_planner
@@ -73,17 +71,7 @@ def run_query(nl: str, *, quiet_trace: bool = False,
     trace = Trace(quiet=quiet_trace)
     sandbox = SandboxClient()
 
-    resolved_ids: list = []          # 记忆简化:指代解析已下放给 loop(transcript 回放),这里恒空
-
-    def _remember(status: str, answer: Any = None, artifact_ids: list | None = None) -> None:
-        """把这一轮记进 history(含拒答/失败轮,供后续 meta/指代);session 层出错 fail-open。"""
-        if session is None:
-            return
-        try:
-            session.record_turn(nl, verdict, status, answer,
-                                 artifact_ids=artifact_ids, referenced_ids=resolved_ids)
-        except Exception as e:
-            log.warning("session.record_turn 失败(fail-open): %r", e)
+    resolved_ids: list = []          # 兼容自定义 skill handler 形参;指代解析已下放给 loop
 
     # ── 前置 Router:判可答性 + 意图(不可答则拒,跳过昂贵 planner)──
     rstep = trace.step("Route")
@@ -100,17 +88,14 @@ def run_query(nl: str, *, quiet_trace: bool = False,
 
     sid = session.session_id if session else None
     ttype = getattr(verdict, "turn_type", "new") if verdict else "new"
-    intent = getattr(verdict, "intent", "other") if verdict else "other"
     route = getattr(verdict, "route", "") if verdict else ""
 
     if verdict is not None and verdict.decision == "smalltalk":
         # 不再回固定一句:小模型按人设生成可变回复,失败再回退到 SMALLTALK_REPLY 常量。
         ans = smalltalk_reply(nl) or SMALLTALK_REPLY
-        _remember("smalltalk", ans)
         return _result(True, trace=trace, status="smalltalk", answer=ans,
                        session_id=sid, turn_type=ttype)
     if verdict is not None and should_refuse(verdict):
-        _remember("refused")
         return _result(False, trace=trace, status="refused", reason=verdict.reason,
                        session_id=sid, turn_type=ttype)
 
@@ -137,10 +122,8 @@ def run_query(nl: str, *, quiet_trace: bool = False,
             hstep.ok(route=route)
         except Exception as e:
             hstep.fail(error=repr(e))
-            _remember("error")
             return _result(False, trace=trace, error=f"skill {handler_key} failed: {e!r}",
                            session_id=sid, turn_type=ttype)
-        _remember("ok", ans)
         return _result(True, trace=trace, status="ok", answer=ans,
                        session_id=sid, turn_type=ttype)
 
@@ -159,33 +142,21 @@ def run_query(nl: str, *, quiet_trace: bool = False,
     try:
         lo = loop_driver.run_query_loop(nl, schema=schema, replay_context=replay_ctx,
                                         sandbox=sandbox, trace=trace, session_id=sid,
-                                        value_store=VALUE_STORE, on_step=on_step)
+                                        on_step=on_step)
         lstep.ok(steps=lo.steps, terminated=lo.terminated)
     except Exception as e:
         lstep.fail(error=repr(e))
-        _remember("error")
         return _result(False, trace=trace, error=f"loop failed: {e!r}",
                        session_id=sid, turn_type=ttype)
     if lo.answer is None:
-        _remember("error")
         return _result(False, trace=trace, error=f"loop 未收敛({lo.terminated})",
                        session_id=sid, turn_type=ttype)
-    # 成功 → 把最终结果登记为可指代的 artifact(纯 handle;可复用类的真实值另存独立值仓)
-    artifact_ids = None
-    if session is not None and lo.final_tool is not None:
-        try:
-            art = session.register_artifact(
-                final_tool=lo.final_tool, final_value=lo.final_value,
-                preview_value=lo.preview_value, question=nl, intent=intent,
-                value_store=VALUE_STORE)
-            artifact_ids = [art.id]
-        except Exception as e:
-            log.warning("loop register_artifact 失败(fail-open): %r", e)
-    _remember("ok", lo.answer, artifact_ids=artifact_ids)
-    # M5:把这一轮记进 transcript(CC 式耐久记忆;owner 作用域,大本体溢出 GCS)
+    # 记忆简化:不再登记 catalog/值仓 —— 唯一记忆 = transcript。推进轮号后把这一轮落 transcript
+    # (CC 式耐久记忆;owner 作用域,大本体溢出 GCS)。
     if session is not None:
         try:
-            loop_memory.record_loop_turn(TX_STORE, owner, sid, session._turn_no, nl,
+            turn_no = session.next_turn()
+            loop_memory.record_loop_turn(TX_STORE, owner, sid, turn_no, nl,
                                          lo.trace, lo.results, lo.answer, blob_put=gcs_blob_put)
         except Exception as e:
             log.warning("record_loop_turn 失败(fail-open): %r", e)

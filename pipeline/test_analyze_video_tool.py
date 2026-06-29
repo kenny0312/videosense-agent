@@ -104,7 +104,7 @@ def test_quota_caps_analyze_video():
     config.MAX_VIDEOS_PER_REQUEST = 2
     try:
         execute = LD._make_executor(sandbox=None, trace=_FakeTrace(),
-                                    schema={}, session_id=None, value_store=None)
+                                    schema={}, session_id=None)
         r1 = execute("c0", "analyze_video", {"video_id": "v1", "question": "q"}, {}, [])
         r2 = execute("c1", "analyze_video", {"video_id": "v2", "question": "q"}, {}, [])
         r3 = execute("c2", "analyze_video", {"video_id": "v3", "question": "q"}, {}, [])
@@ -121,7 +121,7 @@ def test_quota_does_not_affect_other_tools():
     config.MAX_VIDEOS_PER_REQUEST = 1
     try:
         execute = LD._make_executor(sandbox=None, trace=_FakeTrace(),
-                                    schema={}, session_id=None, value_store=None)
+                                    schema={}, session_id=None)
         for i in range(4):
             r = execute(f"c{i}", "sql_query", {"sql": "SELECT 1"}, {}, [])
             assert r.ok and "上限" not in str(r.value)        # sql_query 不受配额限制

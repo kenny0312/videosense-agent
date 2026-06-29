@@ -18,8 +18,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from pipeline import mcp_client
-from pipeline.artifact_value_store import (BaseArtifactValueStore, VALUE_STORE,
-                                          make_key)
 from pipeline.code_generator import CodeGenerator
 from pipeline.sql_fixer import SqlFixer
 from pipeline.dag_schema import Node
@@ -109,24 +107,6 @@ def _run_sql_query(node: Node, schema: dict, trace: Trace) -> NodeResult:
 
     return NodeResult(node.id, node.tool, ok=False, stderr=last_err,
                       attempts=SQL_MAX_RETRIES + 1)
-
-
-def _run_load_artifact(node: Node, session_id: str | None,
-                       value_store: BaseArtifactValueStore) -> NodeResult:
-    """跨轮值复用:从值仓直接载入上一轮算好的值,不重跑配方、不进沙箱。
-    取不到(未存/封顶时跳过了/重启·跨副本·LRU 淘汰后已不在)→ 节点失败,使【本轮失败】
-    —— 这里【没有】自动重算回退。规避缺失靠规划阶段:planner 只在 value_cached(实查活仓)
-    时才发 load_artifact,值不在场时被引导改走配方重算,故正常路径下不会走到这个失败分支。
-    返回的 value 与普通节点同形,下游照常经 _inject 消费(无需改动)。"""
-    aid = node.inputs.get("artifact_id", "")
-    if not session_id or not aid:
-        return NodeResult(node.id, node.tool, ok=False, attempts=1,
-                          stderr="load_artifact 需要 session_id 与 inputs.artifact_id")
-    value = value_store.get(make_key(session_id, aid))
-    if value is None:
-        return NodeResult(node.id, node.tool, ok=False, attempts=1,
-                          stderr=f"artifact {aid} 的缓存值不可用(请改用配方重算)")
-    return NodeResult(node.id, node.tool, ok=True, value=value, attempts=1)
 
 
 _VIDEO_ID_RE = __import__("re").compile(r"^[A-Za-z0-9_\-]+$")
@@ -313,21 +293,10 @@ def _run_sandbox_node(node: Node, upstream: dict[str, Any],
 def execute_node(node: Node, upstream: dict[str, Any],
                  sandbox: SandboxClient, trace: Trace,
                  schema: dict | None = None,
-                 *, session_id: str | None = None,
-                 value_store: BaseArtifactValueStore | None = None) -> NodeResult:
+                 *, session_id: str | None = None) -> NodeResult:
     # sql_query:自管 trace + 自愈(对称 _run_sandbox_node)
     if node.tool == "sql_query":
         return _run_sql_query(node, schema or {}, trace)
-
-    # load_artifact:从【独立值仓】直接载入上一轮算好的值(不进沙箱、不碰 MCP/业务库)
-    if node.tool == "load_artifact":
-        step = trace.step(f"[{node.id}/load_artifact] load cached value")
-        res = _run_load_artifact(node, session_id, value_store or VALUE_STORE)
-        if res.ok:
-            step.ok(rows=len(res.value) if isinstance(res.value, list) else 1)
-        else:
-            step.fail(error=res.stderr[:160])
-        return res
 
     # 其它数据节点(threshold_sweep):主进程经 MCP,单次执行
     if not needs_sandbox(node.tool):

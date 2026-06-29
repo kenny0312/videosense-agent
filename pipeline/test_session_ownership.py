@@ -41,13 +41,13 @@ def test_sqlite_cross_owner_isolation():
     try:
         st = _sqlite(d)
         a = st.get_or_create("s", owner="alice")
-        a.record_turn("alice secret q", None, "ok", "alice answer")
+        a.next_turn(); a.next_turn()               # _turn_no → 2
         st.save(a, owner="alice")
         st2 = _sqlite(d)                          # 空缓存,模拟另一进程/重启
         bob = st2.get_or_create("s", owner="bob")  # bob 拿同一 sid
-        assert bob.history == []                   # 读不到 alice 的(IDOR 关上)
+        assert bob._turn_no == 0                    # 读不到 alice 的(IDOR 关上)
         alice = st2.get_or_create("s", owner="alice")
-        assert alice.history and alice.history[0].question == "alice secret q"
+        assert alice._turn_no == 2
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
@@ -57,11 +57,11 @@ def test_sqlite_anon_default_backcompat():
     try:
         st = _sqlite(d)
         s = st.get_or_create("x")                 # owner 默认 anon
-        s.record_turn("q", None, "ok", "a")
+        s.next_turn()
         st.save(s)                                 # save 默认 anon
         st2 = _sqlite(d)
-        assert st2.get_or_create("x").history                 # anon 续得上
-        assert st2.get_or_create("x", owner="anon").history   # 显式 anon = 同一条
+        assert st2.get_or_create("x")._turn_no == 1                 # anon 续得上
+        assert st2.get_or_create("x", owner="anon")._turn_no == 1   # 显式 anon = 同一条
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
@@ -70,12 +70,12 @@ def test_sqlite_reset_is_owner_scoped():
     d = tempfile.mkdtemp()
     try:
         st = _sqlite(d)
-        a = st.get_or_create("s", owner="alice"); a.record_turn("qa", None, "ok", "a"); st.save(a, owner="alice")
-        b = st.get_or_create("s", owner="bob"); b.record_turn("qb", None, "ok", "b"); st.save(b, owner="bob")
+        a = st.get_or_create("s", owner="alice"); a.next_turn(); st.save(a, owner="alice")
+        b = st.get_or_create("s", owner="bob"); b.next_turn(); st.save(b, owner="bob")
         st.reset("s", owner="bob")
         st2 = _sqlite(d)
-        assert st2.get_or_create("s", owner="bob").history == []      # bob 的被清
-        assert st2.get_or_create("s", owner="alice").history          # alice 的还在
+        assert st2.get_or_create("s", owner="bob")._turn_no == 0      # bob 的被清
+        assert st2.get_or_create("s", owner="alice")._turn_no == 1    # alice 的还在
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
@@ -88,17 +88,17 @@ def _client():
 def test_redis_cross_owner_isolation():
     c = _client()
     st = RedisSessionStore(client=c)
-    sa = st.get_or_create("s", owner="alice"); sa.record_turn("alice q", None, "ok", "a"); st.save(sa, owner="alice")
+    sa = st.get_or_create("s", owner="alice"); sa.next_turn(); st.save(sa, owner="alice")
     bob = st.get_or_create("s", owner="bob")
-    assert bob.history == []                       # bob 读不到 alice
-    assert st.get_or_create("s", owner="alice").history[0].question == "alice q"
+    assert bob._turn_no == 0                        # bob 读不到 alice
+    assert st.get_or_create("s", owner="alice")._turn_no == 1
     assert c.get("vs:session:alice:s") and c.get("vs:session:bob:s") is None   # key 真带归属
 
 
 def test_redis_anon_default_key():
     c = _client()
     st = RedisSessionStore(client=c)
-    s = st.get_or_create("x"); s.record_turn("q", None, "ok", "a"); st.save(s)   # 默认 anon
+    s = st.get_or_create("x"); s.next_turn(); st.save(s)   # 默认 anon
     assert c.get("vs:session:anon:x")
     assert st._key("x") == "vs:session:anon:x"
 
@@ -106,8 +106,8 @@ def test_redis_anon_default_key():
 def test_redis_reset_owner_scoped():
     c = _client()
     st = RedisSessionStore(client=c)
-    sa = st.get_or_create("s", owner="alice"); sa.record_turn("q", None, "ok", "a"); st.save(sa, owner="alice")
-    sb = st.get_or_create("s", owner="bob"); sb.record_turn("q", None, "ok", "a"); st.save(sb, owner="bob")
+    sa = st.get_or_create("s", owner="alice"); sa.next_turn(); st.save(sa, owner="alice")
+    sb = st.get_or_create("s", owner="bob"); sb.next_turn(); st.save(sb, owner="bob")
     st.reset("s", owner="bob")
     assert c.get("vs:session:bob:s") is None and c.get("vs:session:alice:s")
 

@@ -92,7 +92,7 @@ No pre-baked pipeline: a **probe-and-step loop** with **Gemini** as the brain pi
 
 **Tools the agent can call inside the loop**
 
-`sql_query` · `threshold_sweep` · `show_video` · `load_artifact` · `merge_asof` · `interpolate` · `ols_regress` · `plot` · `python`
+`sql_query` · `threshold_sweep` · `show_video` · `analyze_video` · `merge_asof` · `interpolate` · `ols_regress` · `plot` · `python`
 
 **API**
 

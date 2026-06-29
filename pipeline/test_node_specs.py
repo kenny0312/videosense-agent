@@ -48,7 +48,7 @@ def test_spot_check_key_schemas():
     assert set(ns.SPECS["ols_regress"].parameters["required"]) == {"y", "x"}
     assert ns.SPECS["ols_regress"].parameters["properties"]["x"]["type"] == "array"
     assert ns.SPECS["plot"].parameters["properties"]["kind"]["enum"] == ["scatter", "line"]
-    assert ns.SPECS["load_artifact"].parameters["required"] == ["artifact_id"]
+    assert "load_artifact" not in ns.SPECS              # 记忆简化:值复用工具已下线
 
 
 def test_existing_helpers_unchanged():

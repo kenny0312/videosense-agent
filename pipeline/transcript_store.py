@@ -182,5 +182,5 @@ def make_transcript_store() -> BaseTranscriptStore:
     return InMemoryTranscriptStore()
 
 
-# 模块级单例(像 VALUE_STORE):orchestrator 在 loop 路径用它记录/回放 transcript。
+# 模块级单例:orchestrator 在 loop 路径用它记录/回放 transcript(唯一记忆)。
 STORE: BaseTranscriptStore = make_transcript_store()
