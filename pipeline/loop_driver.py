@@ -32,6 +32,7 @@ UPSTREAM_HANDLES: dict[str, list[str]] = {
     "show_video":  ["data_result_id"],   # 可选(也可直接给 video_ids)
 }
 _OPTIONAL_HANDLE = {"show_video"}        # 句柄非必填的工具
+ANALYZE_PREVIEW_CELL = 1200               # #2:analyze_video 结果给大预览(答案含完整理由,默认 80 会砍掉)
 
 
 def loop_function_declarations() -> list[dict]:
@@ -189,8 +190,9 @@ def _make_executor(sandbox, trace, schema, session_id) -> Callable:
             return ExecResult(ok=False, stderr=f"unknown tool: {name}")
         if name == "analyze_video":                       # 配额护栏(M2 stopgap,设计 §9)
             if quota["analyzed"] >= config.MAX_VIDEOS_PER_REQUEST:
-                note = (f"已达本请求视频分析上限({config.MAX_VIDEOS_PER_REQUEST} 个),"
-                        "这个没分析——请缩小候选或分批问。")
+                note = (f"已达本请求视频分析上限({config.MAX_VIDEOS_PER_REQUEST} 个),这个【没分析】。"
+                        "请【就已分析过的那些视频】给出结论:不要再调 analyze_video,"
+                        "也不要把没分析的视频当成分析过了来说;要覆盖更多就让用户缩小候选或分批问。")
                 pv, n = _preview({"answer": note, "enough": "no"})
                 return ExecResult(ok=True, value={"answer": note, "enough": "no"}, preview=pv, n=n)
             quota["analyzed"] += 1
@@ -200,7 +202,10 @@ def _make_executor(sandbox, trace, schema, session_id) -> Callable:
             return ExecResult(ok=False, stderr=f"bad node {name}: {e}")
         nr = execute_node(node, upstream, sandbox, trace, schema=schema,
                           session_id=session_id)
-        pv, n = _preview(nr.value)
+        # #2 修:analyze_video 的结论+理由都在 answer 里;默认 80 字/格会把理由砍掉,大脑收口时
+        # 只看到前 80 字 → 答案干瘪。给它大额度预览,完整证据进得了最终答案(其余工具仍用小预览省 token)。
+        cell = ANALYZE_PREVIEW_CELL if name == "analyze_video" else 80
+        pv, n = _preview(nr.value, cell=cell)
         return ExecResult(ok=nr.ok, value=nr.value, preview=pv, n=n, stderr=nr.stderr,
                           code=nr.code, artifact=nr.artifact, videos=nr.videos)
     return execute
@@ -238,7 +243,12 @@ _LOOP_SYSTEM = (
     "- 关系类查询(筛选/聚合/join/排序)用单个 sql_query 直接写完整 SQL。\n"
     "- 出图/科学计算的文本(SQL、plot 标题)一律用英文。\n"
     "- 报【总数/数量】时必须真的 COUNT 过;列举或抽样(LIMIT)拿到的条数【不是】总数 —— "
-    "别把 LIMIT 的条数当成总数说出来。要给总数就单独 COUNT(*)。\n"
+    "别把 LIMIT 的条数当成总数说出来。要给总数就单独 COUNT(*)。\n\n"
+    "# 视频内容分析(analyze_video)\n"
+    "- analyze_video 一次只看【一个】视频,且每请求有数量上限。候选很多时:先用 sql_query 把范围"
+    "缩到几个最相关的,再对这几个【逐个】analyze_video —— 别一上来就想看全部,会撞上限且浪费。\n"
+    "- 收口作答时【复述它给的具体证据】:看到的画面/动作 + 关键时刻(秒)+ 评分,别只说「挺刺激/还行」;"
+    "多个候选要分别点名 video_id 并讲清差异,给出明确取舍。\n"
 )
 
 
