@@ -1,0 +1,45 @@
+<svg viewBox="0 0 1200 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="VideoSense — ask your video library anything">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0a0f1f"/>
+      <stop offset="0.55" stop-color="#0c1228"/>
+      <stop offset="1" stop-color="#100f2c"/>
+    </linearGradient>
+    <linearGradient id="acc" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5b9bff"/>
+      <stop offset="1" stop-color="#8a63ff"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="20%" cy="44%" r="60%">
+      <stop offset="0" stop-color="#4f8cff" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#4f8cff" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="blur" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="18"/></filter>
+    <style>
+      .wm { font-family: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", sans-serif; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="300" fill="url(#bg)"/>
+  <rect width="1200" height="300" fill="url(#glow)"/>
+
+  <!-- right: a soft stack of "clips", suggesting a video library -->
+  <g transform="translate(995,64) rotate(9)" opacity="0.14"><rect width="150" height="100" rx="16" fill="#5b9bff"/></g>
+  <g transform="translate(912,118) rotate(-7)" opacity="0.20"><rect width="160" height="106" rx="16" fill="#8a63ff"/></g>
+  <g transform="translate(852,92) rotate(4)" opacity="0.34">
+    <rect width="176" height="116" rx="18" fill="url(#acc)"/>
+    <circle cx="88" cy="58" r="24" fill="#0c1228" opacity="0.45"/>
+    <path d="M81 46 L104 58 L81 70 Z" fill="#eaf1ff"/>
+  </g>
+
+  <!-- glowing play chip (logomark) -->
+  <circle cx="140" cy="150" r="58" fill="url(#acc)" opacity="0.55" filter="url(#blur)"/>
+  <g transform="translate(98,108)">
+    <rect width="84" height="84" rx="24" fill="url(#acc)"/>
+    <path d="M35 26 L63 42 L35 58 Z" fill="#ffffff"/>
+  </g>
+
+  <!-- wordmark + tagline -->
+  <text class="wm" x="210" y="150" font-size="66" font-weight="800" fill="#ffffff" letter-spacing="-1.5">VideoSense</text>
+  <text class="wm" x="212" y="194" font-size="23" font-weight="500" fill="#9fb2d6">Ask your video library anything — answers, charts &amp; clips.</text>
+  <rect x="214" y="212" width="132" height="4" rx="2" fill="url(#acc)"/>
+</svg>
