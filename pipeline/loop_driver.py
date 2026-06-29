@@ -183,9 +183,17 @@ class GeminiConversation:
 
 
 def _make_executor(sandbox, trace, schema, session_id, value_store) -> Callable:
+    quota = {"analyzed": 0}                               # 配额:本请求 analyze_video 调用计数
     def execute(cid, name, inputs, upstream, uses):
         if name not in ALL_TOOLS:
             return ExecResult(ok=False, stderr=f"unknown tool: {name}")
+        if name == "analyze_video":                       # 配额护栏(M2 stopgap,设计 §9)
+            if quota["analyzed"] >= config.MAX_VIDEOS_PER_REQUEST:
+                note = (f"已达本请求视频分析上限({config.MAX_VIDEOS_PER_REQUEST} 个),"
+                        "这个没分析——请缩小候选或分批问。")
+                pv, n = _preview({"answer": note, "enough": "no"})
+                return ExecResult(ok=True, value={"answer": note, "enough": "no"}, preview=pv, n=n)
+            quota["analyzed"] += 1
         try:
             node = Node(id=cid, tool=name, inputs=inputs, depends_on=list(uses))
         except Exception as e:                               # 幻觉/坏参数 → 软失败回喂

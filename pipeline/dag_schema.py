@@ -33,7 +33,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 #       ols_regress      statsmodels OLS 回归(Stage 9)
 #       plot             matplotlib 出图(Stage 10,产物存回 GCS/本地)
 #       python           通用逃生舱:任意 NL 描述的分析
-DATA_TOOLS = {"sql_query", "threshold_sweep", "load_artifact", "show_video"}
+DATA_TOOLS = {"sql_query", "threshold_sweep", "load_artifact", "show_video", "analyze_video"}
 SANDBOX_TOOLS = {
     "load_sensor_csv", "merge_asof", "interpolate",
     "ols_regress", "plot", "python",
@@ -41,7 +41,7 @@ SANDBOX_TOOLS = {
 ALL_TOOLS = DATA_TOOLS | SANDBOX_TOOLS
 
 ToolName = Literal[
-    "sql_query", "threshold_sweep", "load_artifact", "show_video",
+    "sql_query", "threshold_sweep", "load_artifact", "show_video", "analyze_video",
     "load_sensor_csv", "merge_asof", "interpolate",
     "ols_regress", "plot", "python",
 ]

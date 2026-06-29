@@ -80,6 +80,31 @@ SPECS: dict[str, NodeSpec] = {
                            "description": "要展示的 video_id 列表;省略则取上游节点结果行里的 video_id"}},
         ),
     ),
+    "analyze_video": NodeSpec(
+        tool="analyze_video",
+        needs_sandbox=False,
+        planner_desc=(
+            "【看视频内容】回答关于某个视频的【任意】问题 —— 用多模态模型【现场看那段视频】,"
+            "不是查数据库元数据。当问题需要理解画面内容、答案不在已落库的列里时用它"
+            "(如'这段跳伞多精彩''视频里有几个人''他在做什么动作''这是什么跳法')。"
+            "inputs.video_id = 要分析的【那一个】视频 id(给一个具体视频;通常取自上游 sql_query 选出的候选);"
+            "inputs.question = 要回答的问题(必填);inputs.context = 背景/总目标/为何分析"
+            "(可选,帮模型聚焦,如'从若干候选里挑最帅来展示');inputs.rubric = 判断/评分细则"
+            "(可选,如'近地飞行/穿越地形=更帅')。返回最小信封 {answer(自由文本,结论在前), "
+            "enough(yes|partial|no 这段够不够回答), confidence, evidence_ts}。"
+            "要比较多个视频时,对每个候选【各发一次】本工具,再据各自 answer 比较选优;"
+            "enough=partial 时可换时间段/换视频再分析。(单请求能分析的视频数有上限,挑关键的几个即可。)"
+        ),
+        parameters=_obj(
+            {
+                "video_id": {"type": "string", "description": "要分析的那一个视频 id"},
+                "question": {"type": "string", "description": "要回答的关于视频内容的问题"},
+                "context": {"type": "string", "description": "背景/总目标/为何分析(可选,帮模型聚焦)"},
+                "rubric": {"type": "string", "description": "判断/评分细则(可选)"},
+            },
+            ["question"],
+        ),
+    ),
     "load_artifact": NodeSpec(
         tool="load_artifact",
         needs_sandbox=False,
