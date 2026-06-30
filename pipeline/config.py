@@ -48,6 +48,11 @@ LOOP_REPEAT_LIMIT  = int(os.environ.get("LOOP_REPEAT_LIMIT", "2"))  # 同一(工
 #       省每轮一次 flash,且根治"context-blind 的前置门误杀只有结合上文才看得懂的短回复(ok/我想看)"。
 #   1 = 保留旧 Router 终结门(回退开关;一键恢复旧行为,无需改代码)。
 USE_ROUTER_GATE = os.environ.get("USE_ROUTER_GATE", "0").lower() in ("1", "true", "yes")
+
+# 自检 B(设计 self-check-critic.md):收口前插一个显式 critic 判"满足用户没",没满足喂回再来一轮。
+#   opt-in(默认 0;每个收口轮多一次 flash + 可能多一轮);MAX_ROUNDS = critic 驱动的"再来"上限(防空转)。
+USE_SELF_CHECK_CRITIC = os.environ.get("USE_SELF_CHECK_CRITIC", "0").lower() in ("1", "true", "yes")
+SELF_CHECK_MAX_ROUNDS = int(os.environ.get("SELF_CHECK_MAX_ROUNDS", "1"))
 # M5 记忆:loop 路径 transcript 回放 + 压缩(决策④)
 # CC 式「全量注入 + 临窗压缩」:默认把整段回放原文喂 loop,只在【逼近 context window】时才压缩。
 # 预算跟 LOOP_MODEL 的窗口挂钩(flash=1M),留头寸(FRACTION)给 system+schema+tools+本轮步骤+输出,
