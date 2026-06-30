@@ -16,6 +16,7 @@ from __future__ import annotations
 import contextvars
 import json
 import os
+import threading
 from typing import Callable, Literal
 
 from pydantic import BaseModel, field_validator
@@ -135,15 +136,20 @@ def _parse(raw: str) -> AnalyzeResult:
 
 # ── 真实 Gemini 调用(惰性 import;离线测试不会走到这里)───────────
 _MODELS: dict = {}                              # 按模型名缓存(flash / pro 各建一次)
+_MODEL_LOCK = threading.Lock()                  # M4.3:并行下首建模型(vertexai.init)需互斥
 
 
 def _get_model(name: str):
-    if name not in _MODELS:
-        import vertexai
-        from vertexai.generative_models import GenerativeModel
-        vertexai.init(project=os.environ.get("GCP_PROJECT"),
-                      location=os.environ.get("GCP_REGION", "us-central1"))
-        _MODELS[name] = GenerativeModel(name)
+    m = _MODELS.get(name)
+    if m is not None:                           # 已建好:无锁快路
+        return m
+    with _MODEL_LOCK:                           # 首建:互斥 + 双检,防并行 worker 重复 init
+        if name not in _MODELS:
+            import vertexai
+            from vertexai.generative_models import GenerativeModel
+            vertexai.init(project=os.environ.get("GCP_PROJECT"),
+                          location=os.environ.get("GCP_REGION", "us-central1"))
+            _MODELS[name] = GenerativeModel(name)
     return _MODELS[name]
 
 

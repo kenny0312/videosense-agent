@@ -13,8 +13,12 @@ summarize() 取回扁平总计 + 估算成本,塞进返回的 result。
 from __future__ import annotations
 
 import contextvars
+import threading
 
 _USAGE: contextvars.ContextVar = contextvars.ContextVar("llm_usage", default=None)
+# M4.3:并行 analyze worker 经 copy_context 共享同一 usage dict(按引用),
+# 增量(d["in"] += …)是读-改-写,需互斥防丢更新。串行下无竞争、开销可忽略。
+_LOCK = threading.Lock()
 
 # 估算单价(USD / 1M tokens)。仅用于"谁烧得多"的相对归因;绝对花费以 GCP 账单为准
 # (上下文缓存、计费四舍五入、赠金都会偏差)。按需更新:
@@ -41,11 +45,12 @@ def add_usage(resp, model: str) -> None:
     m = getattr(resp, "usage_metadata", None)
     if not m:
         return
-    d = u.setdefault(model, {"in": 0, "out": 0, "total": 0, "calls": 0})
-    d["in"]    += getattr(m, "prompt_token_count", 0) or 0
-    d["out"]   += getattr(m, "candidates_token_count", 0) or 0
-    d["total"] += getattr(m, "total_token_count", 0) or 0
-    d["calls"] += 1
+    with _LOCK:                         # 并行 worker 共享同一 dict → 增量需互斥
+        d = u.setdefault(model, {"in": 0, "out": 0, "total": 0, "calls": 0})
+        d["in"]    += getattr(m, "prompt_token_count", 0) or 0
+        d["out"]   += getattr(m, "candidates_token_count", 0) or 0
+        d["total"] += getattr(m, "total_token_count", 0) or 0
+        d["calls"] += 1
 
 
 def get_usage() -> dict:

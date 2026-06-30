@@ -3,6 +3,9 @@
 不调 Gemini、不碰 DB/沙箱 —— live 路径已由 M2 spike(spikes/loop_spike.py)验过。
 这里只验:收敛、句柄→upstream 解析、max_steps、重复失败终止、声明叠加、合成 DAG。
 """
+import threading
+import time
+
 from pipeline import loop_driver as ld
 from pipeline.loop_driver import Call, ExecResult, run_loop
 
@@ -111,8 +114,22 @@ def test_loop_metrics():                                     # M6 审计指标
                         final_value=None, preview_value=None,
                         results={}, trace=[{"tool": "sql_query"}, {"tool": "plot"},
                                            {"tool": "sql_query"}])
-    assert ld.loop_metrics(lo) == {"steps": 3, "terminated": "text",
-                                   "tool_calls": {"sql_query": 2, "plot": 1}}
+    m = ld.loop_metrics(lo)
+    assert m["steps"] == 3 and m["terminated"] == "text"
+    assert m["tool_calls"] == {"sql_query": 2, "plot": 1}
+    assert m["analyze_calls"] == 0 and m["analyze_cache_hits"] == 0   # M4.2 新增字段
+
+
+def test_loop_metrics_parallel_speedup():                    # M4.2:并行加速比 = Σtool_ms / 墙钟
+    lo = ld.LoopOutcome(answer="x", steps=1, terminated="text", final_tool="analyze_video",
+                        final_value=None, preview_value=None, results={},
+                        trace=[{"tool": "analyze_video", "ms": 300.0, "cache_hit": False},
+                               {"tool": "analyze_video", "ms": 300.0, "cache_hit": True}],
+                        step_walls=[320.0])                  # 两个各 300ms 的 analyze 并发 → 墙钟 ~320ms
+    m = ld.loop_metrics(lo)
+    assert m["analyze_calls"] == 2 and m["analyze_cache_hits"] == 1
+    assert m["tool_ms"] == 600.0 and m["wall_ms"] == 320.0
+    assert m["parallel_speedup"] == round(600.0 / 320.0, 2)
 
 
 def test_on_step_callback_emits_events():                    # M6b:SSE 流式回调
@@ -125,3 +142,88 @@ def test_on_step_callback_emits_events():                    # M6b:SSE 流式回
     assert [e["type"] for e in events] == ["step", "answer"]
     assert events[0]["tools"][0]["tool"] == "sql_query" and events[0]["tools"][0]["ok"] is True
     assert events[1]["text"] == "done"
+
+
+# ── M4.3:并行 analyze_video ───────────────────────
+def test_parallel_analyze_overlaps_and_keeps_cid_order(monkeypatch):
+    """同一步 4 个 analyze 并发执行(墙钟 << 串行和),回收仍按 cid 顺序(确定性)。"""
+    monkeypatch.setattr(ld.config, "MAX_ANALYZE_PARALLEL", 4)
+
+    def execute(cid, name, inputs, upstream, uses):
+        idx = int(cid.split("_")[1])
+        time.sleep(0.03 * (4 - idx))                        # 后发 cid 睡更短 → 先完成
+        return ExecResult(ok=True, value=[{"cid": cid}], preview=[{"cid": cid}], n=1, ms=1.0)
+
+    conv = ScriptedConv([
+        ([Call("analyze_video", {"video_id": f"v{i}", "question": f"q{i}"}, []) for i in range(4)], None),
+        ([], "done"),
+    ])
+    r = run_loop("q", conv, execute, max_steps=4)
+    assert r.answer == "done"
+    assert [s["cid"] for s in r.trace] == ["c0_0", "c0_1", "c0_2", "c0_3"]   # 回收按 cid 序,不随完成序
+    assert len(r.step_walls) == 1 and r.step_walls[0] < 200                  # 并行(串行约 300ms)
+
+
+def test_parallel_serial_fallback_when_cap_is_one(monkeypatch):
+    """MAX_ANALYZE_PARALLEL=1 → 退回串行(秒级回退开关),结果仍正确。"""
+    monkeypatch.setattr(ld.config, "MAX_ANALYZE_PARALLEL", 1)
+    order = []
+
+    def execute(cid, name, inputs, upstream, uses):
+        order.append(cid)
+        return ExecResult(ok=True, value=[{"cid": cid}], preview=[{"cid": cid}], n=1, ms=1.0)
+
+    conv = ScriptedConv([
+        ([Call("analyze_video", {"video_id": f"v{i}", "question": f"q{i}"}, []) for i in range(3)], None),
+        ([], "done"),
+    ])
+    r = run_loop("q", conv, execute, max_steps=4)
+    assert r.answer == "done" and order == ["c0_0", "c0_1", "c0_2"]
+
+
+def test_parallel_quota_exact_and_model_and_usage(monkeypatch):
+    """真 _make_executor:6 个并发 analyze、配额=3 → 恰好 3 个真分析(不漏/不超);
+    每个 worker 都读到主线程设的 Pro(没降级);3 次 usage 都合回主 context(没丢)。"""
+    from pipeline import config, analyze_cache, usage, mcp_client as mc
+    from pipeline.trace import Trace
+    import perception.analyze_video_contextual as avc
+
+    monkeypatch.setattr(config, "MAX_VIDEOS_PER_REQUEST", 3)
+    monkeypatch.setattr(config, "MAX_ANALYZE_PARALLEL", 6)
+    monkeypatch.setattr(mc, "query_db", lambda sql: [{"gcs_uri": "gs://b/v.mp4"}])
+    analyze_cache.clear()
+    usage.reset_usage()
+    avc.MODEL_OVERRIDE.set("gemini-2.5-pro")                 # 主线程设 Pro
+
+    seen_models, lk = [], threading.Lock()
+
+    class _Meta:
+        prompt_token_count, candidates_token_count, total_token_count = 10, 5, 15
+
+    class _Resp:
+        usage_metadata = _Meta()
+
+    def fake_analyze(req, gcs):
+        m = avc.MODEL_OVERRIDE.get()                         # worker 上下文里读模型
+        with lk:
+            seen_models.append(m)
+        usage.add_usage(_Resp(), m or "gemini-2.5-flash")    # 模拟 _gemini_generate 的上报
+        time.sleep(0.01)
+        return avc.AnalyzeResult(answer="ok", enough="yes", confidence=0.8)
+
+    monkeypatch.setattr(avc, "analyze", fake_analyze)
+    try:
+        conv = ScriptedConv([
+            ([Call("analyze_video", {"video_id": f"v{i}", "question": f"q{i}"}, []) for i in range(6)], None),
+            ([], "done"),
+        ])
+        execute = ld._make_executor(sandbox=None, trace=Trace(quiet=True), schema={}, session_id=None)
+        run_loop("q", conv, execute, max_steps=4)
+        assert len(seen_models) == 3                         # 配额精确:恰好 3 个真分析
+        assert all(m == "gemini-2.5-pro" for m in seen_models)   # Pro 传进每个 worker(没降级)
+        s = usage.summarize()
+        assert s["by_model"].get("gemini-2.5-pro", {}).get("calls") == 3   # 3 次 usage 都合回(没丢)
+        assert s["tokens_total"] == 45                       # 3 × 15
+    finally:
+        avc.MODEL_OVERRIDE.set(None)
+        analyze_cache.clear()

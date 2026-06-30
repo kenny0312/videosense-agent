@@ -43,6 +43,7 @@ class NodeResult:
     artifact: dict = field(default_factory=dict)   # 如 plot 的 png_base64
     videos: list = field(default_factory=list)     # show_video 的侧信道:可播放视频描述符
     table: dict = field(default_factory=dict)      # show_table 的侧信道:{columns, rows, n} 原样出表格
+    cache_hit: bool = False                        # M4.2:analyze_video 命中缓存(供度量)
 
 
 # ── 上游数据注入 ──────────────────────────────
@@ -258,12 +259,13 @@ def _run_analyze_video(node: Node, upstream: dict[str, Any]) -> NodeResult:
     ckey = analyze_cache.make_key(vid, question=req.question, context=req.context,
                                   rubric=req.rubric, time_range=req.time_range, model=model)
     dump = analyze_cache.get(ckey)
+    cache_hit = dump is not None
     if dump is None:
         dump = analyze(req, gcs).model_dump()         # 看视频 → 最小信封
         if not str(dump.get("answer", "")).startswith(FAILURE_ANSWER_PREFIX):
             analyze_cache.put(ckey, dump)
     # value:video_id 在前、answer 紧随 → loop preview 露出"哪个视频 + 结论(前置)+ enough"
-    return NodeResult(node.id, node.tool, ok=True, attempts=1,
+    return NodeResult(node.id, node.tool, ok=True, attempts=1, cache_hit=cache_hit,
                       value={"video_id": vid, **dump})
 
 
