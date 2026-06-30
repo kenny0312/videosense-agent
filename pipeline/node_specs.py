@@ -109,6 +109,8 @@ SPECS: dict[str, NodeSpec] = {
             "enough(yes|partial|no 这段够不够回答), confidence, evidence_ts}。"
             "要比较多个视频时,对每个候选【各发一次】本工具,再据各自 answer 比较选优;"
             "enough=partial 时可换时间段/换视频再分析。(单请求能分析的视频数有上限,挑关键的几个即可。)"
+            "inputs.time_range = [起秒, 止秒](可选):**只看视频的这一段**(模型真的只处理该段 → 更快更省)。"
+            "长视频先定位精彩段再细看、或多候选先各截前几秒粗筛,都靠它。"
         ),
         parameters=_obj(
             {
@@ -116,6 +118,8 @@ SPECS: dict[str, NodeSpec] = {
                 "question": {"type": "string", "description": "要回答的关于视频内容的问题"},
                 "context": {"type": "string", "description": "背景/总目标/为何分析(可选,帮模型聚焦)"},
                 "rubric": {"type": "string", "description": "判断/评分细则(可选,怎么评由问题/用户定)"},
+                "time_range": {"type": "array", "items": {"type": "number"},
+                               "description": "可选 [起秒, 止秒]:只看视频这一段(硬裁剪,更快更省)"},
             },
             ["question"],
         ),

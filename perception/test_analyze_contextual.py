@@ -23,7 +23,7 @@ from perception.analyze_video_contextual import (
 def _gen(payload):
     """fake generate:无视入参,吐固定文本(dict→JSON 或直接 str)。"""
     text = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)
-    return lambda gcs_uri, prompt: text
+    return lambda gcs_uri, prompt, time_range=None: text   # M4.5:generate 现在多收 time_range
 
 
 # ── 动态 prompt ────────────────────────────────────────────
@@ -78,7 +78,7 @@ def test_fail_open_on_bad_json():
 
 
 def test_fail_open_on_generate_raises():
-    def boom(gcs_uri, prompt):
+    def boom(gcs_uri, prompt, time_range=None):
         raise RuntimeError("API down")
     r = analyze(AnalyzeRequest(question="x"), "gs://b/v.mp4", generate=boom)
     assert r.enough == "no" and "API down" in r.answer
@@ -115,6 +115,35 @@ def test_missing_answer_fails_open():
     r = analyze(AnalyzeRequest(question="x"), "gs://b/v.mp4",
                 generate=_gen({"enough": "yes", "confidence": 0.9}))
     assert r.enough == "no"
+
+
+# ── M4.5:time_range 硬裁剪(给 Gemini 的 Part 真的带上 start/end 偏移)────────
+def test_gemini_generate_clips_time_range():
+    import importlib.util
+    if importlib.util.find_spec("vertexai") is None:
+        return                                              # 无 vertexai(部分 CI)→ 跳过
+    import perception.analyze_video_contextual as avc
+    captured = {}
+
+    class _Resp:
+        text = '{"answer":"x","enough":"yes"}'
+
+    class _Model:
+        def generate_content(self, parts, **kw):
+            captured["parts"] = parts
+            return _Resp()
+
+    saved = avc._get_model
+    avc._get_model = lambda name: _Model()
+    try:
+        avc._gemini_generate("gs://b/v.mp4", "p", time_range=(12, 45))
+        vm = captured["parts"][0]._raw_part.video_metadata
+        assert vm.start_offset.seconds == 12 and vm.end_offset.seconds == 45
+        avc._gemini_generate("gs://b/v.mp4", "p")           # 不给 → 不设偏移(默认 0)
+        vm2 = captured["parts"][0]._raw_part.video_metadata
+        assert vm2.start_offset.seconds == 0 and vm2.end_offset.seconds == 0
+    finally:
+        avc._get_model = saved
 
 
 def main() -> int:

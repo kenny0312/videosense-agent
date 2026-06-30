@@ -108,3 +108,19 @@ def test_different_model_misses(monkeypatch):
     avc.MODEL_OVERRIDE.set("gemini-2.5-pro")
     ne._run_analyze_video(node, {})
     assert calls["n"] == 2                             # 不同模型 → 不同键 → 各看一次
+
+
+def test_time_range_parsed_and_keys_cache(monkeypatch):  # M4.5
+    _patch_gcs(monkeypatch)
+    analyze_cache.clear()
+    seen = []
+    def fake(req, gcs):
+        seen.append(req.time_range)
+        return _Res({"answer": "x", "enough": "yes", "confidence": 0.8})
+    monkeypatch.setattr(avc, "analyze", fake)
+    mk = lambda tr: Node(id="c0", tool="analyze_video",
+                         inputs={"video_id": "vid_1", "question": "q", "time_range": tr})
+    ne._run_analyze_video(mk([10, 20.5]), {})
+    ne._run_analyze_video(mk([0, 5]), {})
+    ne._run_analyze_video(mk([10, 20.5]), {})          # 同 time_range → 命中缓存,不再真调
+    assert seen == [(10.0, 20.5), (0.0, 5.0)]          # 解析成 float 元组;不同段不同键、同段命中
