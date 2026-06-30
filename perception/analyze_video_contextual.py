@@ -153,11 +153,17 @@ def _get_model(name: str):
     return _MODELS[name]
 
 
-def _gemini_generate(gcs_uri: str, prompt: str) -> str:
+def _gemini_generate(gcs_uri: str, prompt: str, time_range=None) -> str:
     from vertexai.generative_models import Part
     from pipeline import usage
     name = MODEL_OVERRIDE.get() or PERCEPTION_MODEL   # 本请求选了 Pro 就用 pro,否则默认 flash
     video = Part.from_uri(uri=gcs_uri, mime_type="video/mp4")
+    if time_range:                                    # M4.5:硬裁剪 —— Gemini 只处理 [起,止] 秒这一段
+        from google.protobuf import duration_pb2
+        start, end = float(time_range[0]), float(time_range[1])
+        vm = video._raw_part.video_metadata           # vertexai 1.149 无高层裁剪参数,走底层 proto(已 spike 验)
+        vm.start_offset = duration_pb2.Duration(seconds=int(start))
+        vm.end_offset = duration_pb2.Duration(seconds=int(end))
     resp = _get_model(name).generate_content(
         [video, prompt],
         generation_config={"temperature": 0.2, "max_output_tokens": 2048,
@@ -168,14 +174,14 @@ def _gemini_generate(gcs_uri: str, prompt: str) -> str:
 
 # ── 对外:看一段视频回答 question,返回最小信封 ──────────────────
 def analyze(req: AnalyzeRequest, gcs_uri: str, *,
-            generate: Callable[[str, str], str] = _gemini_generate) -> AnalyzeResult:
+            generate: Callable[..., str] = _gemini_generate) -> AnalyzeResult:
     """看 gcs_uri 这段视频回答 req.question → 最小信封。失败 fail-open → enough='no'。
-    generate(gcs_uri, prompt)->raw_json 可注入(离线单测传 fake)。"""
+    generate(gcs_uri, prompt, time_range)->raw_json 可注入(离线单测传 fake)。"""
     prompt = build_prompt(req)
     last_err = ""
     for _ in range(RETRY_LIMIT + 1):
         try:
-            return _parse(generate(gcs_uri, prompt))
+            return _parse(generate(gcs_uri, prompt, req.time_range))
         except Exception as e:
             last_err = str(e)
     return AnalyzeResult(answer=f"{FAILURE_ANSWER_PREFIX}[{last_err[:120]}]",

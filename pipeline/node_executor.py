@@ -257,9 +257,18 @@ def _run_analyze_video(node: Node, upstream: dict[str, Any]) -> NodeResult:
         return NodeResult(node.id, node.tool, ok=False, attempts=1,
                           stderr=f"找不到 video_id={vid} 的 gcs_uri")
 
+    # M4.5:time_range=[起秒,止秒] → 只看该段(硬裁剪,见 _gemini_generate)。缓存键已含 time_range。
+    tr = node.inputs.get("time_range")
+    time_range = None
+    if isinstance(tr, (list, tuple)) and len(tr) == 2:
+        try:
+            time_range = (float(tr[0]), float(tr[1]))
+        except (TypeError, ValueError):
+            time_range = None
     req = AnalyzeRequest(question=question,
                          context=node.inputs.get("context"),
-                         rubric=node.inputs.get("rubric"))
+                         rubric=node.inputs.get("rubric"),
+                         time_range=time_range)
     # M4.1 缓存:同一(视频+问题+上下文+细则+模型)命中则不再调 Gemini(省成本/延迟)。
     # 键含【实际生效模型】(Pro/Flash)→ 不串味;失败信封【不缓存】(避免钉死瞬时报错)。
     model = MODEL_OVERRIDE.get() or PERCEPTION_MODEL
