@@ -159,16 +159,19 @@ class GeminiConversation:
         from vertexai.generative_models import FunctionDeclaration, GenerativeModel, Tool
         tool = Tool(function_declarations=[FunctionDeclaration(**d) for d in declarations])
         self._model = GenerativeModel(model_name, tools=[tool], system_instruction=system)
+        self._model_name = model_name
         self._chat = self._model.start_chat()
         self.tokens = 0
 
     def send(self, msg):
         from vertexai.generative_models import Part
+        from pipeline import usage
         payload = msg if isinstance(msg, str) else [
             Part.from_function_response(name=n, response=r) for n, r in msg]
         resp = self._chat.send_message(payload, generation_config={"temperature": 0.0})
         try:
             self.tokens += resp.usage_metadata.total_token_count
+            usage.add_usage(resp, self._model_name)        # loop 的 token 也记进 usage(审计 + 前端监控,之前漏了)
         except Exception:
             pass
         calls, texts = [], []
