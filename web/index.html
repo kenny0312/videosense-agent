@@ -204,6 +204,7 @@ function renderAssistant(card, d, ms){
 
   // ok
   if(d.videos && d.videos.length){ card.appendChild(renderVideos(d.videos)); }
+  if(d.table && d.table.rows && d.table.rows.length){ card.appendChild(renderTable(d.table)); }
   if(d.plot_url){ card.appendChild(renderChart(d.plot_url)); }
   else { card.appendChild(renderAnswer(d.answer)); }
 
@@ -339,6 +340,47 @@ function renderVideos(list){
     wrap.appendChild(card);
   });
   return wrap;
+}
+
+// ── show_table:原始查询结果直接渲染成表格(不经大脑逐行复述)──────
+function renderTable(t){
+  const cols=t.columns||[], rows=t.rows||[];
+  const wrap=el('<div></div>');
+  wrap.style.cssText='margin:6px 0;border:1px solid var(--line,#2a2a2a);border-radius:12px;overflow:hidden;background:var(--card,#161616)';
+  const bar=el('<div></div>');
+  bar.style.cssText='display:flex;align-items:center;justify-content:space-between;padding:8px 12px;font-size:12px;color:var(--muted,#888);border-bottom:1px solid var(--line,#2a2a2a)';
+  const cnt=el('<span></span>');
+  cnt.textContent=(t.caption?t.caption+' · ':'')+'📋 共 '+t.n+' 行'+(t.shown<t.n?(' · 显示前 '+t.shown):'');
+  bar.appendChild(cnt);
+  const csvBtn=el('<span></span>');
+  csvBtn.textContent='⤓ CSV'; csvBtn.style.cssText='cursor:pointer;color:var(--accent,#4f8cff)';
+  csvBtn.onclick=()=>downloadCsv(cols, rows);
+  bar.appendChild(csvBtn);
+  wrap.appendChild(bar);
+  const scroll=el('<div></div>'); scroll.style.cssText='max-height:420px;overflow:auto';
+  const tbl=el('<table></table>'); tbl.style.cssText='width:100%;border-collapse:collapse;font-size:13px';
+  const thead=el('<thead></thead>'); const htr=el('<tr></tr>');
+  cols.forEach(c=>{ const th=el('<th></th>'); th.textContent=c;
+    th.style.cssText='text-align:left;padding:7px 12px;position:sticky;top:0;background:var(--card2,#1d1d1d);border-bottom:1px solid var(--line,#2a2a2a);font-weight:600;white-space:nowrap'; htr.appendChild(th); });
+  thead.appendChild(htr); tbl.appendChild(thead);
+  const tb=el('<tbody></tbody>');
+  rows.forEach((r,i)=>{ const tr=el('<tr></tr>'); if(i%2) tr.style.background='rgba(255,255,255,0.02)';
+    cols.forEach(c=>{ const td=el('<td></td>'); const v=r[c];
+      td.textContent=(v==null?'':String(v));
+      td.style.cssText='padding:6px 12px;border-bottom:1px solid var(--line,#222);vertical-align:top'; tr.appendChild(td); });
+    tb.appendChild(tr); });
+  tbl.appendChild(tb); scroll.appendChild(tbl); wrap.appendChild(scroll);
+  return wrap;
+}
+
+function downloadCsv(cols, rows){
+  const esc=v=>{ const s=(v==null?'':String(v)); return /[",\n]/.test(s)?('"'+s.replace(/"/g,'""')+'"'):s; };
+  const lines=[cols.map(esc).join(',')];
+  rows.forEach(r=>lines.push(cols.map(c=>esc(r[c])).join(',')));
+  const blob=new Blob([lines.join('\n')],{type:'text/csv;charset=utf-8'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='table.csv';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href),1000);
 }
 
 // ── 计划透明:DAG 步骤条 + SQL + 生成代码 + trace ───────

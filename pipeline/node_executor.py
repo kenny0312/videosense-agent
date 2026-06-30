@@ -42,6 +42,7 @@ class NodeResult:
     stderr: str = ""
     artifact: dict = field(default_factory=dict)   # 如 plot 的 png_base64
     videos: list = field(default_factory=list)     # show_video 的侧信道:可播放视频描述符
+    table: dict = field(default_factory=dict)      # show_table 的侧信道:{columns, rows, n} 原样出表格
 
 
 # ── 上游数据注入 ──────────────────────────────
@@ -188,6 +189,33 @@ def _run_show_video(node: Node, upstream: dict[str, Any]) -> NodeResult:
                       value=f"🎬 为你准备了 {n} 个视频{note}")
 
 
+SHOW_TABLE_MAX_ROWS = 1000
+
+
+def _run_show_table(node: Node, upstream: dict[str, Any]) -> NodeResult:
+    """主进程节点:把【上游查询的完整结果】原样放进 NodeResult.table 侧信道,供前端渲染成表格。
+    完整行取自 ledger(非预览)→ 多少行都不丢不编,大脑不必逐行复述。"""
+    rows = next((v for v in upstream.values() if isinstance(v, list)), None)
+    if rows is None:
+        return NodeResult(node.id, node.tool, ok=True, attempts=1,
+                          value={"shown": 0, "note": "没有可展示的表格数据(上游结果不是行集)"})
+    n = len(rows)
+    shown = rows[:SHOW_TABLE_MAX_ROWS]
+    norm = [r if isinstance(r, dict) else {"value": r} for r in shown]
+    cols: list = []
+    for r in norm:                                 # 列名 = 所有行键的并集(保序)
+        for k in r:
+            if k not in cols:
+                cols.append(str(k))
+    if not cols:
+        cols = ["value"]
+    note = "" if n <= SHOW_TABLE_MAX_ROWS else f"(共 {n} 条,展示前 {SHOW_TABLE_MAX_ROWS} 条)"
+    caption = node.inputs.get("caption") or ""
+    table = {"columns": cols, "rows": norm, "n": n, "shown": len(norm), "caption": str(caption)}
+    return NodeResult(node.id, node.tool, ok=True, attempts=1, table=table,
+                      value=f"📋 已为你列出 {n} 条{note}")
+
+
 def _run_analyze_video(node: Node, upstream: dict[str, Any]) -> NodeResult:
     """主进程节点:用多模态模型【现场看一段视频】回答 inputs.question,返回最小信封。
     选定【单个】视频:优先 inputs.video_id,否则取上游结果行里的第一个 video_id;查 video_metadata
@@ -306,6 +334,8 @@ def execute_node(node: Node, upstream: dict[str, Any],
                 res = _run_threshold_sweep(node)
             elif node.tool == "show_video":
                 res = _run_show_video(node, upstream)
+            elif node.tool == "show_table":
+                res = _run_show_table(node, upstream)
             elif node.tool == "analyze_video":
                 res = _run_analyze_video(node, upstream)
             else:

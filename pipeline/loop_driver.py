@@ -30,6 +30,7 @@ UPSTREAM_HANDLES: dict[str, list[str]] = {
     "plot":        ["data_result_id"],
     "python":      ["data_result_id"],
     "show_video":  ["data_result_id"],   # 可选(也可直接给 video_ids)
+    "show_table":  ["data_result_id"],   # 必填:要展示的查询结果
 }
 _OPTIONAL_HANDLE = {"show_video"}        # 句柄非必填的工具
 ANALYZE_PREVIEW_CELL = 1200               # #2:analyze_video 结果给大预览(答案含完整理由,默认 80 会砍掉)
@@ -99,6 +100,7 @@ class ExecResult:
     code: str = ""
     artifact: dict = field(default_factory=dict)
     videos: list = field(default_factory=list)
+    table: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -215,7 +217,7 @@ def _make_executor(sandbox, trace, schema, session_id) -> Callable:
         else:
             pv, n = _preview(nr.value)
         return ExecResult(ok=nr.ok, value=nr.value, preview=pv, n=n, stderr=nr.stderr,
-                          code=nr.code, artifact=nr.artifact, videos=nr.videos)
+                          code=nr.code, artifact=nr.artifact, videos=nr.videos, table=nr.table)
     return execute
 
 
@@ -258,8 +260,13 @@ _LOOP_SYSTEM = (
     "- 出图/科学计算的文本(SQL、plot 标题)一律用英文。\n"
     "- 报【总数/数量】时必须真的 COUNT 过;列举或抽样(LIMIT)拿到的条数【不是】总数 —— "
     "别把 LIMIT 的条数当成总数说出来。要给总数就单独 COUNT(*)。\n"
-    "- 列举/列清单时,【只】列出结果预览里真实出现的行,【绝不】编造或重复 id 来凑数;"
-    "若预览显示「共 X 行」但你只看到前几行,如实说「这是前 N 条,共 X 条」,让用户要更多再追问。\n\n"
+    "- ⚠️ 关键:工具返回给你的只是【结果预览(前几十行)】,不是全部行 —— 所以凡是用户要"
+    "【全部 / 都列出来 / 给我看清单 / 把数据给我】这种要看很多行的,你【没法】用文字列全"
+    "(你压根看不到全部),【必须】走 show_table:先 sql_query 查到完整结果,再调 "
+    "show_table(data_result_id=那次查询的 result_id)—— 它直接把【完整的所有行】渲染成表格给用户,"
+    "不经你复述、不丢不编。**别再用文字列一截然后说「共 X 个」搪塞。**\n"
+    "- 只有结果就几行、或用户只要一个具体答案时,才直接文字作答。自己用文字列举时:【只】列预览里"
+    "真实出现的行,【绝不】编造或重复凑数;列不全就如实说「前 N 条,共 X 条」(或干脆用 show_table 给全)。\n\n"
     "# 视频内容分析(analyze_video)\n"
     "- analyze_video 一次只看【一个】视频,且每请求有数量上限。候选很多时:先用 sql_query 把范围"
     "缩到几个最相关的,再对这几个【逐个】analyze_video —— 别一上来就想看全部,会撞上限且浪费。\n"
