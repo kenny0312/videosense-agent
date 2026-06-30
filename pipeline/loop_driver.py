@@ -123,22 +123,37 @@ class LoopResult:
 # ── 纯控制流(注入 conversation + execute,离线可测)──────────────
 def run_loop(user_query: str, conversation, execute: Callable, *,
              max_steps: int | None = None, repeat_limit: int | None = None,
-             on_step=None) -> LoopResult:
+             on_step=None, critic=None, max_critic: int | None = None) -> LoopResult:
     max_steps = config.MAX_LOOP_STEPS if max_steps is None else max_steps
     repeat_limit = config.LOOP_REPEAT_LIMIT if repeat_limit is None else repeat_limit
+    max_critic = config.SELF_CHECK_MAX_ROUNDS if max_critic is None else max_critic
     ledger: dict[str, ExecResult] = {}
     trace: list[dict] = []
     seen: dict = {}
     step_walls: list[float] = []
     msg: Any = user_query
     llm_calls = 0
+    critic_used = 0
     for step in range(max_steps):
         calls, text = conversation.send(msg)
         llm_calls += 1
         if not calls:                                        # 收敛:纯文本即答案
+            answer = text or ""
+            # 自检 B(设计 self-check-critic.md):收口前插一个 critic 判"满足用户没";没满足且有
+            # 下一步 → 把意见喂回再来一轮(至多 max_critic 次,防空转)。critic 抛错 → 视为满足(fail-open)。
+            if critic is not None and critic_used < max_critic:
+                try:
+                    satisfied, hint = critic(user_query, answer)
+                except Exception:
+                    satisfied, hint = True, ""
+                if not satisfied and hint:
+                    critic_used += 1
+                    msg = (f"[自检] 你刚才的回答可能还没满足用户:{hint}。"
+                           "请据此继续把它做到位;如果确实做不到,就诚实说清楚。")
+                    continue
             if on_step:
-                on_step({"type": "answer", "text": text or ""})
-            return LoopResult(text or "", step, "text", trace, ledger, llm_calls, step_walls)
+                on_step({"type": "answer", "text": answer})
+            return LoopResult(answer, step, "text", trace, ledger, llm_calls, step_walls)
 
         # ① 准备(主线程):算 cid/sig/upstream;重复失败 → 即时终止
         prepared = []
@@ -225,6 +240,33 @@ class GeminiConversation:
             elif getattr(p, "text", ""):
                 texts.append(p.text)
         return calls, ("".join(texts) if texts else None)
+
+
+def make_self_check_critic():
+    """自检 B 的真 critic:用 CRITIC_MODEL(flash)判'这答案满足用户没' → (satisfied, hint)。
+    任何异常 → (True, '')(fail-open,绝不卡收口)。"""
+    from vertexai.generative_models import GenerativeModel
+    model = GenerativeModel(config.CRITIC_MODEL)
+
+    def critic(nl: str, answer: str):
+        prompt = (
+            "你是回答质量检查员。判断【助手的回答】是否【真的满足了用户的请求】。\n"
+            f"用户问:{nl}\n助手回答:{answer}\n\n"
+            "只回 JSON:{\"satisfied\": true/false, \"missing\": \"若没满足,缺什么/下一步该干什么,一句话;满足留空\"}。\n"
+            "判 satisfied=true:用户只问有无/数量/简单事实且已答到;或助手已诚实说明做不到/超范围;或要求已完整达成。"
+            "【别强求、别为难】。只有【明显答偏、漏了用户明确要的、或半途而废】才 false。")
+        try:
+            from pipeline import usage
+            import json as _json
+            resp = model.generate_content(
+                prompt, generation_config={"temperature": 0.0, "max_output_tokens": 256,
+                                           "response_mime_type": "application/json"})
+            usage.add_usage(resp, config.CRITIC_MODEL)
+            data = _json.loads(resp.text)
+            return bool(data.get("satisfied", True)), str(data.get("missing") or "")
+        except Exception:
+            return True, ""                                   # fail-open
+    return critic
 
 
 def _make_executor(sandbox, trace, schema, session_id) -> Callable:
@@ -356,7 +398,8 @@ def run_query_loop(nl: str, *, schema: dict, replay_context: "str | None", sandb
     conv = GeminiConversation(config.LOOP_MODEL, loop_function_declarations(),
                               _loop_system(schema, replay_context))
     execute = _make_executor(sandbox, trace, schema, session_id)
-    r = run_loop(nl, conv, execute, on_step=on_step)
+    critic = make_self_check_critic() if config.USE_SELF_CHECK_CRITIC else None   # 自检 B:opt-in
+    r = run_loop(nl, conv, execute, on_step=on_step, critic=critic)
     # 最终成功步 → artifact 的 kind/value;preview_value:plot-final 取上游数据
     # (plot 自身 value 只有 {n_points},无复用价值),其余 = final_value。
     final_tool = final_value = preview_value = None

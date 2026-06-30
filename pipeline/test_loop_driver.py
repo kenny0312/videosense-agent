@@ -264,3 +264,46 @@ def test_cache_hit_does_not_consume_quota(monkeypatch):
     finally:
         avc.MODEL_OVERRIDE.set(None)
         analyze_cache.clear()
+
+
+# ── 自检 B:收口前的 critic 回路 ───────────────────────
+def test_self_check_satisfied_returns_immediately():
+    conv = ScriptedConv([([], "答案")])
+    r = run_loop("q", conv, make_exec(), critic=lambda nl, a: (True, ""), max_critic=1)
+    assert r.answer == "答案" and r.steps == 0
+
+
+def test_self_check_not_satisfied_continues_once():
+    sent = []
+
+    class Conv:
+        def __init__(self): self.n = 0
+        def send(self, msg):
+            sent.append(msg); self.n += 1
+            return ([], "初版答案") if self.n == 1 else ([], "改进版答案")
+    seen = []
+    def crit(nl, ans):
+        seen.append(ans)
+        return (False, "还差 X") if len(seen) == 1 else (True, "")
+    r = run_loop("q", Conv(), make_exec(), critic=crit, max_critic=1)
+    assert r.answer == "改进版答案"                         # 介入后的改进版被采纳
+    assert seen == ["初版答案"]                             # critic 只介入一次(cap=1),改进版不再复检
+    assert "[自检]" in sent[1] and "还差 X" in sent[1]      # hint 被喂回
+
+
+def test_self_check_max_critic_caps():
+    class Conv:
+        def __init__(self): self.n = 0
+        def send(self, msg):
+            self.n += 1
+            return [], f"答案{self.n}"
+    # critic 永远不满足,但 max_critic=1 → 只介入一次,第二次收敛直接返回
+    r = run_loop("q", Conv(), make_exec(), critic=lambda nl, a: (False, "还不行"), max_critic=1)
+    assert r.answer == "答案2"
+
+
+def test_self_check_critic_exception_failopen():
+    def boom(nl, ans):
+        raise RuntimeError("critic down")
+    r = run_loop("q", ScriptedConv([([], "答案")]), make_exec(), critic=boom, max_critic=1)
+    assert r.answer == "答案"                              # critic 抛错 → 视为满足,直接返回
