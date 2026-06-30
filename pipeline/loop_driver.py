@@ -21,7 +21,7 @@ from typing import Any, Callable
 
 from pipeline import config
 from pipeline.dag_schema import ALL_TOOLS, Node
-from pipeline.node_executor import execute_node
+from pipeline.node_executor import execute_node, analyze_peek_cache
 from pipeline.node_specs import build_function_declarations
 
 log = logging.getLogger("pipeline.loop_driver")
@@ -234,19 +234,21 @@ def _make_executor(sandbox, trace, schema, session_id) -> Callable:
     def _do(cid, name, inputs, upstream, uses) -> ExecResult:
         if name not in ALL_TOOLS:
             return ExecResult(ok=False, stderr=f"unknown tool: {name}")
-        if name == "analyze_video":                       # 配额护栏(M2 stopgap,设计 §9)
-            with quota_lock:                              # check+increment 原子(并行下防漏算/失控)
-                if quota["analyzed"] >= config.MAX_VIDEOS_PER_REQUEST:
-                    note = (f"已达本请求视频分析上限({config.MAX_VIDEOS_PER_REQUEST} 个),这个【没分析】。"
-                            "请【就已分析过的那些视频】给出结论:不要再调 analyze_video,"
-                            "也不要把没分析的视频当成分析过了来说;要覆盖更多就让用户缩小候选或分批问。")
-                    pv, n = _preview({"answer": note, "enough": "no"})
-                    return ExecResult(ok=True, value={"answer": note, "enough": "no"}, preview=pv, n=n)
-                quota["analyzed"] += 1
         try:
             node = Node(id=cid, tool=name, inputs=inputs, depends_on=list(uses))
         except Exception as e:                               # 幻觉/坏参数 → 软失败回喂
             return ExecResult(ok=False, stderr=f"bad node {name}: {e}")
+        if name == "analyze_video":                       # 配额护栏(M2 stopgap,设计 §9)
+            # ③:缓存命中=免费(不调 Gemini)→ 不占配额、也不过上限门;只有 miss(真要调 Gemini)才计配额。
+            if analyze_peek_cache(node, upstream) is None:
+                with quota_lock:                          # check+increment 原子(并行下防漏算/失控)
+                    if quota["analyzed"] >= config.MAX_VIDEOS_PER_REQUEST:
+                        note = (f"已达本请求视频分析上限({config.MAX_VIDEOS_PER_REQUEST} 个),这个【没分析】。"
+                                "请【就已分析过的那些视频】给出结论:不要再调 analyze_video,"
+                                "也不要把没分析的视频当成分析过了来说;要覆盖更多就让用户缩小候选或分批问。")
+                        pv, n = _preview({"answer": note, "enough": "no"})
+                        return ExecResult(ok=True, value={"answer": note, "enough": "no"}, preview=pv, n=n)
+                    quota["analyzed"] += 1
         nr = execute_node(node, upstream, sandbox, trace, schema=schema,
                           session_id=session_id)
         # #2 修:analyze_video 的结论+理由都在 answer 里;默认 80 字/格会把理由砍掉,大脑收口时
