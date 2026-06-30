@@ -36,7 +36,7 @@ UPSTREAM_HANDLES: dict[str, list[str]] = {
     "show_video":  ["data_result_id"],   # 可选(也可直接给 video_ids)
     "show_table":  ["data_result_id"],   # 必填:要展示的查询结果
 }
-_OPTIONAL_HANDLE = {"show_video"}        # 句柄非必填的工具
+_OPTIONAL_HANDLE = {"show_video", "python"}   # 句柄非必填:python 逃生舱可带上游、也可独立写代码
 ANALYZE_PREVIEW_CELL = 1200               # #2:analyze_video 结果给大预览(答案含完整理由,默认 80 会砍掉)
 SQL_PREVIEW_ROWS = 30                      # sql_query 列举类:大脑看到更多行(默认 3 行 → 让它列 14 个就会编/重复)
 
@@ -358,6 +358,9 @@ _LOOP_SYSTEM = (
     "- video_facts.predicate 是英文活动描述,用 ILIKE 模糊匹配(中文先译英:滑雪→%skiing%/%snowboarding%)。\n"
     "- video_facts.matched 是布尔;查已确认事实加 AND matched = true。\n"
     "- 关系类查询(筛选/聚合/join/排序)用单个 sql_query 直接写完整 SQL。\n"
+    "- 内置工具(sql_query / analyze_video / show_* / plot 等)都不合适某个【没预料到的】需求时,"
+    "别硬塞也别放弃 —— 用 python 逃生舱【现场写代码】(instruction 把要干什么说清楚;要用上一步结果就给 "
+    "data_result_id,不需要就不给)。\n"
     "- 出图/科学计算的文本(SQL、plot 标题)一律用英文。\n"
     "- 报【总数/数量】时必须真的 COUNT 过;列举或抽样(LIMIT)拿到的条数【不是】总数 —— "
     "别把 LIMIT 的条数当成总数说出来。要给总数就单独 COUNT(*)。\n"

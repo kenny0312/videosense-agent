@@ -248,11 +248,12 @@ SPECS: dict[str, NodeSpec] = {
         tool="python",
         needs_sandbox=True,
         planner_desc=(
-            "通用分析逃生舱:无法用上述专用工具表达时使用。"
-            "inputs.instruction = 用自然语言描述要对上游数据做的分析。依赖上游节点。"
+            "【通用逃生舱】:任何【没有现成专用工具能表达】的计算 / 分析 / 转换,都用它现场写 Python。"
+            "inputs.instruction = 用自然语言把要做什么描述清楚。"
+            "可【带上游数据】(给 data_result_id,代码里就能用那一步的结果),也可【不带】(独立计算/生成)。"
         ),
         codegen_hint=(
-            "按 inputs['instruction'] 的自然语言要求,对上游数据写分析代码,"
+            "按 inputs['instruction'] 的自然语言要求写 Python(有上游数据就用上游、没有就独立算),"
             "用 print() 输出结论(优先 print(json.dumps(...)) 便于下游解析)。"
         ),
         parameters=_obj(
