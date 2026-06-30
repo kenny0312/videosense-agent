@@ -66,8 +66,10 @@ MAX_VIDEOS_PER_REQUEST    = int(os.environ.get("MAX_VIDEOS_PER_REQUEST", "12"))
 # M4.1:analyze_video 内容缓存(视频离线投递后静态 → 重复不重看,省一次 Gemini 多模态调用)。
 #   memory = 进程内 LRU(默认,零基建、跨副本不共享、重启清空);off = 关闭(一键退回)。
 #   后续 M4 可叠加 redis 跨副本共享(见设计 §4.3 / 开放问题)。键含【实际生效模型】→ Pro/Flash 不串味。
-ANALYZE_CACHE_BACKEND = os.environ.get("ANALYZE_CACHE_BACKEND", "memory").lower()  # memory | off
-ANALYZE_CACHE_MAX     = int(os.environ.get("ANALYZE_CACHE_MAX", "512"))            # 进程内 LRU 上限条数
+ANALYZE_CACHE_BACKEND = os.environ.get("ANALYZE_CACHE_BACKEND", "memory").lower()  # memory | redis | off
+ANALYZE_CACHE_MAX     = int(os.environ.get("ANALYZE_CACHE_MAX", "512"))            # 进程内 L1 LRU 上限条数
+# redis 后端:L1 进程内 LRU 之上加一层 L2 共享 Redis(跨 Cloud Run 副本命中)。TTL 秒;视频静态 → 默认 7 天。
+ANALYZE_CACHE_TTL_SECONDS = int(os.environ.get("ANALYZE_CACHE_TTL_SECONDS", str(7 * 24 * 3600)))
 
 # M4.3:同一步内多个 analyze_video 调用的并发上限(I/O 密集 = 等 Gemini 多模态)。
 #   =1 → 退回纯串行(秒级回退开关);起步 3,压测看 Gemini 429/限流再调。

@@ -124,3 +124,37 @@ def test_time_range_parsed_and_keys_cache(monkeypatch):  # M4.5
     ne._run_analyze_video(mk([0, 5]), {})
     ne._run_analyze_video(mk([10, 20.5]), {})          # 同 time_range → 命中缓存,不再真调
     assert seen == [(10.0, 20.5), (0.0, 5.0)]          # 解析成 float 元组;不同段不同键、同段命中
+
+
+# ── Redis L2 跨副本层 ────────────────────────────────
+class _FakeRedis:
+    def __init__(self): self.store = {}
+    def get(self, k): return self.store.get(k)
+    def set(self, k, v, ex=None): self.store[k] = v
+
+
+def test_redis_l2_cross_instance(monkeypatch):
+    monkeypatch.setattr(config, "ANALYZE_CACHE_BACKEND", "redis")
+    fake = _FakeRedis()
+    monkeypatch.setattr(analyze_cache, "_redis", lambda: fake)
+    analyze_cache.clear()
+    analyze_cache.put("k1", {"answer": "a"})
+    assert "k1" in fake.store                          # 同写进了 L2
+    analyze_cache.clear()                              # 清 L1(模拟另一个副本);L2(fake)还在
+    assert analyze_cache.size() == 0
+    got = analyze_cache.get("k1")
+    assert got == {"answer": "a"}                      # L1 miss → L2 命中
+    assert analyze_cache.size() == 1                   # 回填了 L1
+
+
+def test_redis_failopen(monkeypatch):
+    monkeypatch.setattr(config, "ANALYZE_CACHE_BACKEND", "redis")
+
+    class _Boom:
+        def get(self, k): raise RuntimeError("redis down")
+        def set(self, k, v, ex=None): raise RuntimeError("redis down")
+    monkeypatch.setattr(analyze_cache, "_redis", lambda: _Boom())
+    analyze_cache.clear()
+    analyze_cache.put("k", {"a": 1})                   # L2 抛错被吞,L1 仍写入
+    assert analyze_cache.get("k") == {"a": 1}          # L1 命中
+    assert analyze_cache.get("missing") is None        # L1 没有 → L2 抛错 → fail-open None
