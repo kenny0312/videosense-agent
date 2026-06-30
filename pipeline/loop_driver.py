@@ -33,6 +33,7 @@ UPSTREAM_HANDLES: dict[str, list[str]] = {
 }
 _OPTIONAL_HANDLE = {"show_video"}        # 句柄非必填的工具
 ANALYZE_PREVIEW_CELL = 1200               # #2:analyze_video 结果给大预览(答案含完整理由,默认 80 会砍掉)
+SQL_PREVIEW_ROWS = 30                      # sql_query 列举类:大脑看到更多行(默认 3 行 → 让它列 14 个就会编/重复)
 
 
 def loop_function_declarations() -> list[dict]:
@@ -207,8 +208,12 @@ def _make_executor(sandbox, trace, schema, session_id) -> Callable:
                           session_id=session_id)
         # #2 修:analyze_video 的结论+理由都在 answer 里;默认 80 字/格会把理由砍掉,大脑收口时
         # 只看到前 80 字 → 答案干瘪。给它大额度预览,完整证据进得了最终答案(其余工具仍用小预览省 token)。
-        cell = ANALYZE_PREVIEW_CELL if name == "analyze_video" else 80
-        pv, n = _preview(nr.value, cell=cell)
+        if name == "analyze_video":
+            pv, n = _preview(nr.value, cell=ANALYZE_PREVIEW_CELL)       # 答案含完整理由
+        elif name == "sql_query":
+            pv, n = _preview(nr.value, rows=SQL_PREVIEW_ROWS)           # 列举类:看到更多行,别只看 3 行就编/漏
+        else:
+            pv, n = _preview(nr.value)
         return ExecResult(ok=nr.ok, value=nr.value, preview=pv, n=n, stderr=nr.stderr,
                           code=nr.code, artifact=nr.artifact, videos=nr.videos)
     return execute
@@ -246,7 +251,9 @@ _LOOP_SYSTEM = (
     "- 关系类查询(筛选/聚合/join/排序)用单个 sql_query 直接写完整 SQL。\n"
     "- 出图/科学计算的文本(SQL、plot 标题)一律用英文。\n"
     "- 报【总数/数量】时必须真的 COUNT 过;列举或抽样(LIMIT)拿到的条数【不是】总数 —— "
-    "别把 LIMIT 的条数当成总数说出来。要给总数就单独 COUNT(*)。\n\n"
+    "别把 LIMIT 的条数当成总数说出来。要给总数就单独 COUNT(*)。\n"
+    "- 列举/列清单时,【只】列出结果预览里真实出现的行,【绝不】编造或重复 id 来凑数;"
+    "若预览显示「共 X 行」但你只看到前几行,如实说「这是前 N 条,共 X 条」,让用户要更多再追问。\n\n"
     "# 视频内容分析(analyze_video)\n"
     "- analyze_video 一次只看【一个】视频,且每请求有数量上限。候选很多时:先用 sql_query 把范围"
     "缩到几个最相关的,再对这几个【逐个】analyze_video —— 别一上来就想看全部,会撞上限且浪费。\n"
