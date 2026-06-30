@@ -71,8 +71,10 @@ SPECS: dict[str, NodeSpec] = {
             "【播放】视频内容:把视频的私有 gcs_uri 签成可播放 https URL,前端内嵌 <video> 播放"
             "(可跳到 start_ts 看某片段)。依赖一个上游节点(其结果【行】需含 video_id;可选 "
             "start_ts/end_ts/label),或直接 inputs.video_ids=[\"v001\",...]。"
-            "【用途:用户想【播放 / 观看 / 看视频里发生了什么 / 看某个片段】时用它 —— 是要【看片本身】,"
-            "不是要数据清单(那用 show_table)】。最多 8 个。"
+            "【用途:用户想【播放 / 观看 / 看视频里发生了什么 / 看某个片段】时用它 —— 是要【看片本身】。"
+            "不是要数据清单(那用 show_table);问「有没有 / 有几个 X 视频」这类只问【有无 / 数量】的【也不归本工具】"
+            "—— 那是要个答案,(必要时先 sql_query COUNT 一下)直接文字答「有,N 个」,别因为句子里出现「视频」"
+            "二字就来 show_video 把它们全播出来】。最多 8 个。"
         ),
         parameters=_obj(
             {"video_ids": {"type": "array", "items": {"type": "string"},

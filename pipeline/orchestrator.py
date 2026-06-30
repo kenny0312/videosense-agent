@@ -96,12 +96,27 @@ def run_query(nl: str, *, quiet_trace: bool = False,
     ttype = getattr(verdict, "turn_type", "new") if verdict else "new"
     route = getattr(verdict, "route", "") if verdict else ""
 
-    if verdict is not None and verdict.decision == "smalltalk":
+    # transcript 回放提前到 smalltalk/refuse 门【之前】建好(有会话历史才有内容)。
+    # 原因:这两道门由【不看上下文】的 Router 判,对「ok」「我想看」这种【只有结合上文才看得懂】的
+    # 短回复会误判成寒暄/太模糊并【终结】整轮 —— 而 loop 才有上文(上一条 offer + 视频 id)能解出来。
+    # 有上文(replay 非空)时不让这两道门终结,落到 loop 用回放解(解不出 loop 自己 context-aware 反问);
+    # 空会话 replay=None → 两道门行为与原来完全一致,不回归。replay 在下方 loop 复用,不重复建。
+    from pipeline import loop_memory
+    from pipeline.transcript_store import STORE as TX_STORE
+    replay_ctx = None
+    if session is not None:
+        try:
+            replay_ctx = loop_memory.build_loop_context(
+                TX_STORE, owner, sid, summarize=loop_memory.make_llm_summarizer())
+        except Exception as e:
+            log.warning("build_loop_context 失败(fail-open): %r", e)
+
+    if verdict is not None and verdict.decision == "smalltalk" and not replay_ctx:
         # 不再回固定一句:小模型按人设生成可变回复,失败再回退到 SMALLTALK_REPLY 常量。
         ans = smalltalk_reply(nl) or SMALLTALK_REPLY
         return _result(True, trace=trace, status="smalltalk", answer=ans,
                        session_id=sid, turn_type=ttype)
-    if verdict is not None and should_refuse(verdict):
+    if verdict is not None and should_refuse(verdict) and not replay_ctx:
         return _result(False, trace=trace, status="refused", reason=verdict.reason,
                        session_id=sid, turn_type=ttype)
 
@@ -134,19 +149,11 @@ def run_query(nl: str, *, quiet_trace: bool = False,
                        session_id=sid, turn_type=ttype)
 
     # ── M7b:probe-and-step 主循环是【唯一】执行路径(旧 Planner→DAG 已删;dev CLI main.py 仍保留)──
-    from pipeline import loop_driver, loop_memory
-    from pipeline.transcript_store import STORE as TX_STORE, gcs_blob_put
+    # 回放(replay_ctx)已在上方 smalltalk/refuse 门【之前】建好并在此复用 —— 不二次 build(省一次 LLM 摘要)。
+    # 方案 A:Router 只管分流 + 标 turn_type,指代/复用/重算/offer 解析全交给 loop 用回放自己做。
+    from pipeline import loop_driver
+    from pipeline.transcript_store import gcs_blob_put
     lstep = trace.step("Loop")
-    # 回放【不再被 Router 轮型卡】(方案 A):有会话历史就建(空会话 build_loop_context 返回 None),
-    # 由 loop 自己据回放判断要不要解析指代/复用/重算。这样 Router 漏判裸代词("它")误标 new 时,
-    # loop 仍拿得到上文、不会饿着反问。Router 只管分流 + 给客户端标 turn_type,不再当记忆开关。
-    replay_ctx = None
-    if session is not None:
-        try:
-            replay_ctx = loop_memory.build_loop_context(
-                TX_STORE, owner, sid, summarize=loop_memory.make_llm_summarizer())
-        except Exception as e:
-            log.warning("build_loop_context 失败(fail-open): %r", e)
     try:
         lo = loop_driver.run_query_loop(nl, schema=schema, replay_context=replay_ctx,
                                         sandbox=sandbox, trace=trace, session_id=sid,
