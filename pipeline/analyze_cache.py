@@ -1,11 +1,12 @@
-"""M4.1:analyze_video 内容缓存 —— 视频离线投递后内容【静态】,同一(视频+问题+上下文+细则+模型)
+"""analyze_video 内容缓存 —— 视频离线投递后内容【静态】,同一(视频+问题+上下文+细则+模型+时段)
 重复分析没意义 → 缓存 AnalyzeResult,重复不重看,省一次 Gemini 多模态调用(成本 + 10–40s 延迟)。
 
-本期最简实现 = 【进程内 LRU】(有界 OrderedDict + 锁,fail-open):
-  · 零基建、线程安全(为 M4.3 并行铺路)、重启自动清空(prompt/模型一变,redeploy 即失效,天然防陈旧);
-  · 跨副本不共享 —— 那是后续 Redis 层的事(设计 §4.3 / 开放问题),本期不做。
-键含【实际生效模型】(Pro/Flash)→ 不串味。命中【不另消耗】Gemini,但配额计数仍在 _make_executor
-(命中省的是真实调用;"命中不占配额"的覆盖优化属 M4.4)。任何异常一律 fail-open(绝不卡主链路)。
+两层(ANALYZE_CACHE_BACKEND):
+  · memory(默认):只用【进程内 L1 LRU】(有界 + 锁,fail-open;重启清空 → prompt/模型一变 redeploy 即失效)。
+  · redis:L1 之上加一层【共享 L2 Redis】—— Cloud Run 多副本【跨实例命中】(进程内各存各的,L2 才共享)。
+            L1 miss 时查 L2,命中回填 L1;put 同写两层。Redis 任何异常一律 fail-open(退化成 memory,绝不卡)。
+  · off:关闭。
+键含【实际生效模型】(Pro/Flash)与【time_range】→ 不串味;失败信封不缓存(见 node_executor)。
 """
 from __future__ import annotations
 
@@ -19,6 +20,11 @@ from pipeline import config
 _LOCK = threading.Lock()
 _LRU: "collections.OrderedDict[str, dict]" = collections.OrderedDict()
 
+# 惰性 Redis 客户端:建一次;失败后置 None 不再重试(整段 fail-open)。测试可直接覆盖 _REDIS。
+_REDIS = None
+_REDIS_TRIED = False
+_REDIS_LOCK = threading.Lock()
+
 
 def make_key(video_id: str, *, question: str, context, rubric, time_range, model: str) -> str:
     """稳定缓存键:av:{video_id}:{md5(规范化参数)}。参数 sort_keys → 顺序无关。"""
@@ -29,38 +35,89 @@ def make_key(video_id: str, *, question: str, context, rubric, time_range, model
     return f"av:{video_id}:{digest}"
 
 
-def get(key: str) -> dict | None:
-    """命中返回缓存的 AnalyzeResult dump(并标记为最近用);未命中/关闭/异常 → None(fail-open)。"""
-    if config.ANALYZE_CACHE_BACKEND == "off":
-        return None
+# ── L2 Redis(惰性、fail-open)────────────────────────────────
+def _redis():
+    global _REDIS, _REDIS_TRIED
+    if _REDIS_TRIED:
+        return _REDIS
+    with _REDIS_LOCK:
+        if not _REDIS_TRIED:
+            try:
+                from pipeline.redis_client import build_redis_client
+                _REDIS = build_redis_client()
+            except Exception:
+                _REDIS = None
+            _REDIS_TRIED = True
+    return _REDIS
+
+
+# ── L1 进程内 LRU ────────────────────────────────────────────
+def _l1_get(key: str):
     try:
         with _LOCK:
-            if key not in _LRU:
-                return None
-            _LRU.move_to_end(key)                    # LRU:命中移到尾 = 最近使用
-            return dict(_LRU[key])                    # 拷贝,调用方改不脏缓存
+            if key in _LRU:
+                _LRU.move_to_end(key)                    # LRU:命中移到尾 = 最近用
+                return dict(_LRU[key])
     except Exception:
-        return None
+        pass
+    return None
 
 
-def put(key: str, value: dict) -> None:
-    """写入缓存并按 LRU 淘汰最久未用;关闭/异常 → 静默跳过(fail-open)。"""
-    if config.ANALYZE_CACHE_BACKEND == "off":
-        return
+def _l1_put(key: str, value: dict):
     try:
         with _LOCK:
             _LRU[key] = dict(value)
             _LRU.move_to_end(key)
             while len(_LRU) > config.ANALYZE_CACHE_MAX:
-                _LRU.popitem(last=False)             # 从头淘汰 = 最久未用
+                _LRU.popitem(last=False)                 # 淘汰最久未用
     except Exception:
         pass
 
 
+# ── 对外 ─────────────────────────────────────────────────────
+def get(key: str) -> dict | None:
+    """L1 命中直接返回;memory 模式仅 L1;redis 模式 L1 miss 再查 L2,命中回填 L1。全程 fail-open。"""
+    if config.ANALYZE_CACHE_BACKEND == "off":
+        return None
+    hit = _l1_get(key)
+    if hit is not None:
+        return hit
+    if config.ANALYZE_CACHE_BACKEND == "redis":
+        try:
+            r = _redis()
+            if r is not None:
+                raw = r.get(key)
+                if raw:
+                    val = json.loads(raw)
+                    _l1_put(key, val)                    # 回填 L1(下次本进程直接命中)
+                    return dict(val)
+        except Exception:
+            pass                                         # Redis 挂掉 → 退化成 L1-only
+    return None
+
+
+def put(key: str, value: dict) -> None:
+    """写 L1;redis 模式同写 L2(带 TTL)。关闭/异常 → 静默跳过(fail-open)。"""
+    if config.ANALYZE_CACHE_BACKEND == "off":
+        return
+    _l1_put(key, value)
+    if config.ANALYZE_CACHE_BACKEND == "redis":
+        try:
+            r = _redis()
+            if r is not None:
+                r.set(key, json.dumps(value, ensure_ascii=False),
+                      ex=config.ANALYZE_CACHE_TTL_SECONDS)
+        except Exception:
+            pass
+
+
 def clear() -> None:
-    """清空(测试用)。"""
+    """清空 L1(测试用);不动共享 L2。顺带重置 Redis 客户端缓存,便于测试重建/注入。"""
+    global _REDIS, _REDIS_TRIED
     with _LOCK:
         _LRU.clear()
+    with _REDIS_LOCK:
+        _REDIS, _REDIS_TRIED = None, False
 
 
 def size() -> int:
