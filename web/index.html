@@ -589,8 +589,9 @@ $('#upFile').onchange=async(e)=>{
       body:JSON.stringify({content_type:f.type||'video/mp4'})});
     if(!r.ok){ alert('上传申请失败:'+r.status+' '+(await r.text())); return; }
     const d=await r.json();
-    const put=await fetch(d.upload_url,{method:'PUT',headers:{'Content-Type':d.content_type},body:f});
-    if(!put.ok){ alert('上传失败:'+put.status); return; }
+    const put=await fetch(d.upload_url,{method:'PUT',body:f,
+      headers:{'Content-Type':d.content_type,'x-goog-content-length-range':'0,'+d.max_bytes}}); // 大小上限已签进 URL
+    if(!put.ok){ alert('上传失败:'+put.status+'(可能超出大小上限)'); return; }
     const q=$('#q'); q.value=`我上传了一个视频(${d.video_id}),`; q.focus(); // 预填 → 用户接着问
     btn.textContent='✓ 已上传';
   }catch(err){ alert('上传出错:'+err); }

@@ -231,16 +231,19 @@ def upload_url(req: UploadUrlRequest, request: Request):
     即可在对话里就这个 video_id 提问 —— analyze_video / show_video 会解析到上传的视频。临时、有 TTL、不进语料库。"""
     from pipeline import uploads
     from pipeline.video_url import sign_gcs_put_url
+    if req.content_type not in config.UPLOAD_CONTENT_TYPES:        # 类型白名单(别拿来塞任意内容)
+        return Response(status_code=415, content=f"只支持:{', '.join(config.UPLOAD_CONTENT_TYPES)}")
     owner = getattr(request.state, "app_user", "anon")
-    reg = uploads.register(owner)
+    reg = uploads.register(owner, content_type=req.content_type)  # 原子配额计数
     if reg is None:
         return Response(status_code=429, content=f"已达今日上传上限({config.MAX_UPLOADS_PER_DAY} 个)")
     video_id, gcs_uri = reg
-    put_url = sign_gcs_put_url(gcs_uri, content_type=req.content_type)
+    put_url = sign_gcs_put_url(gcs_uri, content_type=req.content_type,
+                               max_bytes=config.MAX_UPLOAD_BYTES)  # 大小上限签进 URL
     if not put_url:                                  # 本地用户 ADC 签不了;Cloud Run(SA)可用
         return Response(status_code=503, content="无法生成上传链接(本地凭证签不了;部署到 Cloud Run 后可用)")
     return {"video_id": video_id, "upload_url": put_url, "gcs_uri": gcs_uri,
-            "content_type": req.content_type}
+            "content_type": req.content_type, "max_bytes": config.MAX_UPLOAD_BYTES}
 
 
 @app.post("/v1/video_vibe_query/stream")

@@ -70,9 +70,10 @@ def sign_gcs_uri(gcs_uri: str | None, ttl_minutes: int = DEFAULT_TTL_MIN) -> str
 
 
 def sign_gcs_put_url(gcs_uri: str | None, content_type: str = "video/mp4",
-                     ttl_minutes: int = DEFAULT_TTL_MIN) -> str | None:
+                     ttl_minutes: int = DEFAULT_TTL_MIN, max_bytes: int | None = None) -> str | None:
     """M5:把 gs:// 签成短期【PUT 直传】https URL —— 前端拿它把视频直传 GCS,【不经后端】。
-    method=PUT + content_type 必须与前端 PUT 的 Content-Type 一致。失败 → None(fail-open;本地用户 ADC 签不了)。"""
+    method=PUT + content_type 必须与前端 PUT 的 Content-Type 一致;给 max_bytes 则把大小上限签进 URL
+    (前端 PUT 必须带 x-goog-content-length-range: 0,max_bytes,否则被 GCS 拒)。失败 → None(fail-open)。"""
     parsed = parse_gcs_uri(gcs_uri or "")
     if not parsed:
         return None
@@ -87,6 +88,8 @@ def sign_gcs_put_url(gcs_uri: str | None, content_type: str = "video/mp4",
         blob = client.bucket(bucket_name).blob(blob_name)
         kwargs: dict = {"version": "v4", "expiration": timedelta(minutes=ttl_minutes),
                         "method": "PUT", "content_type": content_type}
+        if max_bytes:                                     # 把大小上限固化进签名 → 防超大对象刷爆存储
+            kwargs["headers"] = {"x-goog-content-length-range": f"0,{int(max_bytes)}"}
         try:
             creds.refresh(ga_requests.Request())                  # SA 路径:刷新后才有真实 email(同 GET)
         except Exception:

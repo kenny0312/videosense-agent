@@ -157,7 +157,10 @@ def _gemini_generate(gcs_uri: str, prompt: str, time_range=None) -> str:
     from vertexai.generative_models import Part
     from pipeline import usage
     name = MODEL_OVERRIDE.get() or PERCEPTION_MODEL   # 本请求选了 Pro 就用 pro,否则默认 flash
-    video = Part.from_uri(uri=gcs_uri, mime_type="video/mp4")
+    low = gcs_uri.lower()                              # mime 跟扩展名走(上传的 .mov/.webm 别被当 mp4)
+    mime = ("video/quicktime" if low.endswith(".mov")
+            else "video/webm" if low.endswith(".webm") else "video/mp4")
+    video = Part.from_uri(uri=gcs_uri, mime_type=mime)
     if time_range:                                    # M4.5:硬裁剪 —— Gemini 只处理 [起,止] 秒这一段
         from google.protobuf import duration_pb2
         start, end = float(time_range[0]), float(time_range[1])

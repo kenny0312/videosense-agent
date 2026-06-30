@@ -113,6 +113,20 @@ def _present_phases(row: dict) -> str:
     return ", ".join(got) if got else "(无可识别阶段)"
 
 
+def _try_video_facts(conn, cur, vf_ins, video_id, row) -> None:
+    """写一条可检索的 video_facts(独立提交,非致命):失败就回滚这步并跳过,
+    绝不拖累已落库的 skydive_segments(也防缺约束等问题把整个 ingest 跑崩)。"""
+    try:
+        cur.execute(vf_ins, video_facts_values(video_id, row))
+        conn.commit()
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        print(f"  [video_facts 跳过] {str(e).strip()[:60]}")
+
+
 def main() -> None:
     import argparse
     ap = argparse.ArgumentParser(description="跳伞阶段离线抽取(可按 GCS 前缀限定)")
@@ -167,9 +181,9 @@ def main() -> None:
         row = to_row(video_id, ext)          # 缺席阶段 → None;派生 freefall_sec null-safe
         try:
             cur.execute(ins, row_values(row))
-            cur.execute(vf_ins, video_facts_values(video_id, row))   # ← 让跳伞视频天生可检索
-            conn.commit()
+            conn.commit()                    # 主数据 skydive_segments 先落
             written += 1
+            _try_video_facts(conn, cur, vf_ins, video_id, row)   # 可检索行:非致命,失败不拖累主数据
             ff = row.get("freefall_sec")
             print(f"  + 阶段: {_present_phases(row)}"
                   f"  | type={row.get('jump_type')}"
@@ -180,9 +194,8 @@ def main() -> None:
             except Exception: pass
             conn = psycopg2.connect(**DB_CONFIG); conn.autocommit = False; cur = conn.cursor()
             try:
-                cur.execute(ins, row_values(row))
-                cur.execute(vf_ins, video_facts_values(video_id, row))
-                conn.commit(); written += 1
+                cur.execute(ins, row_values(row)); conn.commit(); written += 1
+                _try_video_facts(conn, cur, vf_ins, video_id, row)
             except Exception as e2:
                 print(f"  [重写仍失败] {e2}"); failed += 1
         time.sleep(SLEEP_BETWEEN)

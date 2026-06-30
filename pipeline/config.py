@@ -36,6 +36,8 @@ GCS_BUCKET  = os.environ.get("GCS_BUCKET", "your-gcs-bucket")
 UPLOAD_PREFIX        = os.environ.get("UPLOAD_PREFIX", "uploads")          # gs://<bucket>/uploads/<owner>/<vid>.mp4
 UPLOAD_TTL_SECONDS   = int(os.environ.get("UPLOAD_TTL_SECONDS", str(24 * 3600)))   # 临时注册 TTL(≈ lifecycle)
 MAX_UPLOADS_PER_DAY  = int(os.environ.get("MAX_UPLOADS_PER_DAY", "20"))    # 每用户每天上传数上限
+MAX_UPLOAD_BYTES     = int(os.environ.get("MAX_UPLOAD_BYTES", str(500 * 1024 * 1024)))   # 单个上传大小上限(签进 PUT URL)
+UPLOAD_CONTENT_TYPES = ("video/mp4", "video/quicktime", "video/webm")     # 允许的上传类型(端点白名单)
 
 # Planner 与 Code Generator 用的模型(可分别覆盖,默认同一个)
 PLANNER_MODEL = os.environ.get("PLANNER_MODEL", "gemini-2.5-pro")

@@ -7,6 +7,9 @@ class _FakeRedis:
     def __init__(self): self.store = {}
     def get(self, k): return self.store.get(k)
     def set(self, k, v, ex=None): self.store[k] = v
+    def incr(self, k): self.store[k] = int(self.store.get(k, 0)) + 1; return self.store[k]
+    def decr(self, k): self.store[k] = int(self.store.get(k, 0)) - 1; return self.store[k]
+    def expire(self, k, ttl): pass
 
 
 def test_register_and_resolve(monkeypatch):
@@ -19,14 +22,23 @@ def test_register_and_resolve(monkeypatch):
     assert uploads.resolve_gcs("up_nonexistent") is None
 
 
-def test_daily_quota(monkeypatch):
+def test_content_type_extension(monkeypatch):
+    fake = _FakeRedis()
+    monkeypatch.setattr(uploads, "_redis", lambda: fake)
+    _, gcs = uploads.register("a", content_type="video/quicktime")
+    assert gcs.endswith(".mov")                             # .mov 不被当成 .mp4
+    _, gcs2 = uploads.register("a", content_type="video/mp4")
+    assert gcs2.endswith(".mp4")
+
+
+def test_daily_quota_atomic(monkeypatch):
     fake = _FakeRedis()
     monkeypatch.setattr(uploads, "_redis", lambda: fake)
     monkeypatch.setattr(config, "MAX_UPLOADS_PER_DAY", 2)
     assert uploads.register("bob") is not None              # 1
     assert uploads.register("bob") is not None              # 2
-    assert uploads.register("bob") is None                  # 3 → 超每日上限
-    assert uploads.count_today("bob") == 2
+    assert uploads.register("bob") is None                  # 3 → 超上限(INCR→3>2→decr→拒)
+    assert uploads.count_today("bob") == 2                  # 计数回退到 2(没漂)
     assert uploads.register("carol") is not None            # 另一个用户独立计数
 
 
