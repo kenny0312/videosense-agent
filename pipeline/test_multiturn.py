@@ -164,6 +164,28 @@ def test_loop_system_splices_replay_context():
     assert s_ctx.startswith(s_none)                       # 规则+schema 段不变,回放追加在尾部
 
 
+# ── Pro 模式:pro_video 透传成 analyze_video 的模型覆盖 ─────────────
+def test_pro_video_sets_analyze_model_override():
+    from perception import analyze_video_contextual as AVC
+    s = Session("t")
+    v = RouterVerdict(decision="answer", turn_type="new", intent="analyze")
+    saved = _stub_router(v)
+    seen = {}
+
+    def fake_loop(nl, **kw):
+        seen["model"] = AVC.MODEL_OVERRIDE.get()      # run_query 已据 pro_video 设好
+        return LoopOutcome(answer="ok", steps=1, terminated="text", final_tool="sql_query",
+                           final_value=[{"x": 1}], preview_value=[{"x": 1}], results={}, trace=[])
+    sl, calls = _stub_loop(fake_loop)
+    try:
+        orch.run_query("最帅的视频", session=s, pro_video=True)
+        assert seen["model"] == AVC.PRO_MODEL          # Pro → 覆盖成 pro 模型
+        orch.run_query("最帅的视频", session=s, pro_video=False)
+        assert seen["model"] is None                   # 默认 → 不覆盖(用 flash)
+    finally:
+        _restore_loop(sl); _restore_router(saved)
+
+
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

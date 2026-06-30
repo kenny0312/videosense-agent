@@ -13,14 +13,21 @@ Gemini 调用经 `generate` 注入,**离线可单测**(测试传 fake,不连 GCP
 """
 from __future__ import annotations
 
+import contextvars
 import json
 import os
 from typing import Callable, Literal
 
 from pydantic import BaseModel, field_validator
 
-PERCEPTION_MODEL = os.environ.get("PERCEPTION_MODEL", "gemini-2.5-flash")
+PERCEPTION_MODEL = os.environ.get("PERCEPTION_MODEL", "gemini-2.5-flash")   # 默认(快/省)
+PRO_MODEL = os.environ.get("PERCEPTION_PRO_MODEL", "gemini-2.5-pro")        # Pro 模式(准/慢)
 RETRY_LIMIT = 2
+
+# 本请求级模型覆盖:orchestrator 据 pro_video 在 run_query 开头 set;_gemini_generate 读。
+# run_query 全程同步同线程,深处的 analyze 也读得到;每请求开头都重设,跨请求不串。
+MODEL_OVERRIDE: "contextvars.ContextVar[str | None]" = contextvars.ContextVar(
+    "analyze_model_override", default=None)
 
 
 # ── 最小信封 ────────────────────────────────────────────────
@@ -87,7 +94,9 @@ class AnalyzeResult(BaseModel):
 def build_prompt(req: AnalyzeRequest) -> str:
     parts = [
         "你是视频内容分析助手。看这段视频,回答下面的问题。",
-        "【重要】把结论写在 answer 的【开头第一句】,再展开细节。",
+        "把结论写在 answer 开头第一句,再用你在视频里【实际看到的】内容(画面/动作/时刻)展开,别脑补。",
+        "按问题【本身】的要求作答 —— 要挑选就给结论、要描述就描述、要评分才评分;评判标准以问题/细则为准,"
+        "别自作主张套固定格式或硬给「X/10」之类分数。",
     ]
     if req.context:
         parts.append(f"# 上下文\n{req.context}")
@@ -122,19 +131,24 @@ def _parse(raw: str) -> AnalyzeResult:
 
 
 # ── 真实 Gemini 调用(惰性 import;离线测试不会走到这里)───────────
-_MODEL = None
+_MODELS: dict = {}                              # 按模型名缓存(flash / pro 各建一次)
+
+
+def _get_model(name: str):
+    if name not in _MODELS:
+        import vertexai
+        from vertexai.generative_models import GenerativeModel
+        vertexai.init(project=os.environ.get("GCP_PROJECT"),
+                      location=os.environ.get("GCP_REGION", "us-central1"))
+        _MODELS[name] = GenerativeModel(name)
+    return _MODELS[name]
 
 
 def _gemini_generate(gcs_uri: str, prompt: str) -> str:
-    global _MODEL
-    import vertexai
-    from vertexai.generative_models import GenerativeModel, Part
-    if _MODEL is None:
-        vertexai.init(project=os.environ.get("GCP_PROJECT"),
-                      location=os.environ.get("GCP_REGION", "us-central1"))
-        _MODEL = GenerativeModel(PERCEPTION_MODEL)
+    from vertexai.generative_models import Part
+    name = MODEL_OVERRIDE.get() or PERCEPTION_MODEL   # 本请求选了 Pro 就用 pro,否则默认 flash
     video = Part.from_uri(uri=gcs_uri, mime_type="video/mp4")
-    resp = _MODEL.generate_content(
+    resp = _get_model(name).generate_content(
         [video, prompt],
         generation_config={"temperature": 0.2, "max_output_tokens": 2048,
                            "response_mime_type": "application/json"})

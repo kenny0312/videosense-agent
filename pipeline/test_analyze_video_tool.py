@@ -129,6 +129,26 @@ def test_quota_does_not_affect_other_tools():
         LD.execute_node, config.MAX_VIDEOS_PER_REQUEST = saved_exec, saved_max
 
 
+# ── #2:analyze_video 结果给大预览(理由不被默认 80 字砍)──────────
+def test_analyze_video_preview_not_truncated_at_80():
+    saved = LD.execute_node
+    long_answer = "8/10 近地穿越 —— " + ("具体画面细节" * 40)   # 远超 80 字
+    LD.execute_node = lambda node, upstream, sandbox, trace, **k: NE.NodeResult(
+        node.id, node.tool, ok=True,
+        value={"video_id": "v1", "answer": long_answer, "enough": "yes"})
+    try:
+        execute = LD._make_executor(sandbox=None, trace=_FakeTrace(), schema={}, session_id=None)
+        r = execute("c0", "analyze_video", {"video_id": "v1", "question": "多帅?"}, {}, [])
+        assert len(r.preview[0]["answer"]) > 200             # 大脑看得到完整理由,不止 80 字
+        # 对照:普通工具仍是小预览(80 字封顶)
+        LD.execute_node = lambda node, upstream, sandbox, trace, **k: NE.NodeResult(
+            node.id, node.tool, ok=True, value=[{"x": "y" * 300}])
+        r2 = execute("c1", "sql_query", {"sql": "SELECT 1"}, {}, [])
+        assert len(r2.preview[0]["x"]) <= 80                 # sql_query 不享受大预览
+    finally:
+        LD.execute_node = saved
+
+
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

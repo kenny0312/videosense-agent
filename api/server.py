@@ -112,6 +112,8 @@ class VibeQueryRequest(BaseModel):
     query: str = Field(..., description="自然语言视频分析问题")
     session_id: str | None = Field(
         None, description="多轮会话 id;省略则开新会话,响应会回传一个 session_id 供下一轮带上")
+    pro_video: bool = Field(
+        False, description="Pro 视频分析:本请求的 analyze_video 用更强的 pro 模型(更准、更慢)")
 
 
 @app.get("/")
@@ -195,7 +197,8 @@ def video_vibe_query(req: VibeQueryRequest, request: Request):
     owner = getattr(request.state, "app_user", "anon")   # 会话按认证身份归属(关 IDOR)
     with _session_lock(f"{owner}:{sid}"):           # 同会话 read-modify-write 串行,防丢轮
         session = STORE.get_or_create(sid, owner=owner)
-        result = run_query(req.query, quiet_trace=True, session=session, owner=owner)
+        result = run_query(req.query, quiet_trace=True, session=session, owner=owner,
+                           pro_video=req.pro_video)
         STORE.save(session, owner=owner)            # 写时机:每请求一次(纯内存模式无操作)
     result["session_id"] = sid                      # 回传,客户端下一轮带上即可续聊
     usage = result.pop("usage", {}) or {}           # token/成本:内部审计用,不回传给前端
@@ -233,10 +236,10 @@ def video_vibe_query_stream(req: VibeQueryRequest, request: Request):
             with _session_lock(f"{owner}:{sid}"):
                 session = STORE.get_or_create(sid, owner=owner)
                 result = run_query(req.query, quiet_trace=True, session=session, owner=owner,
-                                   on_step=lambda ev: q.put(ev))
+                                   on_step=lambda ev: q.put(ev), pro_video=req.pro_video)
                 STORE.save(session, owner=owner)
             result["session_id"] = sid
-            usage = result.pop("usage", {}) or {}
+            usage = result.get("usage", {}) or {}        # get(非 pop):留在 result 里给前端 context 监控
             plot = result.pop("plot", {}) or {}
             if plot:
                 fname = artifacts.save_local(plot, name=uuid.uuid4().hex[:12])

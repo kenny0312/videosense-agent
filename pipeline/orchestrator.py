@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 from typing import Any, TYPE_CHECKING
 
-from pipeline import mcp_client, usage
+from pipeline import config, mcp_client, usage
 from pipeline.dag_schema import DAG
 from pipeline.node_executor import NodeResult
 from pipeline.node_specs import catalog_for_planner
@@ -39,7 +39,7 @@ def _result(ok: bool, *, trace: Trace, dag: DAG | None = None,
             fail_node: str | None = None, error: str = "",
             status: str | None = None, reason: str = "",
             session_id: str | None = None, turn_type: str = "new",
-            loop_meta: dict | None = None) -> dict:
+            loop_meta: dict | None = None, context: dict | None = None) -> dict:
     results = results or {}
     generated_code = {nid: r.code for nid, r in results.items() if r.code}
     plot = next((r.artifact for r in results.values() if r.artifact), {})
@@ -60,14 +60,18 @@ def _result(ok: bool, *, trace: Trace, dag: DAG | None = None,
         "trace": trace.as_list(),
         "trace_summary": trace.summary_line(),
         "loop": loop_meta,                                # M6:loop 审计指标(steps/terminated/tool_calls);dag 路径为 None
+        "context": context,                               # 前端 context 监控环:{replay_tokens, budget}(仅 loop 路径)
         "usage": usage.summarize(),                       # 本轮 LLM token 总计 + 估算成本(含自愈重试)
     }
 
 
 def run_query(nl: str, *, quiet_trace: bool = False,
               session: "Session | None" = None,
-              owner: str = "anon", on_step=None) -> dict:
+              owner: str = "anon", on_step=None, pro_video: bool = False) -> dict:
     usage.reset_usage()                  # 清空本轮 token 累加器(每请求一次)
+    # Pro 模式:本请求的 analyze_video 用 pro 模型;否则默认 flash。每请求开头都设(跨请求不串)。
+    from perception import analyze_video_contextual as _AVC
+    _AVC.MODEL_OVERRIDE.set(_AVC.PRO_MODEL if pro_video else None)
     trace = Trace(quiet=quiet_trace)
     sandbox = SandboxClient()
 
@@ -162,5 +166,7 @@ def run_query(nl: str, *, quiet_trace: bool = False,
                                          lo.trace, lo.results, lo.answer, blob_put=gcs_blob_put)
         except Exception as e:
             log.warning("record_loop_turn 失败(fail-open): %r", e)
+    replay_tok = (len(replay_ctx) // 3) if replay_ctx else 0   # 与 loop_memory._est_tokens 同口径
     return _result(True, trace=trace, results=lo.results, answer=lo.answer,
-                   session_id=sid, turn_type=ttype, loop_meta=loop_driver.loop_metrics(lo))
+                   session_id=sid, turn_type=ttype, loop_meta=loop_driver.loop_metrics(lo),
+                   context={"replay_tokens": replay_tok, "budget": config.LOOP_CONTEXT_TOKEN_BUDGET})
