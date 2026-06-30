@@ -42,6 +42,12 @@ CRITIC_MODEL  = os.environ.get("CRITIC_MODEL", "gemini-2.5-flash")
 LOOP_MODEL         = os.environ.get("LOOP_MODEL", CRITIC_MODEL)
 MAX_LOOP_STEPS     = int(os.environ.get("MAX_LOOP_STEPS", "16"))    # 终止护栏:防死循环
 LOOP_REPEAT_LIMIT  = int(os.environ.get("LOOP_REPEAT_LIMIT", "2"))  # 同一(工具,参数)连续失败上限
+
+# 路由层(设计 one-loop-router-demote.md):
+#   0 = 单 loop 主路(默认)—— 不调前置 Router,loop 带完整 transcript 回放自己判 闲聊/超范围拒/clarify。
+#       省每轮一次 flash,且根治"context-blind 的前置门误杀只有结合上文才看得懂的短回复(ok/我想看)"。
+#   1 = 保留旧 Router 终结门(回退开关;一键恢复旧行为,无需改代码)。
+USE_ROUTER_GATE = os.environ.get("USE_ROUTER_GATE", "0").lower() in ("1", "true", "yes")
 # M5 记忆:loop 路径 transcript 回放 + 压缩(决策④)
 # CC 式「全量注入 + 临窗压缩」:默认把整段回放原文喂 loop,只在【逼近 context window】时才压缩。
 # 预算跟 LOOP_MODEL 的窗口挂钩(flash=1M),留头寸(FRACTION)给 system+schema+tools+本轮步骤+输出,

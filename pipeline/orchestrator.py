@@ -79,28 +79,16 @@ def run_query(nl: str, *, quiet_trace: bool = False,
 
     resolved_ids: list = []          # 兼容自定义 skill handler 形参;指代解析已下放给 loop
 
-    # ── 前置 Router:判可答性 + 意图(不可答则拒,跳过昂贵 planner)──
-    rstep = trace.step("Route")
+    # ── schema(loop 与 Router 都要;loop-primary 下 loop 仍需 schema)──
     schema = None
-    verdict = None
     try:
         schema = mcp_client.get_schema()
-        verdict = Router().judge(nl, schema=schema, tools=catalog_for_planner())
-        rstep.ok(decision=verdict.decision, intent=verdict.intent,
-                 route=verdict.route or "-", conf=f"{verdict.confidence:.2f}")
     except Exception as e:
-        # Router 自身出错 → fail-open:照常往下规划,不因 router 崩了卡住
-        rstep.fail(error=repr(e))
+        trace.step("Schema").fail(error=repr(e))
 
     sid = session.session_id if session else None
-    ttype = getattr(verdict, "turn_type", "new") if verdict else "new"
-    route = getattr(verdict, "route", "") if verdict else ""
 
-    # transcript 回放提前到 smalltalk/refuse 门【之前】建好(有会话历史才有内容)。
-    # 原因:这两道门由【不看上下文】的 Router 判,对「ok」「我想看」这种【只有结合上文才看得懂】的
-    # 短回复会误判成寒暄/太模糊并【终结】整轮 —— 而 loop 才有上文(上一条 offer + 视频 id)能解出来。
-    # 有上文(replay 非空)时不让这两道门终结,落到 loop 用回放解(解不出 loop 自己 context-aware 反问);
-    # 空会话 replay=None → 两道门行为与原来完全一致,不回归。replay 在下方 loop 复用,不重复建。
+    # ── transcript 回放:两条路都要(loop 复用 + 派生 turn_type)。只建一次。──
     from pipeline import loop_memory
     from pipeline.transcript_store import STORE as TX_STORE
     replay_ctx = None
@@ -111,22 +99,34 @@ def run_query(nl: str, *, quiet_trace: bool = False,
         except Exception as e:
             log.warning("build_loop_context 失败(fail-open): %r", e)
 
-    if verdict is not None and verdict.decision == "smalltalk" and not replay_ctx:
-        # 不再回固定一句:小模型按人设生成可变回复,失败再回退到 SMALLTALK_REPLY 常量。
-        ans = smalltalk_reply(nl) or SMALLTALK_REPLY
-        return _result(True, trace=trace, status="smalltalk", answer=ans,
-                       session_id=sid, turn_type=ttype)
-    if verdict is not None and should_refuse(verdict) and not replay_ctx:
-        return _result(False, trace=trace, status="refused", reason=verdict.reason,
-                       session_id=sid, turn_type=ttype)
+    # ── 路由层(设计 one-loop-router-demote.md)─────────────────────────────
+    # 默认【单 loop 主路】(USE_ROUTER_GATE=0):不调 Router,loop 带【完整回放】自己判 闲聊/超范围拒/
+    # clarify —— 省每轮一次 flash,且根治"context-blind 前置门把只有结合上文才看得懂的短回复误杀"。
+    # USE_ROUTER_GATE=1:保留旧 Router 终结门(回退开关;PR#48 后 smalltalk/refuse 仅在无回放时终结)。
+    verdict = None
+    route = ""
+    if config.USE_ROUTER_GATE:
+        rstep = trace.step("Route")
+        try:
+            verdict = Router().judge(nl, schema=schema, tools=catalog_for_planner())
+            rstep.ok(decision=verdict.decision, intent=verdict.intent,
+                     route=verdict.route or "-", conf=f"{verdict.confidence:.2f}")
+        except Exception as e:
+            rstep.fail(error=repr(e))                       # fail-open → 照常进 loop
+        route = getattr(verdict, "route", "") if verdict else ""
+        if verdict is not None and verdict.decision == "smalltalk" and not replay_ctx:
+            ans = smalltalk_reply(nl) or SMALLTALK_REPLY
+            return _result(True, trace=trace, status="smalltalk", answer=ans,
+                           session_id=sid, turn_type=getattr(verdict, "turn_type", "new"))
+        if verdict is not None and should_refuse(verdict) and not replay_ctx:
+            return _result(False, trace=trace, status="refused", reason=verdict.reason,
+                           session_id=sid, turn_type=getattr(verdict, "turn_type", "new"))
 
-    # 记忆简化:meta 与 followup 不再在此前置解析/拒答 —— 一律落到下方 loop,
-    # 由 loop 用 transcript 回放(build_loop_context)自己解析"这个/那个"、解释"怎么算的";
-    # 回放里定位不到时,loop 自己 clarify(见 loop_driver._LOOP_SYSTEM),不在这里提前拒。
+    # turn_type:有 verdict 用它;loop-primary 据回放廉价派生(有上文=followup,否则 new),零模型调用。
+    ttype = (getattr(verdict, "turn_type", "new") if verdict is not None
+             else ("followup" if replay_ctx else "new"))
 
-    # M7b:planner_context 已删(loop 的上一轮上下文走 transcript 回放,见下方 build_loop_context)。
-    # context 仅供【自定义 skill handler】;现阶段四大类 handler 都走 loop,无 handler 在用 → 恒 None。
-    context = None
+    context = None                                          # 仅供自定义 skill handler(现无在用)
 
     # ── 按 route 分派 workflow(打地基)──
     # 现阶段四个大类(retrieval/aggregate/analyze/visualize)的 handler 都是 "planner",

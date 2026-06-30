@@ -18,6 +18,7 @@ try:
 except (AttributeError, OSError):
     pass
 
+import pipeline.config as cfg
 import pipeline.loop_driver as loop_driver
 import pipeline.loop_memory as loop_memory
 import pipeline.orchestrator as orch
@@ -102,8 +103,8 @@ def test_meta_reaches_loop_and_replays():
     try:
         r = orch.run_query("how did you get that", session=s)
         assert r["status"] == "error" and "REACHED_LOOP" in r["error"], r
-        assert r["turn_type"] == "meta"
-        assert calls["replay"] == 1                       # meta → 也取回放(由 loop 解释)
+        assert r["turn_type"] == "followup"               # loop-primary:有回放即派生 followup(meta 不再独立)
+        assert calls["replay"] == 1                       # 仍取回放(由 loop 解释"怎么算的")
         assert calls["passed_ctx"] == _REPLAY_SENTINEL    # 回放透传进 loop
     finally:
         _restore_loop(sl); _restore_router(saved)
@@ -126,13 +127,14 @@ def test_session_turn_gets_replay_even_when_tagged_new():
                                    "inputs": {}, "uses": [], "ok": True}])
     sl, calls = _stub_loop(fake_loop)
     try:
-        r = orch.run_query("它是什么类型?", session=s)     # 裸代词,Router 桩成 new
+        r = orch.run_query("它是什么类型?", session=s)     # 裸代词
         assert r["status"] == "ok", r
         assert r["answer"] == "共 1 条 skiing 视频"
-        assert r["session_id"] == "t" and r["turn_type"] == "new"
+        # loop-primary:有会话即建回放、turn_type 据回放派生 followup(不靠 Router 标轮型)
+        assert r["session_id"] == "t" and r["turn_type"] == "followup"
         assert s._turn_no == 1                           # 轮号推进了(供 record_loop_turn)
-        assert calls["replay"] == 1                      # 关键:轮型=new 也建了回放
-        assert calls["passed_ctx"] == _REPLAY_SENTINEL   # 且回放透传进了 loop(没被轮型卡掉)
+        assert calls["replay"] == 1                      # 有会话 → 建了回放
+        assert calls["passed_ctx"] == _REPLAY_SENTINEL   # 且回放透传进了 loop
     finally:
         _restore_loop(sl); _restore_router(saved)
 
@@ -188,13 +190,15 @@ def test_refuse_with_history_falls_through_to_loop():
         _restore_loop(sl); _restore_router(saved)
 
 
-# 回归:无上文(回放为空)时,smalltalk 仍直接寒暄、不进 loop —— 首轮行为不变
+# 旧门路径(USE_ROUTER_GATE=1)回归:无上文(回放为空)时,smalltalk 仍直接寒暄、不进 loop
 def test_smalltalk_no_replay_stays_smalltalk():
     s = Session("t")
     v = RouterVerdict(decision="smalltalk", confidence=0.95, turn_type="new", intent="other")
     saved = _stub_router(v)
     saved_loop = (loop_driver.run_query_loop, loop_memory.build_loop_context,
                   loop_memory.record_loop_turn, orch.smalltalk_reply)
+    gate_saved = cfg.USE_ROUTER_GATE
+    cfg.USE_ROUTER_GATE = True                              # 这条测的是【旧 Router 门】路径
 
     def boom(*a, **k):
         raise RuntimeError("SHOULD_NOT_REACH_LOOP")
@@ -207,9 +211,38 @@ def test_smalltalk_no_replay_stays_smalltalk():
         assert r["status"] == "smalltalk", r               # 无上文 → 仍寒暄,没进 loop
         assert r["answer"] == "嗨"
     finally:
+        cfg.USE_ROUTER_GATE = gate_saved
         (loop_driver.run_query_loop, loop_memory.build_loop_context,
          loop_memory.record_loop_turn, orch.smalltalk_reply) = saved_loop
         _restore_router(saved)
+
+
+# 单 loop 主路(USE_ROUTER_GATE=0,默认):根本不调 Router,连「你好」也进 loop(loop 自己处理寒暄)
+def test_loop_primary_skips_router_and_reaches_loop():
+    s = Session("t")
+    gate_saved = cfg.USE_ROUTER_GATE
+    cfg.USE_ROUTER_GATE = False
+    called = {"router": 0}
+    saved = (orch.mcp_client, orch.Router)
+    orch.mcp_client = types.SimpleNamespace(get_schema=lambda: {"video_facts": []})
+
+    class CountingRouter:
+        def judge(self, q, **kw):
+            called["router"] += 1                          # loop-primary 下不该被调用
+            return RouterVerdict(decision="smalltalk")
+    orch.Router = CountingRouter
+
+    def boom(*a, **k):
+        raise RuntimeError("REACHED_LOOP")
+    sl, calls = _stub_loop(boom)
+    try:
+        r = orch.run_query("你好", session=s)              # 连寒暄也落到 loop
+        assert r["status"] == "error" and "REACHED_LOOP" in r["error"], r
+        assert called["router"] == 0                       # 关键:Router 根本没被调用(省一次 flash)
+        assert calls["passed_ctx"] == _REPLAY_SENTINEL     # 回放照常透传
+    finally:
+        cfg.USE_ROUTER_GATE = gate_saved
+        _restore_loop(sl); orch.mcp_client, orch.Router = saved
 
 
 # ── 回放真正进了 loop 的 system prompt(_loop_system 拼接)─────────────
