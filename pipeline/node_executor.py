@@ -246,7 +246,8 @@ def _analyze_inputs(node: Node, upstream: dict[str, Any]):
     time_range = None
     if isinstance(tr, (list, tuple)) and len(tr) == 2:
         try:
-            time_range = (float(tr[0]), float(tr[1]))
+            s, e = float(tr[0]), float(tr[1])
+            time_range = (s, e) if 0 <= s < e else None   # 非法区间(反了/负数)→ 当没给,看整段
         except (TypeError, ValueError):
             time_range = None
     model = MODEL_OVERRIDE.get() or PERCEPTION_MODEL  # 键含实际生效模型(Pro/Flash)→ 不串味

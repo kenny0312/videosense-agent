@@ -34,6 +34,9 @@ CREATE TABLE IF NOT EXISTS video_facts (
 """
 
 cur.execute(create_sql)
+# (video_id, predicate) 唯一 —— skydive_extract 的 video_facts upsert 用 ON CONFLICT (video_id, predicate)
+# 需要这个约束;线上 DB 已有(uq_facts_vid_pred),这里补进 canonical schema 让新建库也有。
+cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_facts_vid_pred ON video_facts (video_id, predicate)")
 print("[OK] video_facts 表创建成功")
 
 # 验证
