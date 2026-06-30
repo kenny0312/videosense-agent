@@ -136,3 +136,25 @@ def insert_sql(placeholder: str = "%s") -> str:
     ph = ", ".join([placeholder] * len(COLUMNS))
     return (f"INSERT INTO skydive_segments ({cols})\n"
             f"VALUES ({ph})\nON CONFLICT (video_id) DO NOTHING;")
+
+
+# ── 桥接:跳伞抽取 → 一条可被【常规视频查询】检索的 video_facts ──────────────
+# 跳伞视频只落 skydive_segments,而 loop 大脑答"有什么视频/类别/有没有 skydiving"是查 video_facts.predicate。
+# 入库时顺手写一条 video_facts(predicate 据类型派生),新传的跳伞视频就【天生可检索】,不会再"查不到"。
+def video_facts_upsert_sql(placeholder: str = "%s") -> str:
+    """幂等:ON CONFLICT (video_id, predicate) DO NOTHING(video_facts 上有 uq_facts_vid_pred)。"""
+    p = placeholder
+    return ("INSERT INTO video_facts (video_id, predicate, matched, confidence, rationale, start_ts, end_ts) "
+            f"VALUES ({p}, {p}, true, {p}, {p}, {p}, {p}) "
+            "ON CONFLICT (video_id, predicate) DO NOTHING")
+
+
+def video_facts_values(video_id: str, row: dict) -> tuple:
+    """跳伞行 → video_facts 值:predicate 据 is_wingsuit/jump_type 派生;复用 summary 作 rationale、freefall 时段。"""
+    is_ws = bool(row.get("is_wingsuit")) or row.get("jump_type") == "wingsuit"
+    predicate = "wingsuit skydiving" if is_ws else "skydiving"
+    conf = row.get("freefall_confidence")
+    return (video_id, predicate,
+            conf if conf is not None else 1.0,
+            row.get("summary"),
+            row.get("freefall_start_ts"), row.get("freefall_end_ts"))

@@ -30,6 +30,7 @@ from vertexai.generative_models import GenerativeModel, Part
 from perception.skydive_schema import (
     JUMP_TYPES, SKYDIVE_PHASES, SkydiveExtraction,
     create_table_sql, insert_sql, row_values, to_row,
+    video_facts_upsert_sql, video_facts_values,
 )
 
 PROJECT_ID = os.environ.get("GCP_PROJECT", "your-gcp-project-id")
@@ -155,6 +156,7 @@ def main() -> None:
 
     written = failed = 0
     ins = insert_sql("%s")
+    vf_ins = video_facts_upsert_sql("%s")    # 同步写一条可被常规视频查询检索的 video_facts
     for i, (video_id, gcs_uri) in enumerate(videos, 1):
         print(f"[{i}/{len(videos)}] {video_id}")
         ext = analyze_video(model, gcs_uri)
@@ -165,6 +167,7 @@ def main() -> None:
         row = to_row(video_id, ext)          # 缺席阶段 → None;派生 freefall_sec null-safe
         try:
             cur.execute(ins, row_values(row))
+            cur.execute(vf_ins, video_facts_values(video_id, row))   # ← 让跳伞视频天生可检索
             conn.commit()
             written += 1
             ff = row.get("freefall_sec")
@@ -177,7 +180,9 @@ def main() -> None:
             except Exception: pass
             conn = psycopg2.connect(**DB_CONFIG); conn.autocommit = False; cur = conn.cursor()
             try:
-                cur.execute(ins, row_values(row)); conn.commit(); written += 1
+                cur.execute(ins, row_values(row))
+                cur.execute(vf_ins, video_facts_values(video_id, row))
+                conn.commit(); written += 1
             except Exception as e2:
                 print(f"  [重写仍失败] {e2}"); failed += 1
         time.sleep(SLEEP_BETWEEN)
