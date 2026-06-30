@@ -31,6 +31,12 @@ GCP_PROJECT = os.environ.get("GCP_PROJECT", "your-gcp-project-id")
 GCP_REGION  = os.environ.get("GCP_REGION", "us-central1")
 GCS_BUCKET  = os.environ.get("GCS_BUCKET", "your-gcs-bucket")
 
+# M5 实时上传:用户直传的临时视频。前缀单独(配 GCS lifecycle 自动删);临时 video_id 形如 up_<hex>,
+# 注册在 Redis(TTL 到期自删),【不进 video_metadata】(免污染正式语料)。每用户每天有上传配额。
+UPLOAD_PREFIX        = os.environ.get("UPLOAD_PREFIX", "uploads")          # gs://<bucket>/uploads/<owner>/<vid>.mp4
+UPLOAD_TTL_SECONDS   = int(os.environ.get("UPLOAD_TTL_SECONDS", str(24 * 3600)))   # 临时注册 TTL(≈ lifecycle)
+MAX_UPLOADS_PER_DAY  = int(os.environ.get("MAX_UPLOADS_PER_DAY", "20"))    # 每用户每天上传数上限
+
 # Planner 与 Code Generator 用的模型(可分别覆盖,默认同一个)
 PLANNER_MODEL = os.environ.get("PLANNER_MODEL", "gemini-2.5-pro")
 CODEGEN_MODEL = os.environ.get("CODEGEN_MODEL", "gemini-2.5-pro")

@@ -67,3 +67,36 @@ def sign_gcs_uri(gcs_uri: str | None, ttl_minutes: int = DEFAULT_TTL_MIN) -> str
     except Exception as e:
         log.warning("签名失败(fail-open,返回不可播放): %r", e)
         return None
+
+
+def sign_gcs_put_url(gcs_uri: str | None, content_type: str = "video/mp4",
+                     ttl_minutes: int = DEFAULT_TTL_MIN) -> str | None:
+    """M5:把 gs:// 签成短期【PUT 直传】https URL —— 前端拿它把视频直传 GCS,【不经后端】。
+    method=PUT + content_type 必须与前端 PUT 的 Content-Type 一致。失败 → None(fail-open;本地用户 ADC 签不了)。"""
+    parsed = parse_gcs_uri(gcs_uri or "")
+    if not parsed:
+        return None
+    bucket_name, blob_name = parsed
+    try:
+        import google.auth
+        from google.auth.transport import requests as ga_requests
+        from google.cloud import storage
+
+        creds, _ = google.auth.default()
+        client = storage.Client(project=config.GCP_PROJECT, credentials=creds)
+        blob = client.bucket(bucket_name).blob(blob_name)
+        kwargs: dict = {"version": "v4", "expiration": timedelta(minutes=ttl_minutes),
+                        "method": "PUT", "content_type": content_type}
+        try:
+            creds.refresh(ga_requests.Request())                  # SA 路径:刷新后才有真实 email(同 GET)
+        except Exception:
+            pass
+        email = getattr(creds, "service_account_email", None)
+        token = getattr(creds, "token", None)
+        if email and email != "default" and token:
+            kwargs["service_account_email"] = email
+            kwargs["access_token"] = token
+        return blob.generate_signed_url(**kwargs)
+    except Exception as e:
+        log.warning("PUT 签名失败(fail-open): %r", e)
+        return None

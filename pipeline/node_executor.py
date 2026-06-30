@@ -166,6 +166,9 @@ def _run_show_video(node: Node, upstream: dict[str, Any]) -> NodeResult:
     for it in items:
         m = meta.get(it["video_id"]) or {}
         gcs = m.get("gcs_uri")
+        if not gcs and str(it["video_id"]).startswith("up_"):   # M5:临时上传视频(不在 video_metadata)
+            from pipeline import uploads
+            gcs = uploads.resolve_gcs(it["video_id"])
         url = sign_gcs_uri(gcs) if gcs else None
         marks = []
         if it.get("start_ts") is not None:
@@ -259,9 +262,21 @@ def analyze_peek_cache(node: Node, upstream: dict[str, Any]) -> dict | None:
     return analyze_cache.get(parsed[4]) if parsed else None
 
 
+def _resolve_gcs(vid: str) -> str | None:
+    """video_id → gcs_uri。M5:up_ 开头的【临时上传视频】先查 uploads 注册表(Redis),否则查 video_metadata。"""
+    if vid.startswith("up_"):
+        from pipeline import uploads
+        g = uploads.resolve_gcs(vid)
+        if g:
+            return g
+    rows = mcp_client.query_db(
+        f"SELECT gcs_uri FROM video_metadata WHERE video_id = '{vid}' LIMIT 1")
+    return rows[0].get("gcs_uri") if rows else None
+
+
 def _run_analyze_video(node: Node, upstream: dict[str, Any]) -> NodeResult:
     """主进程节点:用多模态模型【现场看一段视频】回答 inputs.question,返回最小信封。
-    缓存命中直接返回(不查 gcs / 不调 Gemini);miss 才查 video_metadata 拿 gcs_uri 并 analyze(库内 fail-open)。"""
+    缓存命中直接返回(不查 gcs / 不调 Gemini);miss 才解析 gcs_uri 并 analyze(库内 fail-open)。"""
     from perception.analyze_video_contextual import AnalyzeRequest, analyze, FAILURE_ANSWER_PREFIX
     from pipeline import analyze_cache
 
@@ -278,12 +293,10 @@ def _run_analyze_video(node: Node, upstream: dict[str, Any]) -> NodeResult:
     cache_hit = dump is not None
     if dump is None:
         try:
-            rows = mcp_client.query_db(
-                f"SELECT gcs_uri FROM video_metadata WHERE video_id = '{vid}' LIMIT 1")
+            gcs = _resolve_gcs(vid)
         except Exception as e:
             return NodeResult(node.id, node.tool, ok=False, attempts=1,
-                              stderr=f"analyze_video 查 video_metadata 失败: {e!r}")
-        gcs = rows[0].get("gcs_uri") if rows else None
+                              stderr=f"analyze_video 解析 gcs_uri 失败: {e!r}")
         if not gcs:
             return NodeResult(node.id, node.tool, ok=False, attempts=1,
                               stderr=f"找不到 video_id={vid} 的 gcs_uri")

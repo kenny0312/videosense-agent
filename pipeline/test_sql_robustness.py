@@ -78,16 +78,18 @@ def test_selfheal_recovers():
         def repair(self, bad_sql, err, schema):
             return "SELECT * FROM video_metadata ORDER BY like_count"
 
+    saved = (ne.mcp_client, ne.SqlFixer)
     ne.mcp_client = types.SimpleNamespace(query_db=fake_query)
     ne.SqlFixer = FakeFixer
-
-    trace = Trace(quiet=True)
-    res = ne._run_sql_query(_node(), SCHEMA, trace)
-
-    assert res.ok, res.stderr
-    assert res.value == [{"id": 1}, {"id": 2}], res.value
-    assert res.attempts == 2, res.attempts
-    assert any("repair" in s.name for s in trace.steps), "trace 应含 repair 步"
+    try:
+        trace = Trace(quiet=True)
+        res = ne._run_sql_query(_node(), SCHEMA, trace)
+        assert res.ok, res.stderr
+        assert res.value == [{"id": 1}, {"id": 2}], res.value
+        assert res.attempts == 2, res.attempts
+        assert any("repair" in s.name for s in trace.steps), "trace 应含 repair 步"
+    finally:
+        ne.mcp_client, ne.SqlFixer = saved        # 复原:别把替身泄漏给后续测试
 
 
 def test_selfheal_budget():
@@ -98,14 +100,16 @@ def test_selfheal_budget():
         def repair(self, bad_sql, err, schema):
             return bad_sql   # 修不好,原样返回
 
+    saved = (ne.mcp_client, ne.SqlFixer)
     ne.mcp_client = types.SimpleNamespace(query_db=always_fail)
     ne.SqlFixer = FakeFixer
-
-    trace = Trace(quiet=True)
-    res = ne._run_sql_query(_node(), SCHEMA, trace)
-
-    assert not res.ok
-    assert res.attempts == ne.SQL_MAX_RETRIES + 1, res.attempts   # 跑满,不死循环
+    try:
+        trace = Trace(quiet=True)
+        res = ne._run_sql_query(_node(), SCHEMA, trace)
+        assert not res.ok
+        assert res.attempts == ne.SQL_MAX_RETRIES + 1, res.attempts   # 跑满,不死循环
+    finally:
+        ne.mcp_client, ne.SqlFixer = saved        # 复原:别把替身泄漏给后续测试
 
 
 def main() -> int:

@@ -127,8 +127,13 @@
           <button class="send" id="send">↑</button>
         </div>
         <div class="cfoot">
+          <span style="display:flex;gap:6px;align-items:center">
           <button id="proPill" class="propill" type="button" aria-pressed="false"
                   title="Pro 视频分析:看视频内容的分析改用更强的 pro 模型(更准·更慢);纯查库/计数不受影响">⚡ Pro</button>
+          <button id="upBtn" class="propill" type="button"
+                  title="上传你自己的视频来分析(临时、有时效,不进正式语料库)">⬆ 上传</button>
+          <input id="upFile" type="file" accept="video/*" style="display:none">
+          </span>
           <span class="cmon" title="本会话累计成本($)+ 累计 token 占上下文窗口(≈1M)的比例">
             <span class="cm-txt" id="cmtxt"></span>
             <svg width="30" height="30" viewBox="0 0 30 30" aria-label="回放占用">
@@ -573,6 +578,24 @@ $('#q').addEventListener('keydown',e=>{ if(e.key==='Enter'&&!e.shiftKey){e.preve
 // ── Pro 模式开关 + 本会话累计监控(成本 $ + 累计 token 占窗口环)──
 let proOn=false;
 $('#proPill').onclick=()=>{ proOn=!proOn; const p=$('#proPill'); p.classList.toggle('on',proOn); p.setAttribute('aria-pressed',proOn?'true':'false'); };
+
+// M5:上传自己的视频 → 拿 PUT 签名 URL 直传 GCS → 把临时 video_id 填进输入框,可直接提问
+$('#upBtn').onclick=()=>$('#upFile').click();
+$('#upFile').onchange=async(e)=>{
+  const f=e.target.files[0]; if(!f) return;
+  const btn=$('#upBtn'), old=btn.textContent; btn.textContent='上传中…'; btn.disabled=true;
+  try{
+    const r=await fetch('/v1/upload_url',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({content_type:f.type||'video/mp4'})});
+    if(!r.ok){ alert('上传申请失败:'+r.status+' '+(await r.text())); return; }
+    const d=await r.json();
+    const put=await fetch(d.upload_url,{method:'PUT',headers:{'Content-Type':d.content_type},body:f});
+    if(!put.ok){ alert('上传失败:'+put.status); return; }
+    const q=$('#q'); q.value=`我上传了一个视频(${d.video_id}),`; q.focus(); // 预填 → 用户接着问
+    btn.textContent='✓ 已上传';
+  }catch(err){ alert('上传出错:'+err); }
+  finally{ btn.disabled=false; e.target.value=''; setTimeout(()=>{btn.textContent=old;},2000); }
+};
 function fmtTok(n){ return n>=1000 ? (n/1000).toFixed(n>=10000?0:1)+'k' : String(Math.round(n||0)); }
 let convTok=0, convCost=0;
 const CTX_WINDOW=1000000;        // 模型上下文窗口(flash≈1M)—— 累计 token 占比基准

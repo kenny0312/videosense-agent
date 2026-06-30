@@ -221,6 +221,28 @@ def video_vibe_query(req: VibeQueryRequest, request: Request):
     return result
 
 
+class UploadUrlRequest(BaseModel):
+    content_type: str = Field("video/mp4", description="将上传文件的 Content-Type(PUT 时必须一致)")
+
+
+@app.post("/v1/upload_url")
+def upload_url(req: UploadUrlRequest, request: Request):
+    """M5 实时上传:发一个【PUT 直传签名 URL】+ 临时 video_id。前端把视频直传到 upload_url(不经后端)后,
+    即可在对话里就这个 video_id 提问 —— analyze_video / show_video 会解析到上传的视频。临时、有 TTL、不进语料库。"""
+    from pipeline import uploads
+    from pipeline.video_url import sign_gcs_put_url
+    owner = getattr(request.state, "app_user", "anon")
+    reg = uploads.register(owner)
+    if reg is None:
+        return Response(status_code=429, content=f"已达今日上传上限({config.MAX_UPLOADS_PER_DAY} 个)")
+    video_id, gcs_uri = reg
+    put_url = sign_gcs_put_url(gcs_uri, content_type=req.content_type)
+    if not put_url:                                  # 本地用户 ADC 签不了;Cloud Run(SA)可用
+        return Response(status_code=503, content="无法生成上传链接(本地凭证签不了;部署到 Cloud Run 后可用)")
+    return {"video_id": video_id, "upload_url": put_url, "gcs_uri": gcs_uri,
+            "content_type": req.content_type}
+
+
 @app.post("/v1/video_vibe_query/stream")
 def video_vibe_query_stream(req: VibeQueryRequest, request: Request):
     """SSE 流式(M6b):loop 多步往返时把每步进度实时推给前端,最后推一条 result。
