@@ -129,7 +129,7 @@
         <div class="cfoot">
           <button id="proPill" class="propill" type="button" aria-pressed="false"
                   title="Pro 视频分析:看视频内容的分析改用更强的 pro 模型(更准·更慢);纯查库/计数不受影响">⚡ Pro</button>
-          <span class="cmon" title="本轮 token · 估算成本 · 记忆回放占上下文窗口的比例">
+          <span class="cmon" title="本会话累计成本($)+ 累计 token 占上下文窗口(≈1M)的比例">
             <span class="cm-txt" id="cmtxt"></span>
             <svg width="30" height="30" viewBox="0 0 30 30" aria-label="回放占用">
               <circle cx="15" cy="15" r="12" fill="none" stroke="var(--border)" stroke-width="2.5"></circle>
@@ -419,6 +419,7 @@ function renderSidebar(){
 // ── 新对话 / 打开 / 删除 ───────────────────────────────
 function newChat(){
   activeId=null; activeDraft=++draftSeq; sessionId=null; updateSess();
+  convTok=0; convCost=0; renderMonitor();        // 新对话:累计归零
   renderSidebar(); showEmpty(); $('#q').focus();
   if(window.innerWidth<=720) $('#shell').classList.add('nosb');   // 移动端开新对话即收起侧栏
 }
@@ -431,6 +432,7 @@ function openChat(id){
     if(m.role==='user') addUser(m.text);
     else { const card=assistantShell(); renderAssistant(card, m.data, m.ms); }
   });
+  monitorFromChat(c);                            // 恢复该会话的累计 token/成本
   renderSidebar(); scroll();
   if(window.innerWidth<=720) $('#shell').classList.add('nosb');   // 移动端选完自动收起
 }
@@ -522,18 +524,30 @@ $('#scrim').onclick=()=>$('#shell').classList.add('nosb');
 $('#q').addEventListener('input',autosize);
 $('#q').addEventListener('keydown',e=>{ if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();} });
 
-// ── Pro 模式开关 + context 监控环 ──
+// ── Pro 模式开关 + 本会话累计监控(成本 $ + 累计 token 占窗口环)──
 let proOn=false;
 $('#proPill').onclick=()=>{ proOn=!proOn; const p=$('#proPill'); p.classList.toggle('on',proOn); p.setAttribute('aria-pressed',proOn?'true':'false'); };
-function fmtTok(n){ return n>=1000 ? (n/1000).toFixed(n>=10000?0:1)+'k' : String(n||0); }
-function updateContext(d){
-  const u=(d&&d.usage)||{}, ctx=(d&&d.context)||null, txt=$('#cmtxt');
-  if(u.tokens_total!=null) txt.textContent = fmtTok(u.tokens_total)+' tok · $'+(u.cost_usd!=null?Number(u.cost_usd).toFixed(3):'0.000');
-  if(ctx && ctx.budget){
-    const pct=Math.max(0,Math.min(100, Math.round(ctx.replay_tokens/ctx.budget*100)));
-    $('#cmarc').setAttribute('stroke-dashoffset', (75.4*(1-pct/100)).toFixed(1));
-    $('#cmpct').textContent=pct+'%';
-  }
+function fmtTok(n){ return n>=1000 ? (n/1000).toFixed(n>=10000?0:1)+'k' : String(Math.round(n||0)); }
+let convTok=0, convCost=0;
+const CTX_WINDOW=1000000;        // 模型上下文窗口(flash≈1M)—— 累计 token 占比基准
+function renderMonitor(){
+  const txt=$('#cmtxt');
+  if(txt) txt.textContent = convTok>0 ? ('$'+convCost.toFixed(4)+' · '+fmtTok(convTok)+' tok') : '';
+  const pct=Math.max(0,Math.min(100, Math.round(convTok/CTX_WINDOW*100)));
+  const arc=$('#cmarc'), p=$('#cmpct');
+  if(arc) arc.setAttribute('stroke-dashoffset', (75.4*(1-pct/100)).toFixed(1));
+  if(p) p.textContent = pct+'%';
+}
+function updateContext(d){       // 每轮:把本轮 token/成本累加进本会话
+  const u=(d&&d.usage)||{};
+  convTok += u.tokens_total||0;
+  convCost += u.cost_usd||0;
+  renderMonitor();
+}
+function monitorFromChat(c){     // 切换/打开会话:从该会话历史重算累计
+  convTok=0; convCost=0;
+  if(c&&c.messages) c.messages.forEach(m=>{ const u=m.data&&m.data.usage; if(u){ convTok+=u.tokens_total||0; convCost+=u.cost_usd||0; } });
+  renderMonitor();
 }
 
 renderSidebar();
