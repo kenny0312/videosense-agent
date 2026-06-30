@@ -186,8 +186,11 @@ def _run_show_video(node: Node, upstream: dict[str, Any]) -> NodeResult:
 
     n, n_play = len(videos), sum(1 for v in videos if v["playable"])
     note = "" if n == n_play else f"(其中 {n - n_play} 个暂不可播放)"
+    # ③:value 带【有序编号 items】→ 随 transcript 持久化(value 会被记忆),下一轮「第 N 个」可映射回真实 id。
+    items = [{"n": i + 1, "video_id": v["video_id"], "title": v["title"]}
+             for i, v in enumerate(videos)]
     return NodeResult(node.id, node.tool, ok=True, attempts=1, videos=videos,
-                      value=f"🎬 为你准备了 {n} 个视频{note}")
+                      value={"note": f"🎬 为你准备了 {n} 个视频{note}", "items": items})
 
 
 SHOW_TABLE_MAX_ROWS = 1000
@@ -213,8 +216,12 @@ def _run_show_table(node: Node, upstream: dict[str, Any]) -> NodeResult:
     note = "" if n <= SHOW_TABLE_MAX_ROWS else f"(共 {n} 条,展示前 {SHOW_TABLE_MAX_ROWS} 条)"
     caption = node.inputs.get("caption") or ""
     table = {"columns": cols, "rows": norm, "n": n, "shown": len(norm), "caption": str(caption)}
+    # ③:value 带前若干条【有序编号 id】(优先 video_id 列,否则首列)→ 进 transcript 供下一轮「第 N 个」映射。
+    id_col = "video_id" if "video_id" in cols else (cols[0] if cols else None)
+    items = ([{"n": i + 1, "id": str(r.get(id_col, ""))} for i, r in enumerate(norm[:30])]
+             if id_col else [])
     return NodeResult(node.id, node.tool, ok=True, attempts=1, table=table,
-                      value=f"📋 已为你列出 {n} 条{note}")
+                      value={"note": f"📋 已为你列出 {n} 条{note}", "items": items})
 
 
 def _run_analyze_video(node: Node, upstream: dict[str, Any]) -> NodeResult:

@@ -308,10 +308,11 @@ function renderChart(url){
 function renderVideos(list){
   const wrap=el('<div></div>');
   wrap.style.cssText='display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));margin:4px 0';
-  list.forEach(v=>{
+  list.forEach((v,i)=>{
     const card=el('<div></div>');
     card.style.cssText='border:1px solid var(--line,#2a2a2a);border-radius:12px;overflow:hidden;background:var(--card,#161616)';
-    const t=el('<div></div>'); t.textContent=v.title||v.video_id;
+    const t=el('<div></div>');
+    t.textContent=(i+1)+'. '+(v.title||v.video_id);   // 1..N 编号,用户可说「第 N 个」
     t.style.cssText='padding:8px 10px;font-weight:600;font-size:13px';
     card.appendChild(t);
     if(v.playable && v.signed_url){
@@ -360,11 +361,14 @@ function renderTable(t){
   const scroll=el('<div></div>'); scroll.style.cssText='max-height:420px;overflow:auto';
   const tbl=el('<table></table>'); tbl.style.cssText='width:100%;border-collapse:collapse;font-size:13px';
   const thead=el('<thead></thead>'); const htr=el('<tr></tr>');
-  cols.forEach(c=>{ const th=el('<th></th>'); th.textContent=c;
-    th.style.cssText='text-align:left;padding:7px 12px;position:sticky;top:0;background:var(--card2,#1d1d1d);border-bottom:1px solid var(--line,#2a2a2a);font-weight:600;white-space:nowrap'; htr.appendChild(th); });
+  const thHead='text-align:left;padding:7px 12px;position:sticky;top:0;background:var(--card2,#1d1d1d);border-bottom:1px solid var(--line,#2a2a2a);font-weight:600;white-space:nowrap';
+  const hnum=el('<th></th>'); hnum.textContent='#'; hnum.style.cssText=thHead+';width:1%;color:var(--muted,#888)'; htr.appendChild(hnum);
+  cols.forEach(c=>{ const th=el('<th></th>'); th.textContent=c; th.style.cssText=thHead; htr.appendChild(th); });
   thead.appendChild(htr); tbl.appendChild(thead);
   const tb=el('<tbody></tbody>');
   rows.forEach((r,i)=>{ const tr=el('<tr></tr>'); if(i%2) tr.style.background='rgba(255,255,255,0.02)';
+    const tdn=el('<td></td>'); tdn.textContent=(i+1);   // 1..N 行号,用户可说「第 N 个」
+    tdn.style.cssText='padding:6px 12px;border-bottom:1px solid var(--line,#222);color:var(--muted,#888);white-space:nowrap'; tr.appendChild(tdn);
     cols.forEach(c=>{ const td=el('<td></td>'); const v=r[c];
       td.textContent=(v==null?'':String(v));
       td.style.cssText='padding:6px 12px;border-bottom:1px solid var(--line,#222);vertical-align:top'; tr.appendChild(td); });
