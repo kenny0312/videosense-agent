@@ -227,3 +227,40 @@ def test_parallel_quota_exact_and_model_and_usage(monkeypatch):
     finally:
         avc.MODEL_OVERRIDE.set(None)
         analyze_cache.clear()
+
+
+def test_cache_hit_does_not_consume_quota(monkeypatch):
+    """配额=1,同一视频分析两次:第一次真调(吃掉配额),第二次命中缓存=免费,不该被上限挡。"""
+    from pipeline import config, analyze_cache, mcp_client as mc
+    from pipeline.trace import Trace
+    import perception.analyze_video_contextual as avc
+
+    monkeypatch.setattr(config, "MAX_VIDEOS_PER_REQUEST", 1)
+    monkeypatch.setattr(config, "MAX_ANALYZE_PARALLEL", 1)
+    monkeypatch.setattr(mc, "query_db", lambda sql: [{"gcs_uri": "gs://b/v.mp4"}])
+    analyze_cache.clear()
+    avc.MODEL_OVERRIDE.set(None)
+    calls = {"n": 0}
+
+    class _R:
+        def model_dump(self): return {"answer": "ok", "enough": "yes", "confidence": 0.8}
+    def fake(req, gcs):
+        calls["n"] += 1
+        return _R()
+    monkeypatch.setattr(avc, "analyze", fake)
+    try:
+        conv = ScriptedConv([
+            ([Call("analyze_video", {"video_id": "vid_1", "question": "q"}, [])], None),
+            ([Call("analyze_video", {"video_id": "vid_1", "question": "q"}, [])], None),  # 同视频 → 命中缓存
+            ([], "done"),
+        ])
+        execute = ld._make_executor(sandbox=None, trace=Trace(quiet=True), schema={}, session_id=None)
+        r = run_loop("q", conv, execute, max_steps=4)
+        assert r.answer == "done"
+        assert calls["n"] == 1                            # 只真分析了一次
+        assert all(s["ok"] for s in r.trace)
+        assert r.ledger["c1_0"].value.get("answer") == "ok"   # 第二步=缓存结果,不是"已达上限"note
+        assert r.ledger["c1_0"].cache_hit is True
+    finally:
+        avc.MODEL_OVERRIDE.set(None)
+        analyze_cache.clear()

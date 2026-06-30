@@ -224,62 +224,74 @@ def _run_show_table(node: Node, upstream: dict[str, Any]) -> NodeResult:
                       value={"note": f"📋 已为你列出 {n} 条{note}", "items": items})
 
 
-def _run_analyze_video(node: Node, upstream: dict[str, Any]) -> NodeResult:
-    """主进程节点:用多模态模型【现场看一段视频】回答 inputs.question,返回最小信封。
-    选定【单个】视频:优先 inputs.video_id,否则取上游结果行里的第一个 video_id;查 video_metadata
-    拿 gcs_uri 后调 perception.analyze(失败已在库内 fail-open → enough=no,绝不抛)。"""
-    from perception.analyze_video_contextual import (
-        AnalyzeRequest, analyze, MODEL_OVERRIDE, PERCEPTION_MODEL, FAILURE_ANSWER_PREFIX)
+def _analyze_inputs(node: Node, upstream: dict[str, Any]):
+    """解析 analyze_video 输入 → (question, vid, time_range, model, ckey);缺 question / 合法 vid 返回 None。
+    【不查 gcs、不调 Gemini】—— 供 loop 配额层先 peek 缓存(命中免配额)与 _run_analyze_video 共用。"""
+    from perception.analyze_video_contextual import MODEL_OVERRIDE, PERCEPTION_MODEL
     from pipeline import analyze_cache
-
     question = str(node.inputs.get("question") or "").strip()
     if not question:
-        return NodeResult(node.id, node.tool, ok=False, attempts=1,
-                          stderr="analyze_video 需要 inputs.question")
-
+        return None
     vid = node.inputs.get("video_id")
     if not vid:                                       # 兜底:从上游结果行取第一个 video_id
         items = _collect_items(node, upstream)
         vid = items[0]["video_id"] if items else None
     vid = str(vid) if vid else ""
     if not vid or not _VIDEO_ID_RE.match(vid):        # 白名单校验(防注入)
-        return NodeResult(node.id, node.tool, ok=False, attempts=1,
-                          stderr="analyze_video 需要一个具体 video_id(inputs.video_id 或上游含 video_id)")
-
-    try:
-        rows = mcp_client.query_db(
-            f"SELECT gcs_uri FROM video_metadata WHERE video_id = '{vid}' LIMIT 1")
-    except Exception as e:
-        return NodeResult(node.id, node.tool, ok=False, attempts=1,
-                          stderr=f"analyze_video 查 video_metadata 失败: {e!r}")
-    gcs = rows[0].get("gcs_uri") if rows else None
-    if not gcs:
-        return NodeResult(node.id, node.tool, ok=False, attempts=1,
-                          stderr=f"找不到 video_id={vid} 的 gcs_uri")
-
-    # M4.5:time_range=[起秒,止秒] → 只看该段(硬裁剪,见 _gemini_generate)。缓存键已含 time_range。
-    tr = node.inputs.get("time_range")
+        return None
+    tr = node.inputs.get("time_range")                # M4.5:[起秒,止秒] 硬裁剪
     time_range = None
     if isinstance(tr, (list, tuple)) and len(tr) == 2:
         try:
             time_range = (float(tr[0]), float(tr[1]))
         except (TypeError, ValueError):
             time_range = None
-    req = AnalyzeRequest(question=question,
-                         context=node.inputs.get("context"),
-                         rubric=node.inputs.get("rubric"),
-                         time_range=time_range)
-    # M4.1 缓存:同一(视频+问题+上下文+细则+模型)命中则不再调 Gemini(省成本/延迟)。
-    # 键含【实际生效模型】(Pro/Flash)→ 不串味;失败信封【不缓存】(避免钉死瞬时报错)。
-    model = MODEL_OVERRIDE.get() or PERCEPTION_MODEL
-    ckey = analyze_cache.make_key(vid, question=req.question, context=req.context,
-                                  rubric=req.rubric, time_range=req.time_range, model=model)
-    dump = analyze_cache.get(ckey)
+    model = MODEL_OVERRIDE.get() or PERCEPTION_MODEL  # 键含实际生效模型(Pro/Flash)→ 不串味
+    ckey = analyze_cache.make_key(vid, question=question, context=node.inputs.get("context"),
+                                  rubric=node.inputs.get("rubric"), time_range=time_range, model=model)
+    return question, vid, time_range, model, ckey
+
+
+def analyze_peek_cache(node: Node, upstream: dict[str, Any]) -> dict | None:
+    """供 loop 配额层:这次 analyze 能否从缓存直接拿(命中=免费、不占配额)。返回缓存 dump 或 None。"""
+    from pipeline import analyze_cache
+    parsed = _analyze_inputs(node, upstream)
+    return analyze_cache.get(parsed[4]) if parsed else None
+
+
+def _run_analyze_video(node: Node, upstream: dict[str, Any]) -> NodeResult:
+    """主进程节点:用多模态模型【现场看一段视频】回答 inputs.question,返回最小信封。
+    缓存命中直接返回(不查 gcs / 不调 Gemini);miss 才查 video_metadata 拿 gcs_uri 并 analyze(库内 fail-open)。"""
+    from perception.analyze_video_contextual import AnalyzeRequest, analyze, FAILURE_ANSWER_PREFIX
+    from pipeline import analyze_cache
+
+    parsed = _analyze_inputs(node, upstream)
+    if parsed is None:                                # 错误信息与原来一致
+        if not str(node.inputs.get("question") or "").strip():
+            return NodeResult(node.id, node.tool, ok=False, attempts=1,
+                              stderr="analyze_video 需要 inputs.question")
+        return NodeResult(node.id, node.tool, ok=False, attempts=1,
+                          stderr="analyze_video 需要一个具体 video_id(inputs.video_id 或上游含 video_id)")
+    question, vid, time_range, _model, ckey = parsed
+
+    dump = analyze_cache.get(ckey)                    # M4.1 缓存:命中不再调 Gemini(也不查 gcs)
     cache_hit = dump is not None
     if dump is None:
+        try:
+            rows = mcp_client.query_db(
+                f"SELECT gcs_uri FROM video_metadata WHERE video_id = '{vid}' LIMIT 1")
+        except Exception as e:
+            return NodeResult(node.id, node.tool, ok=False, attempts=1,
+                              stderr=f"analyze_video 查 video_metadata 失败: {e!r}")
+        gcs = rows[0].get("gcs_uri") if rows else None
+        if not gcs:
+            return NodeResult(node.id, node.tool, ok=False, attempts=1,
+                              stderr=f"找不到 video_id={vid} 的 gcs_uri")
+        req = AnalyzeRequest(question=question, context=node.inputs.get("context"),
+                             rubric=node.inputs.get("rubric"), time_range=time_range)
         dump = analyze(req, gcs).model_dump()         # 看视频 → 最小信封
         if not str(dump.get("answer", "")).startswith(FAILURE_ANSWER_PREFIX):
-            analyze_cache.put(ckey, dump)
+            analyze_cache.put(ckey, dump)             # 失败信封不缓存(避免钉死瞬时报错)
     # value:video_id 在前、answer 紧随 → loop preview 露出"哪个视频 + 结论(前置)+ enough"
     return NodeResult(node.id, node.tool, ok=True, attempts=1, cache_hit=cache_hit,
                       value={"video_id": vid, **dump})
