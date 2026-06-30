@@ -86,6 +86,8 @@ def _restore_loop(saved):
 
 
 def test_orch_refuses_and_skips_loop():
+    from pipeline import config as cfg
+    gate_saved = cfg.USE_ROUTER_GATE; cfg.USE_ROUTER_GATE = True   # 拒答短路只在【旧 Router 门】下成立
     orig = _stub_orch(RouterVerdict(decision="refuse", confidence=0.9, reason="测试拒答"))
 
     def boom(*a, **k):
@@ -97,6 +99,7 @@ def test_orch_refuses_and_skips_loop():
         assert r["reason"] == "测试拒答", r["reason"]
         assert r["ok"] is False
     finally:
+        cfg.USE_ROUTER_GATE = gate_saved
         _restore_loop(sl); _restore_orch(orig)
 
 
@@ -115,6 +118,8 @@ def test_orch_answer_reaches_loop():
 
 def test_orch_smalltalk():
     from pipeline.router import SMALLTALK_REPLY
+    from pipeline import config as cfg
+    gate_saved = cfg.USE_ROUTER_GATE; cfg.USE_ROUTER_GATE = True   # smalltalk 短路只在【旧 Router 门】下成立
     orig = _stub_orch(RouterVerdict(decision="smalltalk", confidence=0.95))
     orig_st = orch.smalltalk_reply
 
@@ -132,6 +137,7 @@ def test_orch_smalltalk():
         r2 = orch.run_query("hi there")
         assert r2["status"] == "smalltalk" and r2["answer"] == "嗨,我能帮你分析视频~", r2["answer"]
     finally:
+        cfg.USE_ROUTER_GATE = gate_saved
         orch.smalltalk_reply = orig_st
         _restore_loop(sl); _restore_orch(orig)
 
