@@ -80,6 +80,20 @@ SPECS: dict[str, NodeSpec] = {
                            "description": "要展示的 video_id 列表;省略则取上游节点结果行里的 video_id"}},
         ),
     ),
+    "show_table": NodeSpec(
+        tool="show_table",
+        needs_sandbox=False,
+        planner_desc=(
+            "把【上一步查询的结果】原样展示成表格给用户看(前端渲染,不经你逐行复述)。"
+            "当用户要【列出 / 给我看 / 全部列出来 / 展示】很多行原始数据时用它:先 sql_query 查到完整结果,"
+            "再调本工具,data_result_id = 那次 sql_query 的 result_id —— 它会把【完整的所有行】直接渲染成表给用户,"
+            "你不用、也别自己一行行打出来(那样会漏行/编造/超长)。结果只有几行时可不用,直接文字答即可。"
+        ),
+        parameters=_obj(
+            {"caption": {"type": "string",
+                         "description": "可选:给这张表加个简短标题(如「全部视频分类」);省略用默认。"}},
+        ),                                          # 数据本身来自上游句柄 data_result_id(loop 自动加)
+    ),
     "analyze_video": NodeSpec(
         tool="analyze_video",
         needs_sandbox=False,

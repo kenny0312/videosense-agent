@@ -44,6 +44,7 @@ def _result(ok: bool, *, trace: Trace, dag: DAG | None = None,
     generated_code = {nid: r.code for nid, r in results.items() if r.code}
     plot = next((r.artifact for r in results.values() if r.artifact), {})
     videos = next((r.videos for r in results.values() if r.videos), [])
+    table = next((r.table for r in results.values() if r.table), {})
     return {
         "ok": ok,
         "status": status or ("ok" if ok else "error"),   # ok | refused | error
@@ -53,6 +54,7 @@ def _result(ok: bool, *, trace: Trace, dag: DAG | None = None,
         "generated_code": generated_code,
         "plot": plot,
         "videos": videos,                                 # show_video:前端内嵌 <video> 播放
+        "table": table,                                   # show_table:前端渲染成表格(原始行,不经大脑复述)
         "fail_node": fail_node,
         "error": error,
         "session_id": session_id,                         # 多轮:回传给客户端,下一轮带上
