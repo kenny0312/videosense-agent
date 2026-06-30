@@ -23,6 +23,9 @@ from pydantic import BaseModel, field_validator
 PERCEPTION_MODEL = os.environ.get("PERCEPTION_MODEL", "gemini-2.5-flash")   # 默认(快/省)
 PRO_MODEL = os.environ.get("PERCEPTION_PRO_MODEL", "gemini-2.5-pro")        # Pro 模式(准/慢)
 RETRY_LIMIT = 2
+# fail-open 失败信封的 answer 前缀 —— 调用方(node_executor 缓存)据此【不缓存】失败,避免把
+# 瞬时报错钉死成"答案"反复回放。
+FAILURE_ANSWER_PREFIX = "(分析失败,无法看清这段视频)"
 
 # 本请求级模型覆盖:orchestrator 据 pro_video 在 run_query 开头 set;_gemini_generate 读。
 # run_query 全程同步同线程,深处的 analyze 也读得到;每请求开头都重设,跨请求不串。
@@ -146,12 +149,14 @@ def _get_model(name: str):
 
 def _gemini_generate(gcs_uri: str, prompt: str) -> str:
     from vertexai.generative_models import Part
+    from pipeline import usage
     name = MODEL_OVERRIDE.get() or PERCEPTION_MODEL   # 本请求选了 Pro 就用 pro,否则默认 flash
     video = Part.from_uri(uri=gcs_uri, mime_type="video/mp4")
     resp = _get_model(name).generate_content(
         [video, prompt],
         generation_config={"temperature": 0.2, "max_output_tokens": 2048,
                            "response_mime_type": "application/json"})
+    usage.add_usage(resp, name)          # M4.1:补上视频分析的 token 上报(原先漏算 → 成本不计)
     return resp.text
 
 
@@ -167,5 +172,5 @@ def analyze(req: AnalyzeRequest, gcs_uri: str, *,
             return _parse(generate(gcs_uri, prompt))
         except Exception as e:
             last_err = str(e)
-    return AnalyzeResult(answer=f"(分析失败,无法看清这段视频)[{last_err[:120]}]",
+    return AnalyzeResult(answer=f"{FAILURE_ANSWER_PREFIX}[{last_err[:120]}]",
                          enough="no", confidence=0.0)

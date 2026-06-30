@@ -55,6 +55,12 @@ LOOP_CONTEXT_TOKEN_BUDGET    = int(os.environ.get(                              
 # 方向一:单请求最多【现场分析】的视频数(配额护栏;M2 stopgap,后续按 plan 分级,见设计 §9)
 MAX_VIDEOS_PER_REQUEST    = int(os.environ.get("MAX_VIDEOS_PER_REQUEST", "5"))
 
+# M4.1:analyze_video 内容缓存(视频离线投递后静态 → 重复不重看,省一次 Gemini 多模态调用)。
+#   memory = 进程内 LRU(默认,零基建、跨副本不共享、重启清空);off = 关闭(一键退回)。
+#   后续 M4 可叠加 redis 跨副本共享(见设计 §4.3 / 开放问题)。键含【实际生效模型】→ Pro/Flash 不串味。
+ANALYZE_CACHE_BACKEND = os.environ.get("ANALYZE_CACHE_BACKEND", "memory").lower()  # memory | off
+ANALYZE_CACHE_MAX     = int(os.environ.get("ANALYZE_CACHE_MAX", "512"))            # 进程内 LRU 上限条数
+
 # ── AlloyDB ───────────────────────────────────
 ALLOYDB_HOST     = os.environ.get("ALLOYDB_HOST", "localhost")
 ALLOYDB_PORT     = int(os.environ.get("ALLOYDB_PORT", "5432"))
