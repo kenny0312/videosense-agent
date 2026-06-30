@@ -104,6 +104,9 @@ def test_declarations_have_handles_without_mutating_specs():
     show = next(d for d in decls if d["name"] == "show_video")
     assert "data_result_id" in show["parameters"]["properties"]
     assert "data_result_id" not in show["parameters"]["required"]   # show_video 句柄可选
+    py = next(d for d in decls if d["name"] == "python")
+    assert "data_result_id" in py["parameters"]["properties"]
+    assert "data_result_id" not in py["parameters"]["required"]     # python 逃生舱句柄可选(可独立写代码)
     # SPECS 未被污染
     from pipeline.node_specs import SPECS
     assert "data_result_id" not in SPECS["plot"].parameters["properties"]
