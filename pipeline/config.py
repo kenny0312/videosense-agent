@@ -52,14 +52,20 @@ LOOP_CONTEXT_BUDGET_FRACTION = float(os.environ.get("LOOP_CONTEXT_BUDGET_FRACTIO
 LOOP_CONTEXT_TOKEN_BUDGET    = int(os.environ.get(                                   # 回放压缩高水位(默认 = 窗口×FRACTION)
     "LOOP_CONTEXT_TOKEN_BUDGET", str(int(LOOP_CONTEXT_WINDOW * LOOP_CONTEXT_BUDGET_FRACTION))))
 
-# 方向一:单请求最多【现场分析】的视频数(配额护栏;M2 stopgap,后续按 plan 分级,见设计 §9)
-MAX_VIDEOS_PER_REQUEST    = int(os.environ.get("MAX_VIDEOS_PER_REQUEST", "5"))
+# 方向一:单请求最多【现场分析】的视频数(配额护栏;成本闸)。
+# M4.4:并行(MAX_ANALYZE_PARALLEL)落地后从 5 提到 12 —— 直接覆盖设计的动机场景(「比 12 个翼装视频」),
+# 大脑仍被引导「先 sql_query 缩到最相关的几个」,12 只是上限不是常态。要回退设环境变量即可。
+MAX_VIDEOS_PER_REQUEST    = int(os.environ.get("MAX_VIDEOS_PER_REQUEST", "12"))
 
 # M4.1:analyze_video 内容缓存(视频离线投递后静态 → 重复不重看,省一次 Gemini 多模态调用)。
 #   memory = 进程内 LRU(默认,零基建、跨副本不共享、重启清空);off = 关闭(一键退回)。
 #   后续 M4 可叠加 redis 跨副本共享(见设计 §4.3 / 开放问题)。键含【实际生效模型】→ Pro/Flash 不串味。
 ANALYZE_CACHE_BACKEND = os.environ.get("ANALYZE_CACHE_BACKEND", "memory").lower()  # memory | off
 ANALYZE_CACHE_MAX     = int(os.environ.get("ANALYZE_CACHE_MAX", "512"))            # 进程内 LRU 上限条数
+
+# M4.3:同一步内多个 analyze_video 调用的并发上限(I/O 密集 = 等 Gemini 多模态)。
+#   =1 → 退回纯串行(秒级回退开关);起步 3,压测看 Gemini 429/限流再调。
+MAX_ANALYZE_PARALLEL = int(os.environ.get("MAX_ANALYZE_PARALLEL", "3"))
 
 # ── AlloyDB ───────────────────────────────────
 ALLOYDB_HOST     = os.environ.get("ALLOYDB_HOST", "localhost")

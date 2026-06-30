@@ -12,6 +12,10 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -101,6 +105,8 @@ class ExecResult:
     artifact: dict = field(default_factory=dict)
     videos: list = field(default_factory=list)
     table: dict = field(default_factory=dict)
+    ms: float = 0.0                          # M4.2:本工具墙钟耗时(ms)
+    cache_hit: bool = False                  # M4.2:analyze_video 是否命中缓存
 
 
 @dataclass
@@ -111,6 +117,7 @@ class LoopResult:
     trace: list[dict]
     ledger: dict[str, ExecResult]
     llm_calls: int
+    step_walls: list = field(default_factory=list)   # M4.2:每步墙钟(ms),vs Σtool_ms 量化并行加速
 
 
 # ── 纯控制流(注入 conversation + execute,离线可测)──────────────
@@ -122,6 +129,7 @@ def run_loop(user_query: str, conversation, execute: Callable, *,
     ledger: dict[str, ExecResult] = {}
     trace: list[dict] = []
     seen: dict = {}
+    step_walls: list[float] = []
     msg: Any = user_query
     llm_calls = 0
     for step in range(max_steps):
@@ -130,20 +138,50 @@ def run_loop(user_query: str, conversation, execute: Callable, *,
         if not calls:                                        # 收敛:纯文本即答案
             if on_step:
                 on_step({"type": "answer", "text": text or ""})
-            return LoopResult(text or "", step, "text", trace, ledger, llm_calls)
-        responses, step_tools = [], []
+            return LoopResult(text or "", step, "text", trace, ledger, llm_calls, step_walls)
+
+        # ① 准备(主线程):算 cid/sig/upstream;重复失败 → 即时终止
+        prepared = []
         for i, call in enumerate(calls):
             cid = f"c{step}_{i}"
             sig = (call.name,
                    json.dumps(call.inputs, sort_keys=True, ensure_ascii=False, default=str),
                    tuple(call.uses))
             if seen.get(sig, 0) >= repeat_limit:             # 重复失败 → 强制终止
-                return LoopResult(None, step, "repeat", trace, ledger, llm_calls)
+                return LoopResult(None, step, "repeat", trace, ledger, llm_calls, step_walls)
             upstream = {u: ledger[u].value for u in call.uses if u in ledger}
-            res = execute(cid, call.name, call.inputs, upstream, call.uses)
+            prepared.append((cid, call, sig, upstream))
+
+        # ② 执行:同一步内 analyze_video 互不依赖(uses 只指前序步)→ 线程池并发;其余串行。
+        #    每个 worker 经 copy_context().run 携带本请求的 MODEL_OVERRIDE/_USAGE(否则 Pro 降级 + token 漏算)。
+        step_t0 = time.perf_counter()
+        results: dict[str, ExecResult] = {}
+        analyze_grp = [(cid, call, up) for (cid, call, _s, up) in prepared if call.name == "analyze_video"]
+        for cid, call, _s, up in prepared:                   # 非 analyze:主线程串行(不扩并发面)
+            if call.name != "analyze_video":
+                results[cid] = execute(cid, call.name, call.inputs, up, call.uses)
+        if len(analyze_grp) > 1 and config.MAX_ANALYZE_PARALLEL > 1:
+            workers = min(len(analyze_grp), config.MAX_ANALYZE_PARALLEL)
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futs = {}
+                for cid, call, up in analyze_grp:
+                    ctx = copy_context()                     # 主线程快照(含 MODEL_OVERRIDE/_USAGE)
+                    futs[cid] = pool.submit(ctx.run, execute, cid, call.name, call.inputs, up, call.uses)
+                for cid, fut in futs.items():
+                    results[cid] = fut.result()
+        else:                                                # 0/1 个或 MAX_ANALYZE_PARALLEL=1 → 退回串行
+            for cid, call, up in analyze_grp:
+                results[cid] = execute(cid, call.name, call.inputs, up, call.uses)
+        step_walls.append((time.perf_counter() - step_t0) * 1000.0)
+
+        # ③ 回收(主线程,按 cid 顺序单线程写)→ 回喂 Gemini 的顺序与串行一致(确定性)
+        responses, step_tools = [], []
+        for cid, call, sig, _up in prepared:
+            res = results[cid]
             ledger[cid] = res
             trace.append({"cid": cid, "tool": call.name, "inputs": call.inputs,
-                          "uses": call.uses, "ok": res.ok})
+                          "uses": call.uses, "ok": res.ok,
+                          "ms": round(res.ms, 1), "cache_hit": res.cache_hit})
             step_tools.append({"tool": call.name, "cid": cid, "ok": res.ok})
             if res.ok:
                 responses.append((call.name, {"result_id": cid, "preview": res.preview, "n": res.n}))
@@ -153,7 +191,7 @@ def run_loop(user_query: str, conversation, execute: Callable, *,
         if on_step:                                          # M6b:每步事件(供 SSE 流式)
             on_step({"type": "step", "step": step, "tools": step_tools})
         msg = responses
-    return LoopResult(None, max_steps, "max_steps", trace, ledger, llm_calls)
+    return LoopResult(None, max_steps, "max_steps", trace, ledger, llm_calls, step_walls)
 
 
 # ── 真实适配器(live;M2 spike 已验)──────────────
@@ -191,17 +229,20 @@ class GeminiConversation:
 
 def _make_executor(sandbox, trace, schema, session_id) -> Callable:
     quota = {"analyzed": 0}                               # 配额:本请求 analyze_video 调用计数
-    def execute(cid, name, inputs, upstream, uses):
+    quota_lock = threading.Lock()                         # M4.3:并行 analyze 组下保护 quota 读-改-写(串行也无害)
+
+    def _do(cid, name, inputs, upstream, uses) -> ExecResult:
         if name not in ALL_TOOLS:
             return ExecResult(ok=False, stderr=f"unknown tool: {name}")
         if name == "analyze_video":                       # 配额护栏(M2 stopgap,设计 §9)
-            if quota["analyzed"] >= config.MAX_VIDEOS_PER_REQUEST:
-                note = (f"已达本请求视频分析上限({config.MAX_VIDEOS_PER_REQUEST} 个),这个【没分析】。"
-                        "请【就已分析过的那些视频】给出结论:不要再调 analyze_video,"
-                        "也不要把没分析的视频当成分析过了来说;要覆盖更多就让用户缩小候选或分批问。")
-                pv, n = _preview({"answer": note, "enough": "no"})
-                return ExecResult(ok=True, value={"answer": note, "enough": "no"}, preview=pv, n=n)
-            quota["analyzed"] += 1
+            with quota_lock:                              # check+increment 原子(并行下防漏算/失控)
+                if quota["analyzed"] >= config.MAX_VIDEOS_PER_REQUEST:
+                    note = (f"已达本请求视频分析上限({config.MAX_VIDEOS_PER_REQUEST} 个),这个【没分析】。"
+                            "请【就已分析过的那些视频】给出结论:不要再调 analyze_video,"
+                            "也不要把没分析的视频当成分析过了来说;要覆盖更多就让用户缩小候选或分批问。")
+                    pv, n = _preview({"answer": note, "enough": "no"})
+                    return ExecResult(ok=True, value={"answer": note, "enough": "no"}, preview=pv, n=n)
+                quota["analyzed"] += 1
         try:
             node = Node(id=cid, tool=name, inputs=inputs, depends_on=list(uses))
         except Exception as e:                               # 幻觉/坏参数 → 软失败回喂
@@ -217,7 +258,14 @@ def _make_executor(sandbox, trace, schema, session_id) -> Callable:
         else:
             pv, n = _preview(nr.value)
         return ExecResult(ok=nr.ok, value=nr.value, preview=pv, n=n, stderr=nr.stderr,
-                          code=nr.code, artifact=nr.artifact, videos=nr.videos, table=nr.table)
+                          code=nr.code, artifact=nr.artifact, videos=nr.videos, table=nr.table,
+                          cache_hit=nr.cache_hit)
+
+    def execute(cid, name, inputs, upstream, uses) -> ExecResult:
+        t0 = time.perf_counter()                          # M4.2:per-tool 墙钟
+        res = _do(cid, name, inputs, upstream, uses)
+        res.ms = (time.perf_counter() - t0) * 1000.0
+        return res
     return execute
 
 
@@ -230,7 +278,8 @@ class LoopOutcome:
     final_value: Any                         # 最终成功步的结果值
     preview_value: Any                       # 预览/值复用依据(plot 时=上游 x/y,否则=final_value)
     results: dict                            # cid -> ExecResult(有 .code/.artifact/.videos)
-    trace: list                              # [{cid,tool,inputs,uses,ok}] —— 供 M5 记 transcript
+    trace: list                              # [{cid,tool,inputs,uses,ok,ms,cache_hit}] —— 供 M5 记 transcript
+    step_walls: list = field(default_factory=list)   # M4.2:每步墙钟(ms)→ loop_metrics 算并行加速
 
 
 _LOOP_SYSTEM = (
@@ -269,7 +318,8 @@ _LOOP_SYSTEM = (
     "真实出现的行,【绝不】编造或重复凑数;列不全就如实说「前 N 条,共 X 条」(或干脆用 show_table 给全)。\n\n"
     "# 视频内容分析(analyze_video)\n"
     "- analyze_video 一次只看【一个】视频,且每请求有数量上限。候选很多时:先用 sql_query 把范围"
-    "缩到几个最相关的,再对这几个【逐个】analyze_video —— 别一上来就想看全部,会撞上限且浪费。\n"
+    "缩到几个最相关的,再 analyze_video —— **可在同一步一次性发起多个(每个一个视频),它们会并行执行、更快**;"
+    "别一上来就想看全部,会撞上限且浪费。\n"
     "- 收口作答:直接回答用户【实际问的】,形式跟着用户走(要挑就挑、要描述就描述、要打分才打分,"
     "标准以用户的问题为准,别自作主张套格式);用自然语言把看到的依据讲清;别反问「要不要继续」—— "
     "配额内看够了就给结论。\n"
@@ -306,11 +356,22 @@ def run_query_loop(nl: str, *, schema: dict, replay_context: "str | None", sandb
                     preview_value = r.ledger[s["cid"]].value
                     break
     return LoopOutcome(r.answer, r.steps, r.terminated, final_tool, final_value,
-                       preview_value, r.ledger, r.trace)
+                       preview_value, r.ledger, r.trace, r.step_walls)
 
 
 def loop_metrics(lo: "LoopOutcome") -> dict:
-    """M6 审计指标:步数、终止原因、工具调用直方图(供 _audit 落服务端)。"""
+    """M6/M4.2 审计指标:步数、终止原因、工具直方图 + per-tool 计时 / 并行加速 / 缓存命中。"""
     from collections import Counter
-    return {"steps": lo.steps, "terminated": lo.terminated,
-            "tool_calls": dict(Counter(s["tool"] for s in lo.trace))}
+    tr = lo.trace
+    tool_ms = sum(s.get("ms", 0.0) for s in tr)               # 各工具墙钟之和(串行假想)
+    wall_ms = sum(getattr(lo, "step_walls", None) or [])      # 各步真实墙钟之和(并行后 < tool_ms)
+    analyze = [s for s in tr if s["tool"] == "analyze_video"]
+    m = {"steps": lo.steps, "terminated": lo.terminated,
+         "tool_calls": dict(Counter(s["tool"] for s in tr)),
+         "tool_ms": round(tool_ms, 1),
+         "wall_ms": round(wall_ms, 1),
+         "analyze_calls": len(analyze),
+         "analyze_cache_hits": sum(1 for s in analyze if s.get("cache_hit"))}
+    if wall_ms > 0:                                            # 并行加速比 = Σtool_ms / 墙钟
+        m["parallel_speedup"] = round(tool_ms / wall_ms, 2)
+    return m
