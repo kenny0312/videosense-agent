@@ -153,6 +153,65 @@ def test_no_session_backcompat():
         _restore_loop(sl); _restore_router(saved)
 
 
+# ── ① smalltalk/refuse 门:有上文(回放非空)时【不终结】,落到 loop ──────────
+# (修「ok」被判 smalltalk 回寒暄、「我想看」被判 refuse 回「太模糊」—— 这俩只有结合上文才看得懂,
+#  本应进 loop 用回放解;门由 context-blind 的 Router 判,不该对它们做终局裁决)
+def test_smalltalk_with_history_falls_through_to_loop():
+    s = Session("t")
+    v = RouterVerdict(decision="smalltalk", confidence=0.95, turn_type="new", intent="other")
+    saved = _stub_router(v)
+
+    def boom(*a, **k):
+        raise RuntimeError("REACHED_LOOP")
+    sl, calls = _stub_loop(boom)                          # build_loop_context → 非空哨兵
+    try:
+        r = orch.run_query("ok", session=s)
+        assert r["status"] == "error" and "REACHED_LOOP" in r["error"], r   # 落到 loop,没回寒暄
+        assert calls["passed_ctx"] == _REPLAY_SENTINEL    # 回放透传进 loop
+    finally:
+        _restore_loop(sl); _restore_router(saved)
+
+
+def test_refuse_with_history_falls_through_to_loop():
+    s = Session("t")
+    v = RouterVerdict(decision="refuse", confidence=0.95, reason="太模糊",
+                      turn_type="new", intent="other")
+    saved = _stub_router(v)
+
+    def boom(*a, **k):
+        raise RuntimeError("REACHED_LOOP")
+    sl, calls = _stub_loop(boom)
+    try:
+        r = orch.run_query("我想看", session=s)
+        assert r["status"] == "error" and "REACHED_LOOP" in r["error"], r   # 落到 loop,没回「太模糊」
+    finally:
+        _restore_loop(sl); _restore_router(saved)
+
+
+# 回归:无上文(回放为空)时,smalltalk 仍直接寒暄、不进 loop —— 首轮行为不变
+def test_smalltalk_no_replay_stays_smalltalk():
+    s = Session("t")
+    v = RouterVerdict(decision="smalltalk", confidence=0.95, turn_type="new", intent="other")
+    saved = _stub_router(v)
+    saved_loop = (loop_driver.run_query_loop, loop_memory.build_loop_context,
+                  loop_memory.record_loop_turn, orch.smalltalk_reply)
+
+    def boom(*a, **k):
+        raise RuntimeError("SHOULD_NOT_REACH_LOOP")
+    loop_driver.run_query_loop = boom
+    loop_memory.build_loop_context = lambda *a, **k: None   # 空会话 → 无回放
+    loop_memory.record_loop_turn = lambda *a, **k: None
+    orch.smalltalk_reply = lambda nl: "嗨"                  # 离线桩,不调模型
+    try:
+        r = orch.run_query("你好", session=s)
+        assert r["status"] == "smalltalk", r               # 无上文 → 仍寒暄,没进 loop
+        assert r["answer"] == "嗨"
+    finally:
+        (loop_driver.run_query_loop, loop_memory.build_loop_context,
+         loop_memory.record_loop_turn, orch.smalltalk_reply) = saved_loop
+        _restore_router(saved)
+
+
 # ── 回放真正进了 loop 的 system prompt(_loop_system 拼接)─────────────
 def test_loop_system_splices_replay_context():
     from pipeline.loop_driver import _loop_system
