@@ -68,12 +68,11 @@ SPECS: dict[str, NodeSpec] = {
         tool="show_video",
         needs_sandbox=False,
         planner_desc=(
-            "在问答界面【展示/播放】视频或视频片段。主进程把这些视频的私有 gcs_uri 签成"
-            "浏览器可播放的 https URL,前端内嵌 <video> 播放。"
-            "依赖一个上游节点(其结果【行】需含 video_id;可选 start_ts/end_ts/label 用于"
-            "定位要跳播的片段),或直接 inputs.video_ids=[\"v001\",...]。"
-            "当用户想【看 / 播放 / 展示 / 给我看】视频本身或某片段时,在 DAG 末尾加这个节点"
-            "(通常上游是一个选出 video_id 的 sql_query)。最多展示前 8 个。"
+            "【播放】视频内容:把视频的私有 gcs_uri 签成可播放 https URL,前端内嵌 <video> 播放"
+            "(可跳到 start_ts 看某片段)。依赖一个上游节点(其结果【行】需含 video_id;可选 "
+            "start_ts/end_ts/label),或直接 inputs.video_ids=[\"v001\",...]。"
+            "【用途:用户想【播放 / 观看 / 看视频里发生了什么 / 看某个片段】时用它 —— 是要【看片本身】,"
+            "不是要数据清单(那用 show_table)】。最多 8 个。"
         ),
         parameters=_obj(
             {"video_ids": {"type": "array", "items": {"type": "string"},
@@ -84,10 +83,10 @@ SPECS: dict[str, NodeSpec] = {
         tool="show_table",
         needs_sandbox=False,
         planner_desc=(
-            "把【上一步查询的结果】原样展示成表格给用户看(前端渲染,不经你逐行复述)。"
-            "当用户要【列出 / 给我看 / 全部列出来 / 展示】很多行原始数据时用它:先 sql_query 查到完整结果,"
-            "再调本工具,data_result_id = 那次 sql_query 的 result_id —— 它会把【完整的所有行】直接渲染成表给用户,"
-            "你不用、也别自己一行行打出来(那样会漏行/编造/超长)。结果只有几行时可不用,直接文字答即可。"
+            "把【上一步查询的结果行】原样渲染成【表格/清单】给用户看(数据,不是播放视频;不经你逐行复述)。"
+            "【用途:用户要【列出 / 看有哪些 / 全部列出来 / 来一份清单】很多行数据时用它】:先 sql_query 查到完整结果,"
+            "再调本工具,data_result_id = 那次 sql_query 的 result_id —— 它把【完整所有行】直接成表给用户,"
+            "你不用、也别自己一行行打出来(会漏/编/超长)。结果只有几行、或用户只要个数/答案时,直接文字答即可。"
         ),
         parameters=_obj(
             {"caption": {"type": "string",
