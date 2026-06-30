@@ -63,7 +63,9 @@ def test_show_video_builds_payload():
         assert v["title"] == "Wingsuit Jump Over Alps"           # 来自 mock video_metadata
         assert v["playable"] is True and v["signed_url"].startswith("https://")
         assert v["marks"] == [{"ts": 62.0, "label": "开伞"}]
-        assert isinstance(res.value, str) and "1" in res.value
+        # ③:value 带 note + 有序编号 items(供下一轮「第 N 个」映射)
+        assert isinstance(res.value, dict) and "1 个视频" in res.value["note"]
+        assert res.value["items"] == [{"n": 1, "video_id": "sky01", "title": "Wingsuit Jump Over Alps"}]
     finally:
         video_url.sign_gcs_uri = orig
 
@@ -77,7 +79,8 @@ def test_show_video_failopen_unsigned():
         v = res.videos[0]
         assert v["playable"] is False and v["signed_url"] is None
         assert v["gcs_uri"]                                      # 仍带回 gcs_uri 供前端降级展示
-        assert "暂不可播放" in res.value
+        assert "暂不可播放" in res.value["note"]
+        assert res.value["items"][0]["n"] == 1 and res.value["items"][0]["video_id"] == "sky02"
     finally:
         video_url.sign_gcs_uri = orig
 

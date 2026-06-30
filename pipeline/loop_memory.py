@@ -63,7 +63,9 @@ def _render_turn(turn_no, evs) -> str:
             if e.get("ok"):
                 prev = e.get("preview", e.get("value"))
                 n = f"(共{e['n']}行)" if e.get("n") else ""
-                lines.append(f"    {e['event_id']} 结果{n}:{json.dumps(prev, ensure_ascii=False)[:200]}")
+                # show_video/show_table 的 value 带【有序编号 items】(供下一轮「第 N 个」映射)→ 放宽截断,别剪掉 id
+                cap = 800 if e.get("tool") in ("show_video", "show_table") else 200
+                lines.append(f"    {e['event_id']} 结果{n}:{json.dumps(prev, ensure_ascii=False)[:cap]}")
             else:
                 lines.append(f"    {e['event_id']} 失败:{e.get('error', '')}")
         elif ty == "answer":
