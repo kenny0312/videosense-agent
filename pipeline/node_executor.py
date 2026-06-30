@@ -220,7 +220,9 @@ def _run_analyze_video(node: Node, upstream: dict[str, Any]) -> NodeResult:
     """主进程节点:用多模态模型【现场看一段视频】回答 inputs.question,返回最小信封。
     选定【单个】视频:优先 inputs.video_id,否则取上游结果行里的第一个 video_id;查 video_metadata
     拿 gcs_uri 后调 perception.analyze(失败已在库内 fail-open → enough=no,绝不抛)。"""
-    from perception.analyze_video_contextual import AnalyzeRequest, analyze
+    from perception.analyze_video_contextual import (
+        AnalyzeRequest, analyze, MODEL_OVERRIDE, PERCEPTION_MODEL, FAILURE_ANSWER_PREFIX)
+    from pipeline import analyze_cache
 
     question = str(node.inputs.get("question") or "").strip()
     if not question:
@@ -250,10 +252,19 @@ def _run_analyze_video(node: Node, upstream: dict[str, Any]) -> NodeResult:
     req = AnalyzeRequest(question=question,
                          context=node.inputs.get("context"),
                          rubric=node.inputs.get("rubric"))
-    result = analyze(req, gcs)                        # 看视频 → 最小信封
+    # M4.1 缓存:同一(视频+问题+上下文+细则+模型)命中则不再调 Gemini(省成本/延迟)。
+    # 键含【实际生效模型】(Pro/Flash)→ 不串味;失败信封【不缓存】(避免钉死瞬时报错)。
+    model = MODEL_OVERRIDE.get() or PERCEPTION_MODEL
+    ckey = analyze_cache.make_key(vid, question=req.question, context=req.context,
+                                  rubric=req.rubric, time_range=req.time_range, model=model)
+    dump = analyze_cache.get(ckey)
+    if dump is None:
+        dump = analyze(req, gcs).model_dump()         # 看视频 → 最小信封
+        if not str(dump.get("answer", "")).startswith(FAILURE_ANSWER_PREFIX):
+            analyze_cache.put(ckey, dump)
     # value:video_id 在前、answer 紧随 → loop preview 露出"哪个视频 + 结论(前置)+ enough"
     return NodeResult(node.id, node.tool, ok=True, attempts=1,
-                      value={"video_id": vid, **result.model_dump()})
+                      value={"video_id": vid, **dump})
 
 
 def _run_threshold_sweep(node: Node) -> NodeResult:
