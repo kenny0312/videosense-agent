@@ -23,6 +23,7 @@ from pipeline import config
 from pipeline.dag_schema import ALL_TOOLS, Node
 from pipeline.node_executor import execute_node, analyze_peek_cache
 from pipeline.node_specs import build_function_declarations
+from pipeline.taxonomy_seed import CATEGORIES
 
 log = logging.getLogger("pipeline.loop_driver")
 
@@ -427,7 +428,20 @@ _LOOP_SYSTEM = (
     "只经 show_* 侧信道给前端。反例:「第 2 个视频(`803174656_…`)」【错】;"
     "正例:「第 2 个,橙色跳伞服出舱那个」【对】。\n\n"
     "# 关键数据说明\n"
-    "- video_facts.predicate 是英文活动描述,用 ILIKE 模糊匹配(中文先译英:滑雪→%skiing%/%snowboarding%)。\n"
+    "- video_facts.predicate 分两层:【受控大类】(见下方词表;每个视频都有 1-2 行大类)"
+    "+ 自由细谓词(英文动词短语,~200 个,描述具体动作)。\n"
+    "- 大类词表(共 " + str(len(CATEGORIES)) + " 个):" + ", ".join(CATEGORIES) + "。\n"
+    "- 【类别问题必须走词表】:「有没有 X / 有几个 X / 想看 X」先把 X 对到词表大类"
+    "(跳伞→skydiving,做饭→cooking & food,滑雪→winter sports),用 predicate = '<大类>' 精确查。"
+    "**没对过词表、没用大类精确查过,不许下「没有」的结论**;词表里确实没有近似类才答没有,"
+    "并顺带说明最接近的是哪类。\n"
+    "- 【大类管找到,细谓词管数准】:用户的词若是【具体活动】(滑雪/冰壶这种,而非「运动」这种类目词),"
+    "大类命中后再用细谓词核对给【该活动】的准数(如滑雪 = 大类 winter sports 下 ILIKE '%ski%'/'%snowboard%' 的那部分),"
+    "别把整个大类的数当成该活动的数;大类里还有别的(如冰壶)可顺带一提。\n"
+    "- 细节问题(某人在干嘛/哪个时段)才用细谓词 ILIKE 模糊匹配(中文先译英)。\n"
+    "- 【列/数视频必须去重】:video_facts 一个视频多行(大类行+细谓词行),"
+    "列视频用 SELECT DISTINCT video_id …,数视频用 COUNT(DISTINCT video_id) —— "
+    "不去重会把 1 个视频数成 2 个。\n"
     "- video_facts.matched 是布尔;查已确认事实加 AND matched = true。\n"
     "- 关系类查询(筛选/聚合/join/排序)用单个 sql_query 直接写完整 SQL。\n"
     "- 内置工具(sql_query / analyze_video / show_* / plot 等)都不合适某个【没预料到的】需求时,"
