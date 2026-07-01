@@ -1,6 +1,8 @@
 # Cloud & Database
 google-cloud-storage>=3.10.0
 google-cloud-aiplatform>=1.149.0
+# U5/U6:gemini-3.x 大脑与 web_search grounding 走新 google-genai SDK(global 端点);旧 vertexai 路径保留(回滚用)
+google-genai>=1.74.0
 psycopg2-binary>=2.9.12
 
 # MCP Protocol (Stage 3)
