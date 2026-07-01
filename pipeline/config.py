@@ -46,8 +46,12 @@ CODEGEN_MODEL = os.environ.get("CODEGEN_MODEL", "gemini-2.5-pro")
 CRITIC_MODEL  = os.environ.get("CRITIC_MODEL", "gemini-2.5-flash")
 
 # ── 执行器:probe-and-step 主循环(M7b 起【唯一】路径;旧 Planner→DAG 仅 dev CLI main.py 保留)──
-# loop 大脑模型:M2 spike 结论 = flash 与 pro 正确率相同但更快,故默认 CRITIC_MODEL
-LOOP_MODEL         = os.environ.get("LOOP_MODEL", CRITIC_MODEL)
+# loop 大脑模型(U5):默认 gemini-3.5-flash(2026-05 GA;agentic/coding 强、~4x 快;$1.5/$9 per 1M
+# ≈ 2.5-flash 的 5 倍价,但 loop 每轮 ~5-10k tok → 单轮 <$0.01,收益>成本;视频分析仍 2.5-flash 不变)。
+# gemini-3.x 起【只】在新 google-genai SDK + global 端点可用(us-central1 404,已实测)——
+# 后端由 loop_driver.make_conversation 按模型代际自动选。回滚:LOOP_MODEL=gemini-2.5-flash(旧 SDK 路径)。
+LOOP_MODEL         = os.environ.get("LOOP_MODEL", "gemini-3.5-flash")
+GENAI_LOCATION     = os.environ.get("GENAI_LOCATION", "global")     # genai 后端端点(3.x 需 global)
 MAX_LOOP_STEPS     = int(os.environ.get("MAX_LOOP_STEPS", "16"))    # 终止护栏:防死循环
 LOOP_REPEAT_LIMIT  = int(os.environ.get("LOOP_REPEAT_LIMIT", "2"))  # 同一(工具,参数)连续失败上限
 

@@ -332,3 +332,21 @@ def test_loop_system_injects_runtime_facts():
     marker = "# 运行时状态\nRT_MARKER_XYZ"
     assert "RT_MARKER_XYZ" in ld._loop_system({"t": []}, None, marker)
     assert "RT_MARKER_XYZ" not in ld._loop_system({"t": []}, None, None)
+
+
+# ── U5:后端工厂(gemini-3.x → google-genai;1.x/2.x → 旧 vertexai SDK)──
+def test_make_conversation_backend_choice(monkeypatch):
+    picked = {}
+    monkeypatch.setattr(ld, "GeminiConversation", lambda m, d, s: picked.setdefault("legacy", m))
+    monkeypatch.setattr(ld, "GenAIConversation", lambda m, d, s: picked.setdefault("genai", m))
+    ld.make_conversation("gemini-2.5-flash", [], "s")     # 回滚路径:旧 SDK
+    ld.make_conversation("gemini-3.5-flash", [], "s")     # 默认:genai
+    ld.make_conversation("gemini-4-flash", [], "s")       # 未来代际也走 genai(负向匹配 1.x/2.x)
+    assert picked == {"legacy": "gemini-2.5-flash", "genai": "gemini-3.5-flash"}
+
+
+def test_price_table_covers_35flash():
+    from pipeline import usage as u
+    s = u.summarize({"gemini-3.5-flash": {"in": 1_000_000, "out": 100_000,
+                                          "total": 1_100_000, "calls": 2}})
+    assert abs(s["cost_usd"] - (1.50 + 0.90)) < 1e-9      # $1.5/M in + $9/M out
