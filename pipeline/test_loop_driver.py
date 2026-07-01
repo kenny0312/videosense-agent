@@ -352,6 +352,63 @@ def test_price_table_covers_35flash():
     assert abs(s["cost_usd"] - (1.50 + 0.90)) < 1e-9      # $1.5/M in + $9/M out
 
 
+# ── U6:web_search(声明门控 + 结果解析,全离线 stub)──────────
+def test_web_search_declaration_gated(monkeypatch):
+    from pipeline import config as cfg
+    monkeypatch.setattr(cfg, "USE_WEB_SEARCH", False)
+    assert "web_search" not in [d["name"] for d in ld.loop_function_declarations()]
+    monkeypatch.setattr(cfg, "USE_WEB_SEARCH", True)
+    assert "web_search" in [d["name"] for d in ld.loop_function_declarations()]
+
+
+def _fake_grounding_client(text="ans", uri="https://s", title="src"):
+    class _Web:
+        pass
+    web = _Web(); web.uri, web.title = uri, title
+    class _Chunk:
+        pass
+    ch = _Chunk(); ch.web = web
+    class _GM:
+        pass
+    gm = _GM(); gm.grounding_chunks = [ch]
+    class _Cand:
+        pass
+    cand = _Cand(); cand.grounding_metadata = gm
+    class _Resp:
+        pass
+    resp = _Resp(); resp.text, resp.candidates, resp.usage_metadata = text, [cand], None
+    class _Models:
+        def generate_content(self, **kw):
+            return resp
+    class _Client:
+        models = _Models()
+    return _Client()
+
+
+def test_run_web_search_parses_answer_and_sources(monkeypatch):
+    from pipeline import config as cfg, genai_client
+    from pipeline import node_executor as ne
+    from pipeline.dag_schema import Node
+    monkeypatch.setattr(cfg, "USE_WEB_SEARCH", True)
+    monkeypatch.setattr(genai_client, "_CLIENT", _fake_grounding_client())
+    r = ne._run_web_search(Node(id="w1", tool="web_search", inputs={"query": "世界纪录"}))
+    assert r.ok and r.value["answer"] == "ans"
+    assert r.value["sources"] == [{"title": "src", "url": "https://s"}]
+
+
+def test_run_web_search_gated_and_requires_query(monkeypatch):
+    import pytest
+    from pipeline import config as cfg
+    from pipeline import node_executor as ne
+    from pipeline.dag_schema import Node
+    monkeypatch.setattr(cfg, "USE_WEB_SEARCH", False)
+    with pytest.raises(ValueError):
+        ne._run_web_search(Node(id="w1", tool="web_search", inputs={"query": "x"}))
+    monkeypatch.setattr(cfg, "USE_WEB_SEARCH", True)
+    with pytest.raises(ValueError):
+        ne._run_web_search(Node(id="w1", tool="web_search", inputs={}))
+
+
 # ── U1-T2:查询桥 —— 词表进 prompt + 护栏 ───────────────────
 def test_loop_system_contains_category_vocab_and_guards():
     from pipeline.taxonomy_seed import CATEGORIES
