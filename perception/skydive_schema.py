@@ -149,10 +149,17 @@ def video_facts_upsert_sql(placeholder: str = "%s") -> str:
             "ON CONFLICT (video_id, predicate) DO NOTHING")
 
 
-def video_facts_values(video_id: str, row: dict) -> tuple:
-    """跳伞行 → video_facts 值:predicate 据 is_wingsuit/jump_type 派生;复用 summary 作 rationale、freefall 时段。"""
-    is_ws = bool(row.get("is_wingsuit")) or row.get("jump_type") == "wingsuit"
-    predicate = "wingsuit skydiving" if is_ws else "skydiving"
+def video_facts_predicates(row: dict) -> list:
+    """一条跳伞抽取 → 要写的 predicate 列表:【总有 "skydiving"】(可靠命中「跳伞/skydiving」查询);
+    wingsuit 的再加一条 "wingsuit skydiving"(命中「翼装/wingsuit」)。两条都写,别只写窄的。"""
+    preds = ["skydiving"]
+    if bool(row.get("is_wingsuit")) or row.get("jump_type") == "wingsuit":
+        preds.append("wingsuit skydiving")
+    return preds
+
+
+def video_facts_values(video_id: str, row: dict, predicate: str) -> tuple:
+    """跳伞行 + 某 predicate → video_facts 值:复用 summary 作 rationale、freefall 时段。"""
     conf = row.get("freefall_confidence")
     return (video_id, predicate,
             conf if conf is not None else 1.0,

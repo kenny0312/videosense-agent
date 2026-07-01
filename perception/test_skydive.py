@@ -95,15 +95,18 @@ def test_ddl_has_all_phase_cols_and_no_now():
 
 # ── 桥接到 video_facts(入库即可检索)────────────────────────────
 def test_video_facts_bridge():
-    from perception.skydive_schema import video_facts_values, video_facts_upsert_sql
+    from perception.skydive_schema import (
+        video_facts_predicates, video_facts_values, video_facts_upsert_sql)
     row = {"is_wingsuit": True, "jump_type": "wingsuit", "summary": "a wingsuit jump",
            "freefall_confidence": 0.9, "freefall_start_ts": 2.0, "freefall_end_ts": 17.0}
-    assert video_facts_values("GX1", row) == \
-        ("GX1", "wingsuit skydiving", 0.9, "a wingsuit jump", 2.0, 17.0)
-    # 非 wingsuit → "skydiving";缺 confidence → 1.0
+    # wingsuit → 两条:总有 "skydiving"(可靠命中跳伞查询)+ "wingsuit skydiving"
+    assert video_facts_predicates(row) == ["skydiving", "wingsuit skydiving"]
+    assert video_facts_values("GX1", row, "skydiving") == \
+        ("GX1", "skydiving", 0.9, "a wingsuit jump", 2.0, 17.0)
+    # 非 wingsuit → 只 "skydiving";缺 confidence → 1.0
     row2 = {"is_wingsuit": False, "jump_type": "belly", "summary": "s"}
-    v2 = video_facts_values("v2", row2)
-    assert v2[1] == "skydiving" and v2[2] == 1.0 and v2[3] == "s"
+    assert video_facts_predicates(row2) == ["skydiving"]
+    assert video_facts_values("v2", row2, "skydiving")[2] == 1.0
     assert "ON CONFLICT (video_id, predicate) DO NOTHING" in video_facts_upsert_sql()
 
 
