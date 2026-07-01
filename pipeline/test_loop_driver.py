@@ -310,3 +310,25 @@ def test_self_check_critic_exception_failopen():
         raise RuntimeError("critic down")
     r = run_loop("q", ScriptedConv([([], "答案")]), make_exec(), critic=boom, max_critic=1)
     assert r.answer == "答案"                              # critic 抛错 → 视为满足,直接返回
+
+
+# ── U3:运行时状态(自我认知注入)───────────────────────
+def test_runtime_facts_first_turn():
+    s = ld.runtime_facts_line(None)
+    assert "# 运行时状态" in s and "第一轮" in s
+    assert "万 token" in s                                 # 窗口以真实 config 值渲染
+
+
+def test_runtime_facts_with_cum():
+    cum = {"turns": 2, "tokens_total": 10000, "cost_usd": 0.003, "llm_calls": 5,
+           "last": {"tokens_total": 6000, "cost_usd": 0.002}}
+    s = ld.runtime_facts_line(cum)
+    assert "2 轮" in s and "10,000" in s and "$0.0030" in s
+    assert "上一轮 6,000" in s and "$0.0020" in s
+    assert "不含正在进行的这一轮" in s                     # 诚实边界:本轮未计入
+
+
+def test_loop_system_injects_runtime_facts():
+    marker = "# 运行时状态\nRT_MARKER_XYZ"
+    assert "RT_MARKER_XYZ" in ld._loop_system({"t": []}, None, marker)
+    assert "RT_MARKER_XYZ" not in ld._loop_system({"t": []}, None, None)

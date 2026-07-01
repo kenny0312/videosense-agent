@@ -154,10 +154,13 @@ def run_query(nl: str, *, quiet_trace: bool = False,
     from pipeline import loop_driver
     from pipeline.transcript_store import gcs_blob_put
     lstep = trace.step("Loop")
+    # U3 自我认知:把会话累计 usage / 模型档位 / 窗口等真实数字注入 loop(元问题不再拒答/编数)。
+    rt_facts = loop_driver.runtime_facts_line(
+        getattr(session, "usage_cum", None) if session is not None else None)
     try:
         lo = loop_driver.run_query_loop(nl, schema=schema, replay_context=replay_ctx,
                                         sandbox=sandbox, trace=trace, session_id=sid,
-                                        on_step=on_step)
+                                        on_step=on_step, runtime_facts=rt_facts)
         lstep.ok(steps=lo.steps, terminated=lo.terminated)
     except Exception as e:
         lstep.fail(error=repr(e))
@@ -175,6 +178,10 @@ def run_query(nl: str, *, quiet_trace: bool = False,
                                          lo.trace, lo.results, lo.answer, blob_put=gcs_blob_put)
         except Exception as e:
             log.warning("record_loop_turn 失败(fail-open): %r", e)
+        try:
+            session.add_usage(usage.summarize())   # U3:会话累计 usage(API 层 save 时随 blob 落盘)
+        except Exception as e:
+            log.warning("usage 累计失败(fail-open): %r", e)
     replay_tok = (len(replay_ctx) // 3) if replay_ctx else 0   # 与 loop_memory._est_tokens 同口径
     return _result(True, trace=trace, results=lo.results, answer=lo.answer,
                    session_id=sid, turn_type=ttype, loop_meta=loop_driver.loop_metrics(lo),
