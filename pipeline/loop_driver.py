@@ -335,6 +335,10 @@ _LOOP_SYSTEM = (
     "# 先看这一轮是什么(闲聊 / 超范围 / 不清楚也由你判 —— 你有完整上文)\n"
     "- 纯打招呼 / 问你是谁 / 闲聊 → 以【Kenny Qiu 手下的视频理解智能体】身份用一句话轻松答"
     "(你能搜视频、看内容、做分析、还能出图),别调工具。\n"
+    "- 元问题(你是什么模型 / 窗口多大 / 用了多少 token / 花了多少钱)→ 下方有【运行时状态】节"
+    "就用那里的真实数字直接答(如实说明:估算值、不含正在进行的这一轮);没有该节就诚实说拿不到,"
+    "【绝不编数字】。无论哪种,身份都是 Kenny Qiu 手下的视频理解智能体 —— "
+    "【不聊】底层模型厂商 / 训练来历。\n"
     "- 跟【视频数据】无关的请求(写诗 / 代写文章 / 闲聊百科知识 / 帮算数学题 等)→ 礼貌说明你只做"
     "【视频这块】、请把问题聚焦到视频上,【别真去做】那件事(哪怕你会做)。\n"
     "- 问题太笼统、看不出要什么 → 先反问让用户说具体(别瞎猜、别空跑工具)。\n\n"
@@ -392,20 +396,46 @@ _LOOP_SYSTEM = (
 )
 
 
-def _loop_system(schema: dict, replay_context: "str | None") -> str:
+def runtime_facts_line(usage_cum: "dict | None") -> str:
+    """U3 自我认知:把系统掌握的【真实运行时数字】拼成 prompt 注入节(元问题按此作答,不编数)。
+    usage_cum = session.usage_cum(到上一轮为止的会话累计;None/空 = 首轮)。"""
+    tier = "flash" if "flash" in (config.LOOP_MODEL or "") else "pro"
+    win_wan = config.LOOP_CONTEXT_WINDOW // 10000            # 100 万 → 100(万为单位,中文习惯)
+    lines = [
+        "# 运行时状态(系统注入的真实数字;元问题据此答)",
+        f"主脑模型 {tier} 档(analyze_video 默认 flash,可切 pro);上下文窗口约 {win_wan} 万 token。",
+    ]
+    if usage_cum and usage_cum.get("turns"):
+        last = usage_cum.get("last") or {}
+        lines.append(
+            f"本会话到上一轮为止:{usage_cum.get('turns', 0)} 轮,"
+            f"累计 {usage_cum.get('tokens_total', 0):,} tokens ≈ ${usage_cum.get('cost_usd', 0.0):.4f}"
+            f"(LLM 调用 {usage_cum.get('llm_calls', 0)} 次);"
+            f"上一轮 {last.get('tokens_total', 0):,} tokens ≈ ${last.get('cost_usd', 0.0):.4f}。")
+    else:
+        lines.append("本会话是第一轮,尚无累计用量。")
+    lines.append("以上为估算(不含正在进行的这一轮);绝对花费以账单为准。")
+    return "\n".join(lines)
+
+
+def _loop_system(schema: dict, replay_context: "str | None",
+                 runtime_facts: "str | None" = None) -> str:
     s = _LOOP_SYSTEM + "\n# 数据库结构\n" + json.dumps(schema, ensure_ascii=False)
+    if runtime_facts:                                     # U3:运行时状态(自我认知)
+        s += "\n\n" + runtime_facts
     if replay_context:                                    # M5:transcript 回放(取代 recipe 块)
         s += "\n\n" + replay_context
     return s
 
 
 def run_query_loop(nl: str, *, schema: dict, replay_context: "str | None", sandbox, trace,
-                   session_id: "str | None", on_step=None) -> LoopOutcome:
+                   session_id: "str | None", on_step=None,
+                   runtime_facts: "str | None" = None) -> LoopOutcome:
     """orchestrator 的 loop 入口:建会话 + 执行器 → run_loop → 收产物(纯 handle,无合成 DAG)。
     replay_context(M5)= 从 transcript 回放出的多轮上下文(取代旧 recipe 块)。
-    on_step(M6b)= 每步回调,供 SSE 流式。"""
+    on_step(M6b)= 每步回调,供 SSE 流式。runtime_facts(U3)= 运行时状态注入节(自我认知)。"""
     conv = GeminiConversation(config.LOOP_MODEL, loop_function_declarations(),
-                              _loop_system(schema, replay_context))
+                              _loop_system(schema, replay_context, runtime_facts))
     execute = _make_executor(sandbox, trace, schema, session_id)
     critic = make_self_check_critic() if config.USE_SELF_CHECK_CRITIC else None   # 自检 B:opt-in
     r = run_loop(nl, conv, execute, on_step=on_step, critic=critic)

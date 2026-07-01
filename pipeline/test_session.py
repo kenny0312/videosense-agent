@@ -33,9 +33,37 @@ def test_to_from_dict_roundtrip():
     s = Session("x")
     s.next_turn(); s.next_turn()
     d = s.to_dict()
-    assert d == {"session_id": "x", "_turn_no": 2}
+    assert d == {"session_id": "x", "_turn_no": 2, "usage_cum": {}}
     s2 = Session.from_dict(d)
-    assert s2.session_id == "x" and s2._turn_no == 2
+    assert s2.session_id == "x" and s2._turn_no == 2 and s2.usage_cum == {}
+
+
+# ── U3:会话累计 usage(自我认知注入的数据源)────────────────
+def test_add_usage_accumulates_and_snapshots_last():
+    s = Session("u")
+    s.add_usage({"tokens_total": 4000, "cost_usd": 0.001, "llm_calls": 2})
+    s.add_usage({"tokens_total": 6000, "cost_usd": 0.002, "llm_calls": 3})
+    c = s.usage_cum
+    assert c["tokens_total"] == 10000 and c["llm_calls"] == 5 and c["turns"] == 2
+    assert abs(c["cost_usd"] - 0.003) < 1e-9
+    assert c["last"] == {"tokens_total": 6000, "cost_usd": 0.002}   # 上一轮快照,非累计
+
+
+def test_add_usage_malformed_failopen():
+    """形状不对(None/缺键/字符串数字)不抛错:缺键当 0,烂输入整体跳过。"""
+    s = Session("u")
+    s.add_usage({})                                   # 缺键 → 全 0,但算一轮
+    s.add_usage({"tokens_total": "not-a-number"})     # 烂值 → 跳过
+    assert s.usage_cum["turns"] == 1 and s.usage_cum["tokens_total"] == 0
+
+
+def test_usage_cum_roundtrip_and_legacy_default():
+    s = Session("u")
+    s.add_usage({"tokens_total": 100, "cost_usd": 0.0001, "llm_calls": 1})
+    s2 = Session.from_dict(s.to_dict())
+    assert s2.usage_cum["tokens_total"] == 100 and s2.usage_cum["turns"] == 1
+    legacy = Session.from_dict({"session_id": "old", "_turn_no": 3})   # 旧 blob 无 usage_cum
+    assert legacy.usage_cum == {}
 
 
 def test_from_dict_tolerates_legacy_blob():

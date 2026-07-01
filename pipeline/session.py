@@ -35,6 +35,9 @@ log = logging.getLogger("pipeline.session")
 class Session:
     session_id: str
     _turn_no: int = field(default=0, init=False)  # 全局单调轮号(不随重启回退;供 transcript 标号)
+    # U3 自我认知:会话累计 usage(tokens/成本/轮数 + 上一轮快照)。只存扁平数字,
+    # 注入 loop prompt 用(「用了多少 token / 花了多少钱」按真数答),不是计费真源(那是 GCP 账单)。
+    usage_cum: dict = field(default_factory=dict, init=False)
     _lock: Any = field(default_factory=threading.Lock, init=False, repr=False, compare=False)
 
     def next_turn(self) -> int:
@@ -43,14 +46,33 @@ class Session:
             self._turn_no += 1
             return self._turn_no
 
+    def add_usage(self, summary: dict) -> None:
+        """每轮收尾把 usage.summarize() 累加进来(fail-open:形状不对就跳过,绝不影响作答)。"""
+        try:
+            tok = int(summary.get("tokens_total", 0) or 0)
+            cost = float(summary.get("cost_usd", 0.0) or 0.0)
+            calls = int(summary.get("llm_calls", 0) or 0)
+        except (AttributeError, TypeError, ValueError):
+            return
+        with self._lock:
+            c = self.usage_cum
+            c["tokens_total"] = int(c.get("tokens_total", 0)) + tok
+            c["cost_usd"] = round(float(c.get("cost_usd", 0.0)) + cost, 6)
+            c["llm_calls"] = int(c.get("llm_calls", 0)) + calls
+            c["turns"] = int(c.get("turns", 0)) + 1
+            c["last"] = {"tokens_total": tok, "cost_usd": round(cost, 6)}
+
     # ── 序列化(持久化用;排除 _lock)──────────────────
     def to_dict(self) -> dict:
-        return {"session_id": self.session_id, "_turn_no": self._turn_no}
+        return {"session_id": self.session_id, "_turn_no": self._turn_no,
+                "usage_cum": self.usage_cum}
 
     @classmethod
     def from_dict(cls, d: dict) -> "Session":
         s = cls(session_id=d["session_id"])
         s._turn_no = int(d.get("_turn_no", 0))
+        u = d.get("usage_cum")
+        s.usage_cum = u if isinstance(u, dict) else {}   # 旧 blob 无此字段 → 空(向后兼容)
         # 旧 blob 的 history/rolling/catalog/_seq 等字段一律忽略(向后兼容,不报错)。
         return s
 
