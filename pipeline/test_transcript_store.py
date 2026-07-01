@@ -114,3 +114,52 @@ def test_tail_reads_gcs_when_hot_trimmed_to_window():
     st = _redis_store(500, hot=500)                           # 顶到 HOT_WINDOW → 被 LTRIM
     st._tail_from_gcs = lambda k, n: [{"turn": i} for i in range(800)]
     assert len(st.tail("k", 1000)) == 800                     # 取 GCS 更全的(更老的只在 GCS)
+
+
+# ── U4-D2:耐久层序号 —— 跨进程单调,绝不复用旧名覆盖历史 ─────────
+class _FakeSeqRedis:
+    """极简 fake:只实现 _next_seq_name 用到的 incr/set。"""
+    def __init__(self, fail=False):
+        self.kv, self.fail = {}, fail
+
+    def incr(self, k):
+        if self.fail:
+            raise ConnectionError("redis down")
+        self.kv[k] = int(self.kv.get(k, 0)) + 1
+        return self.kv[k]
+
+    def set(self, k, v):
+        self.kv[k] = int(v)
+
+
+def _mk_store(monkeypatch, fake):
+    from pipeline import redis_client as rc
+    monkeypatch.setattr(rc, "build_redis_client", lambda: fake)
+    return ts.RedisGcsTranscriptStore()
+
+
+def test_seq_monotonic_across_instances(monkeypatch):
+    """两个 store 实例(= 两个进程/一次重启)共享 Redis 计数 → 序号连续,不回卷不覆盖。"""
+    fake = _FakeSeqRedis()
+    a = _mk_store(monkeypatch, fake)
+    monkeypatch.setattr(a, "_gcs_count", lambda key: 0)
+    assert a._next_seq_name("o:s") == "000000001"
+    assert a._next_seq_name("o:s") == "000000002"
+    b = _mk_store(monkeypatch, fake)                    # "重启后的新进程"
+    assert b._next_seq_name("o:s") == "000000003"       # 旧实现这里会回到 1 → 覆盖
+
+
+def test_seq_aligns_to_legacy_gcs_history(monkeypatch):
+    """计数器是新的、但 GCS 已有老代码写的 5 个对象 → 对齐到 6,首写不覆盖。"""
+    st = _mk_store(monkeypatch, _FakeSeqRedis())
+    monkeypatch.setattr(st, "_gcs_count", lambda key: 5)
+    assert st._next_seq_name("o:s") == "000000006"
+    assert st._next_seq_name("o:s") == "000000007"      # 之后正常递增
+
+
+def test_seq_fallback_never_reuses_names(monkeypatch):
+    """Redis 不可用 → 时间戳命名:排在 9 位数字之后,且两次调用不同名(绝不覆盖)。"""
+    st = _mk_store(monkeypatch, _FakeSeqRedis(fail=True))
+    n1, n2 = st._next_seq_name("o:s"), st._next_seq_name("o:s")
+    assert n1.startswith("t") and n2.startswith("t") and n1 != n2
+    assert n1 > "999999999"                             # 字典序在所有数字名之后
