@@ -350,3 +350,16 @@ def test_price_table_covers_35flash():
     s = u.summarize({"gemini-3.5-flash": {"in": 1_000_000, "out": 100_000,
                                           "total": 1_100_000, "calls": 2}})
     assert abs(s["cost_usd"] - (1.50 + 0.90)) < 1e-9      # $1.5/M in + $9/M out
+
+
+# ── U1-T2:查询桥 —— 词表进 prompt + 护栏 ───────────────────
+def test_loop_system_contains_category_vocab_and_guards():
+    from pipeline.taxonomy_seed import CATEGORIES
+    s = ld._LOOP_SYSTEM
+    assert "大类词表" in s
+    for c in ("skydiving", "cooking & food", "winter sports"):
+        assert c in s                                      # 词表真的注入了
+    assert str(len(CATEGORIES)) in s                       # 数量与 seed 同步
+    assert "不许下「没有」的结论" in s                      # 存在性护栏
+    assert "COUNT(DISTINCT video_id)" in s                 # 去重护栏
+    assert "%skiing%/%snowboarding%" not in s              # 诱发重复计数的旧示例已移除

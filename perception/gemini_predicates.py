@@ -14,11 +14,21 @@
 
 import os
 import json
+import sys
 import time
 import psycopg2
 import vertexai
 from vertexai.generative_models import GenerativeModel, Part
 from pydantic import BaseModel, ValidationError
+
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except (AttributeError, OSError):
+    pass
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from pipeline.taxonomy import main_categories_for, normalize_category   # noqa: E402
+from pipeline.taxonomy_seed import CATEGORIES                           # noqa: E402
 
 # ── 配置(从环境变量读取,默认占位符)──────────────────────────────────────────
 PROJECT_ID  = os.environ.get("GCP_PROJECT", "your-gcp-project-id")
@@ -51,29 +61,43 @@ class Activity(BaseModel):
     end_ts:     float = 0.0   # 片段结束秒
 
 
-# ── Gemini 调用(开放式,每视频 1 次)──────────────────────────────────────────
-def analyze_video(model: GenerativeModel, gcs_uri: str) -> list[Activity] | None:
-    """让 Gemini 列出视频里【实际存在】的活动。Gemini 直接读 GCS,无需下载。"""
-    video_part = Part.from_uri(uri=gcs_uri, mime_type="video/mp4")
+class Extraction(BaseModel):
+    """入库标准(ingest-category-standard)后的抽取信封:细活动照旧开放式,
+    外加一个【从受控词表选】的 main_category(选不出/词表外 → 空,回退谓词映射推导)。"""
+    main_category: str = ""
+    activities: list[Activity] = []
 
-    prompt = """You are a video analysis expert. Watch the video and list the distinct human activities/actions that are ACTUALLY present.
 
-For each activity provide:
+# ── Gemini 调用(开放式细活动 + 受控主类,每视频 1 次)───────────────────────────
+def _build_prompt() -> str:
+    vocab = ", ".join(f'"{c}"' for c in CATEGORIES)
+    return f"""You are a video analysis expert. Watch the video and do TWO things.
+
+1. "main_category": pick exactly ONE label from this CONTROLLED list that best describes the video overall (do NOT invent new labels; if truly none fits, use ""):
+[{vocab}]
+
+2. "activities": list the distinct human activities/actions ACTUALLY present (the 3-8 most salient). For each provide:
 - "activity": a short lowercase label, ActivityNet-style (e.g. "skiing", "cooking on grill", "playing basketball", "applying makeup", "walking dog")
 - "confidence": 0.0 to 1.0
-- "start_ts": start time in seconds
-- "end_ts": end time in seconds
+- "start_ts" / "end_ts": segment time in seconds
 - "rationale": one sentence explaining the detection
 
-List only activities truly present (the 3-8 most salient). Respond ONLY with a valid JSON array (no markdown, no extra text):
-[
-  {"activity": "...", "confidence": 0.0, "start_ts": 0.0, "end_ts": 0.0, "rationale": "..."}
-]"""
+Respond ONLY with a valid JSON object (no markdown, no extra text):
+{{"main_category": "...", "activities": [{{"activity": "...", "confidence": 0.0, "start_ts": 0.0, "end_ts": 0.0, "rationale": "..."}}]}}"""
+
+
+PROMPT = _build_prompt()
+
+
+def analyze_video(model: GenerativeModel, gcs_uri: str) -> Extraction | None:
+    """让 Gemini 列出视频里【实际存在】的活动 + 从受控词表选主类。直接读 GCS,无需下载。
+    兼容旧输出:返回裸数组(无 main_category)也能解析(回退谓词映射推导主类)。"""
+    video_part = Part.from_uri(uri=gcs_uri, mime_type="video/mp4")
 
     for attempt in range(RETRY_LIMIT + 1):
         try:
             response = model.generate_content(
-                [video_part, prompt],
+                [video_part, PROMPT],
                 generation_config={"temperature": 0.1, "max_output_tokens": 4096,
                                    "response_mime_type": "application/json"},
             )
@@ -87,9 +111,11 @@ List only activities truly present (the 3-8 most salient). Respond ONLY with a v
             raw = raw.strip()
 
             data = json.loads(raw)
-            if not isinstance(data, list):
-                raise ValueError("expected a JSON array")
-            return [Activity(**a) for a in data]
+            if isinstance(data, list):                       # 旧格式:裸活动数组
+                return Extraction(activities=[Activity(**a) for a in data])
+            if not isinstance(data, dict):
+                raise ValueError("expected a JSON object or array")
+            return Extraction.model_validate(data)
 
         except (json.JSONDecodeError, ValidationError, KeyError, ValueError) as e:
             print(f"      [解析失败 attempt {attempt+1}] {e}")
@@ -120,6 +146,24 @@ def save_result(cur, video_id: str, act: Activity):
         act.start_ts,
         act.end_ts,
     ))
+
+
+def save_category(cur, video_id: str, ext: Extraction) -> list[str]:
+    """入库标准:每视频写大类行(predicate=受控大类)。优先用模型从词表选的
+    main_category(过 normalize 校验,词表外一律不写);选不出 → 回退细谓词映射
+    多数决(main_categories_for)。返回实际写入的大类(可能为空 → 调用方打日志)。"""
+    cats = []
+    picked = normalize_category(ext.main_category)
+    if picked:
+        cats = [picked]
+        rationale = "category: selected from controlled vocab by extractor"
+    else:
+        cats = main_categories_for([a.activity.strip().lower() for a in ext.activities])
+        rationale = "category: derived from predicates: " + \
+            ", ".join(sorted(a.activity.strip().lower() for a in ext.activities)[:8])
+    for c in cats:
+        cur.execute(INSERT_SQL, (video_id, c, True, 1.0, rationale, None, None))
+    return cats
 
 
 # ── 主流程 ────────────────────────────────────────────────────────────────────
@@ -153,19 +197,26 @@ def main():
 
     for i, (video_id, gcs_uri) in enumerate(videos, 1):
         print(f"[{i}/{len(videos)}] {video_id}")
-        activities = analyze_video(model, gcs_uri)
+        ext = analyze_video(model, gcs_uri)
 
-        if activities is None:
+        if ext is None:
             total_failed += 1
             print("  FAILED\n")
             continue
 
-        try:
-            for act in activities:
+        def _write_all():
+            n = 0
+            for act in ext.activities:
                 save_result(cur, video_id, act)
-                total_written += 1
+                n += 1
                 print(f"  + {act.activity:<24} conf={act.confidence:.2f}  "
                       f"{act.start_ts:.0f}-{act.end_ts:.0f}s")
+            cats = save_category(cur, video_id, ext)          # 入库标准:大类行(恰1,回退≤2)
+            print(f"  ★ 大类: {', '.join(cats) if cats else '(推不出,待补)'}")
+            return n
+
+        try:
+            total_written += _write_all()
             conn.commit()
         except psycopg2.OperationalError as e:
             print(f"  [DB 掉线,重连重写] {str(e).strip()[:50]}")
@@ -173,8 +224,7 @@ def main():
             except Exception: pass
             conn = psycopg2.connect(**DB_CONFIG); conn.autocommit = False; cur = conn.cursor()
             try:
-                for act in activities:
-                    save_result(cur, video_id, act)
+                total_written += _write_all()
                 conn.commit()
             except Exception as e2:
                 print(f"  [重写仍失败] {e2}"); total_failed += 1
