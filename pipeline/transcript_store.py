@@ -14,6 +14,7 @@ import hashlib
 import json
 import logging
 import os
+import time
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from typing import Any, Callable
@@ -92,7 +93,31 @@ class RedisGcsTranscriptStore(BaseTranscriptStore):
         self._r = build_redis_client()
         self._hot = hot_window
         self._ttl = ttl if ttl is not None else getattr(config, "SESSION_TTL_SECONDS", 86400)
-        self._seq: dict[str, int] = defaultdict(int)
+
+    # ── 耐久层对象名的序号(U4-D2 修复)────────────────────────────
+    # 旧实现是【进程内】计数器:实例重启/扩副本后从 1 重数 → 同名覆盖最早的 GCS 事件,
+    # 耐久历史被静默腐蚀。改为 Redis INCR(跨进程/重启单调);该 key【刻意不设 TTL】——
+    # 它只是个小整数,过期反而会让序号回卷再次覆盖。Redis 不可用时退化为时间戳命名
+    # ('t'+纳秒,字典序排在 9 位数字之后)→ 顺序仍近似正确,且【任何情况下绝不复用旧名】。
+    def _next_seq_name(self, key: str) -> str:
+        try:
+            seq = int(self._r.incr(f"vs:txseq:{key}"))
+            if seq == 1:                              # 计数器是新的,但会话可能已有旧命名的 GCS 历史
+                existing = self._gcs_count(key)       #   (老代码写下的)→ 对齐到其后,防首写覆盖
+                if existing:
+                    seq = existing + 1
+                    self._r.set(f"vs:txseq:{key}", seq)
+            return f"{seq:09d}"
+        except Exception:
+            return f"t{time.time_ns()}"
+
+    def _gcs_count(self, key: str) -> int:
+        try:
+            from google.cloud import storage
+            bkt = storage.Client(project=config.GCP_PROJECT).bucket(config.GCS_BUCKET)
+            return sum(1 for _ in bkt.list_blobs(prefix=f"transcripts/{key.replace(':', '/')}/"))
+        except Exception:
+            return 0
 
     def append(self, key, line):
         blob = json.dumps(line, ensure_ascii=False, default=str)
@@ -104,9 +129,8 @@ class RedisGcsTranscriptStore(BaseTranscriptStore):
             log.warning("transcript 热尾 append 失败(fail-open): %r", e)
         try:                                          # 耐久(best-effort,一事件一对象)
             from google.cloud import storage
-            self._seq[key] += 1
             bkt = storage.Client(project=config.GCP_PROJECT).bucket(config.GCS_BUCKET)
-            path = f"transcripts/{key.replace(':', '/')}/{self._seq[key]:09d}.json"
+            path = f"transcripts/{key.replace(':', '/')}/{self._next_seq_name(key)}.json"
             bkt.blob(path).upload_from_string(blob, content_type="application/json")
         except Exception as e:
             log.warning("transcript 耐久 GCS 失败(fail-open): %r", e)
