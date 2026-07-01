@@ -52,6 +52,11 @@ CRITIC_MODEL  = os.environ.get("CRITIC_MODEL", "gemini-2.5-flash")
 # 后端由 loop_driver.make_conversation 按模型代际自动选。回滚:LOOP_MODEL=gemini-2.5-flash(旧 SDK 路径)。
 LOOP_MODEL         = os.environ.get("LOOP_MODEL", "gemini-3.5-flash")
 GENAI_LOCATION     = os.environ.get("GENAI_LOCATION", "global")     # genai 后端端点(3.x 需 global)
+
+# U6:联网搜索工具(Gemini Google-Search grounding;spike 已验)。
+#   USE_WEB_SEARCH=0 → 工具从大脑的声明里消失(零残留);模型用 2.5-flash(grounding 够用且比 3.5 省 ~9x)。
+USE_WEB_SEARCH   = os.environ.get("USE_WEB_SEARCH", "1").lower() in ("1", "true", "yes")
+WEB_SEARCH_MODEL = os.environ.get("WEB_SEARCH_MODEL", "gemini-2.5-flash")
 MAX_LOOP_STEPS     = int(os.environ.get("MAX_LOOP_STEPS", "16"))    # 终止护栏:防死循环
 LOOP_REPEAT_LIMIT  = int(os.environ.get("LOOP_REPEAT_LIMIT", "2"))  # 同一(工具,参数)连续失败上限
 
