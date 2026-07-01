@@ -30,7 +30,7 @@ from vertexai.generative_models import GenerativeModel, Part
 from perception.skydive_schema import (
     JUMP_TYPES, SKYDIVE_PHASES, SkydiveExtraction,
     create_table_sql, insert_sql, row_values, to_row,
-    video_facts_upsert_sql, video_facts_values,
+    video_facts_upsert_sql, video_facts_values, video_facts_predicates,
 )
 
 PROJECT_ID = os.environ.get("GCP_PROJECT", "your-gcp-project-id")
@@ -117,7 +117,8 @@ def _try_video_facts(conn, cur, vf_ins, video_id, row) -> None:
     """写一条可检索的 video_facts(独立提交,非致命):失败就回滚这步并跳过,
     绝不拖累已落库的 skydive_segments(也防缺约束等问题把整个 ingest 跑崩)。"""
     try:
-        cur.execute(vf_ins, video_facts_values(video_id, row))
+        for pred in video_facts_predicates(row):     # 总写 "skydiving",wingsuit 再加一条
+            cur.execute(vf_ins, video_facts_values(video_id, row, pred))
         conn.commit()
     except Exception as e:
         try:
