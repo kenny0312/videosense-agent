@@ -211,6 +211,7 @@ def run_loop(user_query: str, conversation, execute: Callable, *,
 
 # ── 真实适配器(live;M2 spike 已验)──────────────
 class GeminiConversation:
+    """旧 vertexai SDK 后端(gemini-2.x 及以下)。U5 后仅作回滚路径:LOOP_MODEL 退回 2.5 即走这里。"""
     def __init__(self, model_name: str, declarations: list[dict], system: str):
         from vertexai.generative_models import FunctionDeclaration, GenerativeModel, Tool
         tool = Tool(function_declarations=[FunctionDeclaration(**d) for d in declarations])
@@ -240,6 +241,68 @@ class GeminiConversation:
             elif getattr(p, "text", ""):
                 texts.append(p.text)
         return calls, ("".join(texts) if texts else None)
+
+
+# ── U5:google-genai 后端(gemini-3.x 起【只】在新 SDK + global 端点可用;spike 已验函数调用往返)──
+_GENAI_CLIENT = None
+_GENAI_CLIENT_LOCK = threading.Lock()
+
+
+def _genai_client():
+    global _GENAI_CLIENT
+    if _GENAI_CLIENT is None:                       # 双检锁:与 analyze_cache._redis 同款
+        with _GENAI_CLIENT_LOCK:
+            if _GENAI_CLIENT is None:
+                from google import genai
+                _GENAI_CLIENT = genai.Client(vertexai=True, project=config.GCP_PROJECT,
+                                             location=config.GENAI_LOCATION)
+    return _GENAI_CLIENT
+
+
+class GenAIConversation:
+    """google-genai 后端;接口与 GeminiConversation 完全一致(send(msg)->(calls,text))。
+    声明沿用原生 dict(spike 验过 genai 接受);usage_metadata 字段名与旧 SDK 相同,add_usage 直用。"""
+    def __init__(self, model_name: str, declarations: list[dict], system: str):
+        from google.genai import types
+        self._types = types
+        cfg = types.GenerateContentConfig(
+            temperature=0.0, system_instruction=system,
+            tools=[types.Tool(function_declarations=declarations)])
+        self._chat = _genai_client().chats.create(model=model_name, config=cfg)
+        self._model_name = model_name
+        self.tokens = 0
+
+    def send(self, msg):
+        from pipeline import usage
+        t = self._types
+        payload = msg if isinstance(msg, str) else [
+            t.Part.from_function_response(name=n, response=r) for n, r in msg]
+        resp = self._chat.send_message(payload)
+        try:
+            self.tokens += resp.usage_metadata.total_token_count
+            usage.add_usage(resp, self._model_name)
+        except Exception:
+            pass
+        cand = resp.candidates[0] if resp.candidates else None
+        parts = (cand.content.parts or []) if (cand and cand.content) else []
+        calls, texts = [], []
+        for p in parts:
+            fc = getattr(p, "function_call", None)
+            if fc and fc.name:
+                args = _to_py(dict(fc.args))
+                uses = [args.pop(h) for h in UPSTREAM_HANDLES.get(fc.name, []) if h in args]
+                calls.append(Call(fc.name, args, uses))
+            elif getattr(p, "text", ""):
+                texts.append(p.text)
+        return calls, ("".join(texts) if texts else None)
+
+
+def make_conversation(model_name: str, declarations: list[dict], system: str):
+    """按模型代际选后端:gemini-1.x/2.x → 旧 vertexai SDK(不动);其余(3.x 起)→ google-genai。
+    回滚 = LOOP_MODEL 环境变量退回 gemini-2.5-flash,自动回到旧路径,零代码改动。"""
+    if (model_name or "").startswith(("gemini-1", "gemini-2")):
+        return GeminiConversation(model_name, declarations, system)
+    return GenAIConversation(model_name, declarations, system)
 
 
 def make_self_check_critic():
@@ -358,8 +421,11 @@ _LOOP_SYSTEM = (
     "- 若回放里【找不到】能对上的那一条(或根本没有上文),就用纯文本反问让用户说具体些"
     "(指哪一条 / 哪个视频),【不要瞎猜、不要随便挑一条】。\n"
     "- 收口作答时,凡涉及具体视频/结果的,要指认具体、但用【用户能看懂的方式】指认:说「第 N 个」"
-    "(前端就按 1..N 编号)+ 一句内容特征(如「第 2 个,橙色跳伞服出舱那个」),别只说「那个」;"
-    "【原始视频 id(长串数字/文件名)绝不写进答案文本】—— id 是内部句柄,只经 show_* 侧信道给前端。\n\n"
+    "(前端就按 1..N 编号)+ 一句内容特征(如「第 2 个,橙色跳伞服出舱那个」),别只说「那个」。\n"
+    "- 【原始视频 id 绝不出现在答案文本的任何位置】—— 长串数字 id、GX 开头文件名、v_ 开头串,"
+    "不管放正文、列表项、标题、括号还是反引号里都不行;id 是内部句柄,只在【工具参数】里用,"
+    "只经 show_* 侧信道给前端。反例:「第 2 个视频(`803174656_…`)」【错】;"
+    "正例:「第 2 个,橙色跳伞服出舱那个」【对】。\n\n"
     "# 关键数据说明\n"
     "- video_facts.predicate 是英文活动描述,用 ILIKE 模糊匹配(中文先译英:滑雪→%skiing%/%snowboarding%)。\n"
     "- video_facts.matched 是布尔;查已确认事实加 AND matched = true。\n"
@@ -434,8 +500,8 @@ def run_query_loop(nl: str, *, schema: dict, replay_context: "str | None", sandb
     """orchestrator 的 loop 入口:建会话 + 执行器 → run_loop → 收产物(纯 handle,无合成 DAG)。
     replay_context(M5)= 从 transcript 回放出的多轮上下文(取代旧 recipe 块)。
     on_step(M6b)= 每步回调,供 SSE 流式。runtime_facts(U3)= 运行时状态注入节(自我认知)。"""
-    conv = GeminiConversation(config.LOOP_MODEL, loop_function_declarations(),
-                              _loop_system(schema, replay_context, runtime_facts))
+    conv = make_conversation(config.LOOP_MODEL, loop_function_declarations(),
+                             _loop_system(schema, replay_context, runtime_facts))
     execute = _make_executor(sandbox, trace, schema, session_id)
     critic = make_self_check_critic() if config.USE_SELF_CHECK_CRITIC else None   # 自检 B:opt-in
     r = run_loop(nl, conv, execute, on_step=on_step, critic=critic)

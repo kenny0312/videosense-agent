@@ -26,6 +26,7 @@ _LOCK = threading.Lock()
 _PRICE = {
     "gemini-2.5-pro":   {"in": 1.25, "out": 10.0},
     "gemini-2.5-flash": {"in": 0.30, "out": 2.50},
+    "gemini-3.5-flash": {"in": 1.50, "out": 9.00},   # U5:global 端点价(非 global 1.65/9.90)
 }
 
 
