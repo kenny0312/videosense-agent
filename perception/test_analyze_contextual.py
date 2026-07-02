@@ -117,33 +117,39 @@ def test_missing_answer_fails_open():
     assert r.enough == "no"
 
 
-# ── M4.5:time_range 硬裁剪(给 Gemini 的 Part 真的带上 start/end 偏移)────────
+# ── M4.5/P1:time_range 硬裁剪(genai 的 Part 真带上 VideoMetadata 偏移)────────
 def test_gemini_generate_clips_time_range():
     import importlib.util
-    if importlib.util.find_spec("vertexai") is None:
-        return                                              # 无 vertexai(部分 CI)→ 跳过
+    if importlib.util.find_spec("google.genai") is None:
+        return                                              # 无 google-genai(部分 CI)→ 跳过
     import perception.analyze_video_contextual as avc
+    from pipeline import genai_client
     captured = {}
 
     class _Resp:
         text = '{"answer":"x","enough":"yes"}'
+        usage_metadata = None
 
-    class _Model:
-        def generate_content(self, parts, **kw):
-            captured["parts"] = parts
+    class _Models:
+        def generate_content(self, *, model, contents, config):
+            captured["contents"] = contents
             return _Resp()
 
-    saved = avc._get_model
-    avc._get_model = lambda name: _Model()
+    class _Client:
+        models = _Models()
+
+    saved = genai_client._CLIENT
+    genai_client._CLIENT = _Client()
     try:
         avc._gemini_generate("gs://b/v.mp4", "p", time_range=(12, 45))
-        vm = captured["parts"][0]._raw_part.video_metadata
-        assert vm.start_offset.seconds == 12 and vm.end_offset.seconds == 45
-        avc._gemini_generate("gs://b/v.mp4", "p")           # 不给 → 不设偏移(默认 0)
-        vm2 = captured["parts"][0]._raw_part.video_metadata
-        assert vm2.start_offset.seconds == 0 and vm2.end_offset.seconds == 0
+        vm = captured["contents"][0].video_metadata
+        assert str(vm.start_offset) in ("12s",) and str(vm.end_offset) in ("45s",)
+        assert captured["contents"][0].file_data.mime_type == "video/mp4"
+        avc._gemini_generate("gs://b/v.MOV", "p")           # 不给 → 无裁剪;mime 跟扩展名
+        assert captured["contents"][0].video_metadata is None
+        assert captured["contents"][0].file_data.mime_type == "video/quicktime"
     finally:
-        avc._get_model = saved
+        genai_client._CLIENT = saved
 
 
 def main() -> int:

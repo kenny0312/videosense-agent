@@ -16,7 +16,6 @@ from __future__ import annotations
 import contextvars
 import json
 import os
-import threading
 from typing import Callable, Literal
 
 from pydantic import BaseModel, field_validator
@@ -134,44 +133,30 @@ def _parse(raw: str) -> AnalyzeResult:
     return AnalyzeResult.model_validate(data)
 
 
-# ── 真实 Gemini 调用(惰性 import;离线测试不会走到这里)───────────
-_MODELS: dict = {}                              # 按模型名缓存(flash / pro 各建一次)
-_MODEL_LOCK = threading.Lock()                  # M4.3:并行下首建模型(vertexai.init)需互斥
-
-
-def _get_model(name: str):
-    m = _MODELS.get(name)
-    if m is not None:                           # 已建好:无锁快路
-        return m
-    with _MODEL_LOCK:                           # 首建:互斥 + 双检,防并行 worker 重复 init
-        if name not in _MODELS:
-            import vertexai
-            from vertexai.generative_models import GenerativeModel
-            vertexai.init(project=os.environ.get("GCP_PROJECT"),
-                          location=os.environ.get("GCP_REGION", "us-central1"))
-            _MODELS[name] = GenerativeModel(name)
-    return _MODELS[name]
-
-
+# ── 真实 Gemini 调用(P1 起走 google-genai;惰性 import,离线测试不会走到这里)───────────
 def _gemini_generate(gcs_uri: str, prompt: str, time_range=None) -> str:
-    from vertexai.generative_models import Part
+    """P1:旧 vertexai SDK 已过官方移除期限,运行时路径迁 google-genai(共享 genai_client 单例,
+    global 端点)。M4.5 的硬裁剪不再走 _raw_part proto hack —— genai 的 VideoMetadata 原生支持
+    start/end offset(行为等价,真视频回归验过 token 数)。"""
+    from google.genai import types
     from pipeline import usage
+    from pipeline.genai_client import get_client
     name = MODEL_OVERRIDE.get() or PERCEPTION_MODEL   # 本请求选了 Pro 就用 pro,否则默认 flash
     low = gcs_uri.lower()                              # mime 跟扩展名走(上传的 .mov/.webm 别被当 mp4)
     mime = ("video/quicktime" if low.endswith(".mov")
             else "video/webm" if low.endswith(".webm") else "video/mp4")
-    video = Part.from_uri(uri=gcs_uri, mime_type=mime)
+    vm = None
     if time_range:                                    # M4.5:硬裁剪 —— Gemini 只处理 [起,止] 秒这一段
-        from google.protobuf import duration_pb2
         start, end = float(time_range[0]), float(time_range[1])
-        vm = video._raw_part.video_metadata           # vertexai 1.149 无高层裁剪参数,走底层 proto(已 spike 验)
-        vm.start_offset = duration_pb2.Duration(seconds=int(start))
-        vm.end_offset = duration_pb2.Duration(seconds=int(end))
-    resp = _get_model(name).generate_content(
-        [video, prompt],
-        generation_config={"temperature": 0.2, "max_output_tokens": 2048,
-                           "response_mime_type": "application/json"})
-    usage.add_usage(resp, name)          # M4.1:补上视频分析的 token 上报(原先漏算 → 成本不计)
+        vm = types.VideoMetadata(start_offset=f"{int(start)}s", end_offset=f"{int(end)}s")
+    video = types.Part(file_data=types.FileData(file_uri=gcs_uri, mime_type=mime),
+                       video_metadata=vm)
+    resp = get_client().models.generate_content(
+        model=name,
+        contents=[video, prompt],
+        config=types.GenerateContentConfig(temperature=0.2, max_output_tokens=2048,
+                                           response_mime_type="application/json"))
+    usage.add_usage(resp, name)          # M4.1:视频分析 token 上报(genai 字段名相同)
     return resp.text
 
 
