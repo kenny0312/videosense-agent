@@ -219,6 +219,32 @@ def run_loop(user_query: str, conversation, execute: Callable, *,
     return LoopResult(None, max_steps, "max_steps", trace, ledger, llm_calls, step_walls)
 
 
+# ── 瞬时错误重试(429/503/超时等)——一次抖动不该让整轮硬崩成 error 卡片 ──
+# (Pandora 对照测暴露:并发压测下偶发 API 抖动 → 用户看到崩溃。chat.send_message 失败时
+#  不追加历史,重发同一 payload 安全。仅重试【瞬时】类,确定性错误(400)立即上抛。)
+_TRANSIENT_CODES = {429, 500, 502, 503, 504}
+
+
+def _is_transient(e: Exception) -> bool:
+    code = getattr(e, "code", None) or getattr(getattr(e, "response", None), "status_code", None)
+    if code in _TRANSIENT_CODES:
+        return True
+    name = type(e).__name__.lower()
+    return any(k in name for k in ("servererror", "resourceexhausted", "unavailable",
+                                   "deadline", "timeout", "connectionerror", "serviceunavailable"))
+
+
+def _send_with_retry(send_fn, attempts: int = 3):
+    for i in range(attempts):
+        try:
+            return send_fn()
+        except Exception as e:
+            if i == attempts - 1 or not _is_transient(e):
+                raise
+            log.warning("loop send 瞬时错误,退避重试 %d/%d: %r", i + 1, attempts - 1, e)
+            time.sleep(0.8 * (2 ** i))               # 0.8s, 1.6s
+
+
 # ── 真实适配器(live;M2 spike 已验)──────────────
 class GeminiConversation:
     """旧 vertexai SDK 后端(gemini-2.x 及以下)。U5 后仅作回滚路径:LOOP_MODEL 退回 2.5 即走这里。"""
@@ -235,7 +261,8 @@ class GeminiConversation:
         from pipeline import usage
         payload = msg if isinstance(msg, str) else [
             Part.from_function_response(name=n, response=r) for n, r in msg]
-        resp = self._chat.send_message(payload, generation_config={"temperature": 0.0})
+        resp = _send_with_retry(lambda: self._chat.send_message(
+            payload, generation_config={"temperature": 0.0}))
         try:
             self.tokens += resp.usage_metadata.total_token_count
             usage.add_usage(resp, self._model_name)        # loop 的 token 也记进 usage(审计 + 前端监控,之前漏了)
@@ -273,7 +300,7 @@ class GenAIConversation:
         t = self._types
         payload = msg if isinstance(msg, str) else [
             t.Part.from_function_response(name=n, response=r) for n, r in msg]
-        resp = self._chat.send_message(payload)
+        resp = _send_with_retry(lambda: self._chat.send_message(payload))
         try:
             self.tokens += resp.usage_metadata.total_token_count
             usage.add_usage(resp, self._model_name)
