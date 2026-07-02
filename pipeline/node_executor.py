@@ -408,10 +408,21 @@ def _run_web_search(node: Node) -> NodeResult:
     return NodeResult(node.id, node.tool, ok=True, value=value)
 
 
+def _run_update_memory(node: Node, owner: str) -> NodeResult:
+    """L2:写跨会话用户记忆(判据在工具声明里从严;后端见 pipeline/user_memory)。"""
+    from pipeline import config as _cfg, user_memory
+    if not _cfg.USE_USER_MEMORY:
+        raise ValueError("update_memory 未开启(USE_USER_MEMORY=0)")
+    new_text = user_memory.update(owner, str(node.inputs.get("text") or ""),
+                                  str(node.inputs.get("mode") or "append"))
+    return NodeResult(node.id, node.tool, ok=True,
+                      value={"note": "已写入用户记忆(跨会话生效)", "memory": new_text[-400:]})
+
+
 def execute_node(node: Node, upstream: dict[str, Any],
                  sandbox: SandboxClient, trace: Trace,
                  schema: dict | None = None,
-                 *, session_id: str | None = None) -> NodeResult:
+                 *, session_id: str | None = None, owner: str = "anon") -> NodeResult:
     # sql_query:自管 trace + 自愈(对称 _run_sandbox_node)
     if node.tool == "sql_query":
         return _run_sql_query(node, schema or {}, trace)
@@ -430,6 +441,8 @@ def execute_node(node: Node, upstream: dict[str, Any],
                 res = _run_analyze_video(node, upstream)
             elif node.tool == "web_search":
                 res = _run_web_search(node)
+            elif node.tool == "update_memory":
+                res = _run_update_memory(node, owner)
             else:
                 raise ValueError(f"未知数据工具: {node.tool}")
             step.ok(rows=len(res.videos) if res.videos else

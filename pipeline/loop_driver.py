@@ -50,6 +50,8 @@ def loop_function_declarations() -> list[dict]:
     for d in build_function_declarations():
         if d["name"] == "web_search" and not config.USE_WEB_SEARCH:
             continue
+        if d["name"] == "update_memory" and not config.USE_USER_MEMORY:
+            continue
         d = copy.deepcopy(d)
         handles = UPSTREAM_HANDLES.get(d["name"], [])
         if handles:
@@ -323,7 +325,7 @@ def make_self_check_critic():
     return critic
 
 
-def _make_executor(sandbox, trace, schema, session_id) -> Callable:
+def _make_executor(sandbox, trace, schema, session_id, owner: str = "anon") -> Callable:
     quota = {"analyzed": 0}                               # 配额:本请求 analyze_video 调用计数
     quota_lock = threading.Lock()                         # M4.3:并行 analyze 组下保护 quota 读-改-写(串行也无害)
 
@@ -346,7 +348,7 @@ def _make_executor(sandbox, trace, schema, session_id) -> Callable:
                         return ExecResult(ok=True, value={"answer": note, "enough": "no"}, preview=pv, n=n)
                     quota["analyzed"] += 1
         nr = execute_node(node, upstream, sandbox, trace, schema=schema,
-                          session_id=session_id)
+                          session_id=session_id, owner=owner)
         # #2 修:analyze_video 的结论+理由都在 answer 里;默认 80 字/格会把理由砍掉,大脑收口时
         # 只看到前 80 字 → 答案干瘪。给它大额度预览,完整证据进得了最终答案(其余工具仍用小预览省 token)。
         # U6 review 修:web_search 同理 —— 综述+来源被砍到 80 字会逼大脑拿自身知识脑补"搜索结果"
@@ -486,13 +488,14 @@ def _loop_system(schema: dict, replay_context: "str | None",
 
 def run_query_loop(nl: str, *, schema: dict, replay_context: "str | None", sandbox, trace,
                    session_id: "str | None", on_step=None,
-                   runtime_facts: "str | None" = None) -> LoopOutcome:
+                   runtime_facts: "str | None" = None, owner: str = "anon") -> LoopOutcome:
     """orchestrator 的 loop 入口:建会话 + 执行器 → run_loop → 收产物(纯 handle,无合成 DAG)。
     replay_context(M5)= 从 transcript 回放出的多轮上下文(取代旧 recipe 块)。
-    on_step(M6b)= 每步回调,供 SSE 流式。runtime_facts(U3)= 运行时状态注入节(自我认知)。"""
+    on_step(M6b)= 每步回调,供 SSE 流式。runtime_facts(U3)= 运行时状态注入节(自我认知)。
+    owner(L2)= 认证身份,供 update_memory 等按 owner 作用域的工具。"""
     conv = make_conversation(config.LOOP_MODEL, loop_function_declarations(),
                              _loop_system(schema, replay_context, runtime_facts))
-    execute = _make_executor(sandbox, trace, schema, session_id)
+    execute = _make_executor(sandbox, trace, schema, session_id, owner=owner)
     critic = make_self_check_critic() if config.USE_SELF_CHECK_CRITIC else None   # 自检 B:opt-in
     r = run_loop(nl, conv, execute, on_step=on_step, critic=critic)
     # L1 机械兜底:答案里的裸 id 清洗(能映射「第N个」就换,不能就删);命中数进指标 →

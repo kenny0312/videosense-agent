@@ -142,6 +142,24 @@ SPECS: dict[str, NodeSpec] = {
             ["query"],
         ),
     ),
+    "update_memory": NodeSpec(
+        tool="update_memory",
+        needs_sandbox=False,
+        planner_desc=(
+            "【记住用户偏好】(跨会话生效):把关于【用户本人】的偏好/明确要求写进用户记忆"
+            "(下轮起注入你的上下文)。判据【从严】:只在用户【明确表达】长期偏好或纠正时用 —— "
+            "「以后都…」「我喜欢…」「别再…」「记住…」这类祈使表达;一次性指令、闲聊、你的推测"
+            "【都不写】。inputs.text = 一句话概括该偏好(客观转述,别写敏感信息);"
+            "inputs.mode = append(默认,追加)| rewrite(用户要求清理/改写全部记忆时)。"
+            "写入成功后在答案里告诉用户已记住(以后各会话都生效)。"
+        ),
+        parameters=_obj(
+            {"text": {"type": "string", "description": "要记住的偏好/事实,一句话客观转述"},
+             "mode": {"type": "string", "enum": ["append", "rewrite"],
+                      "description": "append=追加(默认);rewrite=整体重写"}},
+            ["text"],
+        ),
+    ),
     # ── 数据科学(沙箱 / CodeGen)────────────────
     "load_sensor_csv": NodeSpec(
         tool="load_sensor_csv",

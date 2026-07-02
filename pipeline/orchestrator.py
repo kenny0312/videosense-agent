@@ -157,10 +157,19 @@ def run_query(nl: str, *, quiet_trace: bool = False,
     # U3 自我认知:把会话累计 usage / 模型档位 / 窗口等真实数字注入 loop(元问题不再拒答/编数)。
     rt_facts = loop_driver.runtime_facts_line(
         getattr(session, "usage_cum", None) if session is not None else None)
+    # L2 用户记忆:跨会话偏好/事实(owner 作用域;无记忆 = 空串不占 token;fail-open)。
+    if config.USE_USER_MEMORY:
+        try:
+            from pipeline import user_memory
+            mem = user_memory.render_section(owner)
+            if mem:
+                rt_facts = rt_facts + "\n\n" + mem
+        except Exception as e:
+            log.warning("用户记忆加载失败(fail-open): %r", e)
     try:
         lo = loop_driver.run_query_loop(nl, schema=schema, replay_context=replay_ctx,
                                         sandbox=sandbox, trace=trace, session_id=sid,
-                                        on_step=on_step, runtime_facts=rt_facts)
+                                        on_step=on_step, runtime_facts=rt_facts, owner=owner)
         lstep.ok(steps=lo.steps, terminated=lo.terminated)
     except Exception as e:
         lstep.fail(error=repr(e))
