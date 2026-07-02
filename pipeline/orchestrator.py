@@ -114,6 +114,9 @@ def run_query(nl: str, *, quiet_trace: bool = False,
                 rt_facts = rt_facts + "\n\n" + mem
         except Exception as e:
             log.warning("用户记忆加载失败(fail-open): %r", e)
+    # 瞬时失败(重试后仍抖 / 未收敛)→ 给【优雅的重试提示】而非原始崩溃卡片。
+    # (Pandora 对照测的镜像教训:别把抖动伪装成"库空"的假结果,也别把它甩成 error;诚实说"这次没成,再试一次"。)
+    _RETRY_MSG = "抱歉,这次没能完成 —— 可能是临时的服务波动。请再发一次,或把问题说得更具体一点。"
     try:
         lo = loop_driver.run_query_loop(nl, schema=schema, replay_context=replay_ctx,
                                         sandbox=sandbox, trace=trace, session_id=sid,
@@ -121,10 +124,12 @@ def run_query(nl: str, *, quiet_trace: bool = False,
         lstep.ok(steps=lo.steps, terminated=lo.terminated)
     except Exception as e:
         lstep.fail(error=repr(e))
-        return _result(False, trace=trace, error=f"loop failed: {e!r}",
+        log.warning("loop 抛错(优雅降级为重试提示): %r", e)
+        return _result(True, trace=trace, status="ok", answer=_RETRY_MSG,
                        session_id=sid, turn_type=ttype)
     if lo.answer is None:
-        return _result(False, trace=trace, error=f"loop 未收敛({lo.terminated})",
+        log.warning("loop 未收敛(%s)→ 重试提示", lo.terminated)
+        return _result(True, trace=trace, status="ok", answer=_RETRY_MSG,
                        session_id=sid, turn_type=ttype)
     # 记忆简化:不再登记 catalog/值仓 —— 唯一记忆 = transcript。推进轮号后把这一轮落 transcript
     # (CC 式耐久记忆;owner 作用域,大本体溢出 GCS)。

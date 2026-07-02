@@ -60,18 +60,20 @@ def _restore_loop(saved):
      loop_memory.build_loop_context, loop_memory.record_loop_turn) = saved
 
 
-def _boom(*a, **k):
-    raise RuntimeError("REACHED_LOOP")
+def _reached(nl, **k):
+    """到达 loop 的哨兵:返回可辨识的 answer(不再靠抛异常 —— 异常现会被优雅降级)。"""
+    return LoopOutcome(answer="__REACHED__", steps=1, terminated="text", final_tool="sql_query",
+                       final_value=[{"x": 1}], preview_value=[{"x": 1}], results={}, trace=[])
 
 
 # ── 有会话:回放建好并透传;turn_type 派生 followup ───────────────
 def test_session_turn_reaches_loop_with_replay():
     s = Session("t")
     m = _stub_mcp()
-    sl, calls = _stub_loop(_boom)
+    sl, calls = _stub_loop(_reached)
     try:
         r = orch.run_query("plot those", session=s)
-        assert r["status"] == "error" and "REACHED_LOOP" in r["error"], r
+        assert r["status"] == "ok" and r["answer"] == "__REACHED__", r
         assert r["turn_type"] == "followup"               # 有回放 → followup(零模型调用派生)
         assert calls["replay"] == 1
         assert calls["passed_ctx"] == _REPLAY_SENTINEL    # 回放【真透传】进 loop
@@ -83,10 +85,10 @@ def test_session_turn_reaches_loop_with_replay():
 def test_first_turn_derives_new():
     s = Session("t")
     m = _stub_mcp()
-    sl, calls = _stub_loop(_boom, replay=None)            # 空会话 → 无回放
+    sl, calls = _stub_loop(_reached, replay=None)         # 空会话 → 无回放
     try:
         r = orch.run_query("你好", session=s)              # 闲聊也进 loop(无前置门)
-        assert r["status"] == "error" and "REACHED_LOOP" in r["error"], r
+        assert r["status"] == "ok" and r["answer"] == "__REACHED__", r
         assert r["turn_type"] == "new"
         assert calls["passed_ctx"] is None
     finally:
@@ -96,10 +98,10 @@ def test_first_turn_derives_new():
 # ── 无 session:向后兼容(不建回放、session_id=None)─────────────
 def test_no_session_backcompat():
     m = _stub_mcp()
-    sl, calls = _stub_loop(_boom)
+    sl, calls = _stub_loop(_reached)
     try:
         r = orch.run_query("how many videos")
-        assert r["status"] == "error" and "REACHED_LOOP" in r["error"], r
+        assert r["status"] == "ok" and r["answer"] == "__REACHED__", r
         assert r["session_id"] is None and r["turn_type"] == "new"
         assert calls["replay"] == 0 and calls["passed_ctx"] is None
     finally:
@@ -111,10 +113,10 @@ def test_context_dependent_shorts_reach_loop():
     m = _stub_mcp()
     for q in ("ok", "我想看"):
         s = Session("t")
-        sl, calls = _stub_loop(_boom)
+        sl, calls = _stub_loop(_reached)
         try:
             r = orch.run_query(q, session=s)
-            assert r["status"] == "error" and "REACHED_LOOP" in r["error"], (q, r)
+            assert r["status"] == "ok" and r["answer"] == "__REACHED__", (q, r)
             assert calls["passed_ctx"] == _REPLAY_SENTINEL
         finally:
             _restore_loop(sl)
@@ -140,6 +142,37 @@ def test_success_turn_advances_and_shapes():
         assert r["status"] == "ok" and r["answer"] == "共 1 条 skiing 视频"
         assert r["session_id"] == "t" and r["turn_type"] == "followup"
         assert s._turn_no == 1                            # 轮号推进(供 record_loop_turn)
+    finally:
+        _restore_loop(sl); orch.mcp_client = m
+
+
+# ── 瞬时失败 → 优雅重试提示(不甩 error 卡片;Pandora 对照测的镜像教训)──
+def test_loop_exception_degrades_to_retry_message():
+    s = Session("t")
+    m = _stub_mcp()
+
+    def boom(*a, **k):
+        raise RuntimeError("transient blip")
+    sl, calls = _stub_loop(boom)
+    try:
+        r = orch.run_query("how many videos", session=s)
+        assert r["status"] == "ok"                        # 不是 error 卡片
+        assert "服务波动" in r["answer"]                   # 优雅重试提示
+    finally:
+        _restore_loop(sl); orch.mcp_client = m
+
+
+def test_loop_nonconvergence_degrades_to_retry_message():
+    s = Session("t")
+    m = _stub_mcp()
+
+    def unconverged(nl, **kw):
+        return LoopOutcome(answer=None, steps=16, terminated="max_steps", final_tool=None,
+                           final_value=None, preview_value=None, results={}, trace=[])
+    sl, calls = _stub_loop(unconverged)
+    try:
+        r = orch.run_query("something hard", session=s)
+        assert r["status"] == "ok" and "服务波动" in r["answer"]   # answer=None → 也给提示,不崩
     finally:
         _restore_loop(sl); orch.mcp_client = m
 

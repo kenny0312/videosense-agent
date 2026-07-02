@@ -305,6 +305,46 @@ def test_self_check_max_critic_caps():
     assert r.answer == "答案2"
 
 
+# ── 瞬时错误重试(Pandora 对照测暴露:一次 API 抖动不该硬崩)──
+def test_send_retry_recovers_from_transient():
+    calls = {"n": 0}
+    class _Transient(Exception):
+        code = 503
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise _Transient("service unavailable")
+        return "ok"
+    import pipeline.loop_driver as m
+    # 免真 sleep
+    _sleep = m.time.sleep; m.time.sleep = lambda s: None
+    try:
+        assert m._send_with_retry(flaky, attempts=3) == "ok" and calls["n"] == 3
+    finally:
+        m.time.sleep = _sleep
+
+
+def test_send_retry_reraises_deterministic():
+    class _Bad(Exception):
+        code = 400
+    def bad():
+        raise _Bad("invalid argument")
+    import pytest
+    import pipeline.loop_driver as m
+    with pytest.raises(_Bad):
+        m._send_with_retry(bad, attempts=3)          # 400 不是瞬时 → 立即上抛,不重试
+
+
+def test_is_transient_classification():
+    from pipeline.loop_driver import _is_transient
+    class E(Exception):
+        def __init__(self, code=None): self.code = code
+    assert _is_transient(E(429)) and _is_transient(E(503))
+    assert not _is_transient(E(400)) and not _is_transient(E(None))
+    assert _is_transient(type("ServerError", (Exception,), {})())         # 按类名
+    assert _is_transient(type("DeadlineExceeded", (Exception,), {})())
+
+
 def test_self_check_critic_exception_failopen():
     def boom(nl, ans):
         raise RuntimeError("critic down")
