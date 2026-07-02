@@ -135,11 +135,17 @@ def _execute(sql: str, params: tuple):
     return []
 
 
+# 相似度弱相关阈:低于此 = 只是"最接近"不是"真相关"(治过度召回 —— 语义搜永不返回空,
+# 库里没有你要的它也会塞几个最近的;必须让大脑看见"这些是弱的、其实没有匹配")。
+WEAK_THRESHOLD = 0.6
+
+
 def search(vec_lit: str, k: int) -> list[dict]:
-    """pgvector 近邻检索 → 行列表(score 降序)。异常上抛,调用方 fail-open。"""
+    """pgvector 近邻检索 → 行列表(score 降序)。每行标 relevance(strong/weak)。异常上抛,调用方 fail-open。"""
     rows = _execute(SEARCH_SQL, (vec_lit, vec_lit, int(k)))
     return [{"n": i + 1, "video_id": r[0], "source": r[1], "snippet": r[2],
              "start_ts": r[3], "end_ts": r[4], "score": round(float(r[5]), 3),
+             "relevance": "strong" if float(r[5]) >= WEAK_THRESHOLD else "weak",
              "label": (r[2] or "")[:40]}
             for i, r in enumerate(rows)]
 

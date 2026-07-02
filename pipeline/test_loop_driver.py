@@ -335,6 +335,17 @@ def test_send_retry_reraises_deterministic():
         m._send_with_retry(bad, attempts=3)          # 400 不是瞬时 → 立即上抛,不重试
 
 
+def test_detect_lang_directive():
+    from pipeline.loop_driver import _detect_lang, runtime_facts_line
+    assert _detect_lang("How many videos are there?") == "en"
+    assert _detect_lang("有几个视频") == "zh"
+    assert _detect_lang("show me v_-02DygXbn6w") == "en"      # 混 id 仍算英文
+    assert _detect_lang("看 v_-02DygXbn6w") == "zh"           # 有中文 → 中文
+    assert _detect_lang("") == ""
+    assert "English" in runtime_facts_line(None, nl="find falling videos")
+    assert "中文" in runtime_facts_line(None, nl="找摔倒的视频")
+
+
 def test_is_transient_classification():
     from pipeline.loop_driver import _is_transient
     class E(Exception):

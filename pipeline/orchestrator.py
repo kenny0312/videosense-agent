@@ -104,7 +104,7 @@ def run_query(nl: str, *, quiet_trace: bool = False,
     lstep = trace.step("Loop")
     # U3 自我认知:把会话累计 usage / 模型档位 / 窗口等真实数字注入 loop(元问题不再拒答/编数)。
     rt_facts = loop_driver.runtime_facts_line(
-        getattr(session, "usage_cum", None) if session is not None else None)
+        getattr(session, "usage_cum", None) if session is not None else None, nl=nl)
     # L2 用户记忆:跨会话偏好/事实(owner 作用域;无记忆 = 空串不占 token;fail-open)。
     if config.USE_USER_MEMORY:
         try:
