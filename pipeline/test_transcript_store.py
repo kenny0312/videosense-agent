@@ -142,19 +142,33 @@ def test_seq_monotonic_across_instances(monkeypatch):
     """两个 store 实例(= 两个进程/一次重启)共享 Redis 计数 → 序号连续,不回卷不覆盖。"""
     fake = _FakeSeqRedis()
     a = _mk_store(monkeypatch, fake)
-    monkeypatch.setattr(a, "_gcs_count", lambda key: 0)
+    monkeypatch.setattr(a, "_gcs_next_seq", lambda key: 1)    # 无旧历史
     assert a._next_seq_name("o:s") == "000000001"
     assert a._next_seq_name("o:s") == "000000002"
     b = _mk_store(monkeypatch, fake)                    # "重启后的新进程"
     assert b._next_seq_name("o:s") == "000000003"       # 旧实现这里会回到 1 → 覆盖
 
 
-def test_seq_aligns_to_legacy_gcs_history(monkeypatch):
-    """计数器是新的、但 GCS 已有老代码写的 5 个对象 → 对齐到 6,首写不覆盖。"""
+def test_seq_aligns_to_legacy_gcs_max_not_count(monkeypatch):
+    """计数器是新的、GCS 已有旧历史(可能带空洞)→ 对齐到【最大旧序号+1】,首写不覆盖。
+    (review 修:按 count 对齐会被空洞骗到复用旧名 —— 如旧名 {1,2,5} count=3 → 下一个写 4、
+    再下一个撞 5;按 max 对齐直接从 6 开始。)"""
     st = _mk_store(monkeypatch, _FakeSeqRedis())
-    monkeypatch.setattr(st, "_gcs_count", lambda key: 5)
+    monkeypatch.setattr(st, "_gcs_next_seq", lambda key: 6)   # 旧历史 max=5(哪怕只有 3 个对象)
     assert st._next_seq_name("o:s") == "000000006"
     assert st._next_seq_name("o:s") == "000000007"      # 之后正常递增
+
+
+def test_seq_probe_failure_never_risks_seq1(monkeypatch):
+    """首用时 GCS 列举失败(探不出旧历史)→ 本次退时间戳名 + 回退计数下次再探,
+    【绝不】冒险用序号 1(可能覆盖探不到的旧历史)。探测恢复后正常对齐。"""
+    fake = _FakeSeqRedis()
+    st = _mk_store(monkeypatch, fake)
+    monkeypatch.setattr(st, "_gcs_next_seq", lambda key: None)   # 探测失败
+    n1 = st._next_seq_name("o:s")
+    assert n1.startswith("t")
+    monkeypatch.setattr(st, "_gcs_next_seq", lambda key: 4)     # 恢复:旧 max=3
+    assert st._next_seq_name("o:s") == "000000004"              # 计数被回退过 → 重新对齐
 
 
 def test_seq_fallback_never_reuses_names(monkeypatch):

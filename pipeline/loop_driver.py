@@ -348,8 +348,10 @@ def _make_executor(sandbox, trace, schema, session_id) -> Callable:
                           session_id=session_id)
         # #2 修:analyze_video 的结论+理由都在 answer 里;默认 80 字/格会把理由砍掉,大脑收口时
         # 只看到前 80 字 → 答案干瘪。给它大额度预览,完整证据进得了最终答案(其余工具仍用小预览省 token)。
-        if name == "analyze_video":
-            pv, n = _preview(nr.value, cell=ANALYZE_PREVIEW_CELL)       # 答案含完整理由
+        # U6 review 修:web_search 同理 —— 综述+来源被砍到 80 字会逼大脑拿自身知识脑补"搜索结果"
+        # (编造引用),必须让它看到完整综述。
+        if name in ("analyze_video", "web_search"):
+            pv, n = _preview(nr.value, cell=ANALYZE_PREVIEW_CELL)       # 答案含完整理由/综述
         elif name == "sql_query":
             pv, n = _preview(nr.value, rows=SQL_PREVIEW_ROWS)           # 列举类:看到更多行,别只看 3 行就编/漏
         else:
