@@ -21,10 +21,6 @@ from typing import Any, TYPE_CHECKING
 from pipeline import config, mcp_client, usage
 from pipeline.dag_schema import DAG
 from pipeline.node_executor import NodeResult
-from pipeline.node_specs import catalog_for_planner
-from pipeline.router import Router, should_refuse, SMALLTALK_REPLY
-from pipeline.skills import loader as skills
-from pipeline.skills.handlers import HANDLERS, smalltalk_reply
 from pipeline.trace import Trace
 from sandbox.client import SandboxClient
 
@@ -77,9 +73,7 @@ def run_query(nl: str, *, quiet_trace: bool = False,
     trace = Trace(quiet=quiet_trace)
     sandbox = SandboxClient()
 
-    resolved_ids: list = []          # 兼容自定义 skill handler 形参;指代解析已下放给 loop
-
-    # ── schema(loop 与 Router 都要;loop-primary 下 loop 仍需 schema)──
+    # ── schema(loop 需要)──
     schema = None
     try:
         schema = mcp_client.get_schema()
@@ -99,58 +93,12 @@ def run_query(nl: str, *, quiet_trace: bool = False,
         except Exception as e:
             log.warning("build_loop_context 失败(fail-open): %r", e)
 
-    # ── 路由层(设计 one-loop-router-demote.md)─────────────────────────────
-    # 默认【单 loop 主路】(USE_ROUTER_GATE=0):不调 Router,loop 带【完整回放】自己判 闲聊/超范围拒/
-    # clarify —— 省每轮一次 flash,且根治"context-blind 前置门把只有结合上文才看得懂的短回复误杀"。
-    # USE_ROUTER_GATE=1:保留旧 Router 终结门(回退开关;PR#48 后 smalltalk/refuse 仅在无回放时终结)。
-    verdict = None
-    route = ""
-    if config.USE_ROUTER_GATE:
-        rstep = trace.step("Route")
-        try:
-            verdict = Router().judge(nl, schema=schema, tools=catalog_for_planner())
-            rstep.ok(decision=verdict.decision, intent=verdict.intent,
-                     route=verdict.route or "-", conf=f"{verdict.confidence:.2f}")
-        except Exception as e:
-            rstep.fail(error=repr(e))                       # fail-open → 照常进 loop
-        route = getattr(verdict, "route", "") if verdict else ""
-        if verdict is not None and verdict.decision == "smalltalk" and not replay_ctx:
-            ans = smalltalk_reply(nl) or SMALLTALK_REPLY
-            return _result(True, trace=trace, status="smalltalk", answer=ans,
-                           session_id=sid, turn_type=getattr(verdict, "turn_type", "new"))
-        if verdict is not None and should_refuse(verdict) and not replay_ctx:
-            return _result(False, trace=trace, status="refused", reason=verdict.reason,
-                           session_id=sid, turn_type=getattr(verdict, "turn_type", "new"))
+    # turn_type:据回放廉价派生(有上文=followup,否则 new),零模型调用。
+    # (V1-C 清理:旧 Router 终结门与 skills 分派已删 —— one-loop 稳定数周、gate 一直为 0、
+    #  自定义 handler 从未注册;历史见 docs/design/one-loop-router-demote.md 与 git。)
+    ttype = "followup" if replay_ctx else "new"
 
-    # turn_type:有 verdict 用它;loop-primary 据回放廉价派生(有上文=followup,否则 new),零模型调用。
-    ttype = (getattr(verdict, "turn_type", "new") if verdict is not None
-             else ("followup" if replay_ctx else "new"))
-
-    context = None                                          # 仅供自定义 skill handler(现无在用)
-
-    # ── 按 route 分派 workflow(打地基)──
-    # 现阶段四个大类(retrieval/aggregate/analyze/visualize)的 handler 都是 "planner",
-    # 直接落到下面的 Planner→DAG 主链路。某个大类要走【自定义 workflow】时:
-    #   ① skills/<name>.md 写 `handler: <key>`;② skills/handlers.py 的 HANDLERS 注册 <key>。
-    # 这里见到非 "planner" 的 handler 就按表分派,无需改动本函数的其它判断。
-    handler_key = skills.handler_for(route)
-    custom = HANDLERS.get(handler_key) if handler_key != "planner" else None
-    if custom is not None:
-        hstep = trace.step(f"Skill:{handler_key}")
-        try:
-            ans = custom(nl, verdict=verdict, session=session, context=context,
-                         schema=schema, resolved_ids=resolved_ids)
-            hstep.ok(route=route)
-        except Exception as e:
-            hstep.fail(error=repr(e))
-            return _result(False, trace=trace, error=f"skill {handler_key} failed: {e!r}",
-                           session_id=sid, turn_type=ttype)
-        return _result(True, trace=trace, status="ok", answer=ans,
-                       session_id=sid, turn_type=ttype)
-
-    # ── M7b:probe-and-step 主循环是【唯一】执行路径(旧 Planner→DAG 已删;dev CLI main.py 仍保留)──
-    # 回放(replay_ctx)已在上方 smalltalk/refuse 门【之前】建好并在此复用 —— 不二次 build(省一次 LLM 摘要)。
-    # 方案 A:Router 只管分流 + 标 turn_type,指代/复用/重算/offer 解析全交给 loop 用回放自己做。
+    # ── probe-and-step 主循环是【唯一】执行路径(dev CLI main.py 仍保留)──
     from pipeline import loop_driver
     from pipeline.transcript_store import gcs_blob_put
     lstep = trace.step("Loop")

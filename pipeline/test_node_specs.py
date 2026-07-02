@@ -56,5 +56,3 @@ def test_existing_helpers_unchanged():
     assert ns.needs_sandbox("sql_query") is False
     assert ns.needs_sandbox("ols_regress") is True
     assert "纯 Python" in ns.codegen_hint("plot")
-    cat = ns.catalog_for_planner()
-    assert "sql_query" in cat and "[主进程/MCP]" in cat

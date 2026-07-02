@@ -2,11 +2,10 @@
 多轮编排分支的轻量测试 —— 全用桩,不依赖 GCP / DB。
     python -m pipeline.test_multiturn
 
-记忆简化后(transcript 是唯一记忆,catalog/session-history 已删):
-  followup → 一律进 loop(指代由 loop 用 transcript 回放自解析,不在编排层前置拒)
-  meta     → 一律进 loop(由 loop 据回放解释"怎么算的",不再走模板早返回)
-  方案A:回放【不被 Router 轮型卡】—— 有会话就建回放(连被误标 new 的也给),由 loop 自己判
-  无 session → 向后兼容(到达 loop、session_id=None、不建回放)
+单 loop 主路(V1-C 清理后唯一路径;Router/skills 已删):
+  有会话 → 建 transcript 回放并【透传】给 loop;turn_type 据回放派生(有上文=followup)
+  无会话 → 向后兼容(到达 loop、session_id=None、不建回放)
+  闲聊/超范围/模糊 → 也进 loop(由 loop 用完整上文自判,不再有前置门)
 """
 from __future__ import annotations
 
@@ -18,38 +17,27 @@ try:
 except (AttributeError, OSError):
     pass
 
-import pipeline.config as cfg
 import pipeline.loop_driver as loop_driver
 import pipeline.loop_memory as loop_memory
 import pipeline.orchestrator as orch
 from pipeline.loop_driver import LoopOutcome
-from pipeline.router import RouterVerdict
 from pipeline.session import Session
 
 
-# ── 桩:替换 orch.mcp_client / orch.Router ─────────────────
-def _stub_router(verdict):
-    saved = (orch.mcp_client, orch.Router)
+# ── 桩:替换 orch.mcp_client / loop 入口 / 记忆侧 ─────────────────
+def _stub_mcp():
+    saved = orch.mcp_client
     orch.mcp_client = types.SimpleNamespace(
         get_schema=lambda: {"video_facts": [{"column": "id", "type": "int"}]})
-
-    class FakeRouter:
-        def judge(self, q, **kw):
-            return verdict
-    orch.Router = FakeRouter
     return saved
-
-
-def _restore_router(saved):
-    orch.mcp_client, orch.Router = saved
 
 
 _REPLAY_SENTINEL = "# 多轮上下文\n## 第1轮\n用户:之前的问题"
 
 
-def _stub_loop(run):
-    """把 loop 入口换成 run,并让记忆侧 inert(离线)。build_loop_context 返回一个【哨兵字符串】
-    (不是 None)→ 可断言它【真被透传】进 run_query_loop 的 replay_context,而不止"被调用"。"""
+def _stub_loop(run, replay=_REPLAY_SENTINEL):
+    """把 loop 入口换成 run,并让记忆侧 inert(离线)。build_loop_context 返回哨兵字符串
+    (或 None)→ 可断言它【真被透传】进 run_query_loop 的 replay_context。"""
     calls = {"replay": 0, "passed_ctx": "UNSET"}
     saved = (loop_driver.run_query_loop,
              loop_memory.build_loop_context, loop_memory.record_loop_turn)
@@ -61,7 +49,7 @@ def _stub_loop(run):
 
     def _fake_ctx(*a, **k):
         calls["replay"] += 1
-        return _REPLAY_SENTINEL
+        return replay
     loop_memory.build_loop_context = _fake_ctx
     loop_memory.record_loop_turn = lambda *a, **k: None
     return saved, calls
@@ -72,50 +60,71 @@ def _restore_loop(saved):
      loop_memory.build_loop_context, loop_memory.record_loop_turn) = saved
 
 
-# ── followup:进 loop,且取了回放(不再前置拒)───────────────
-def test_followup_reaches_loop_and_replays():
-    s = Session("t")  # 无需预置任何 catalog —— 记忆全在 transcript
-    v = RouterVerdict(decision="answer", turn_type="followup", intent="visualize")
-    saved = _stub_router(v)
+def _boom(*a, **k):
+    raise RuntimeError("REACHED_LOOP")
 
-    def boom(*a, **k):
-        raise RuntimeError("REACHED_LOOP")
-    sl, calls = _stub_loop(boom)
+
+# ── 有会话:回放建好并透传;turn_type 派生 followup ───────────────
+def test_session_turn_reaches_loop_with_replay():
+    s = Session("t")
+    m = _stub_mcp()
+    sl, calls = _stub_loop(_boom)
     try:
         r = orch.run_query("plot those", session=s)
         assert r["status"] == "error" and "REACHED_LOOP" in r["error"], r
-        assert r["turn_type"] == "followup"
-        assert calls["replay"] == 1                       # followup → 取了 transcript 回放
-        assert calls["passed_ctx"] == _REPLAY_SENTINEL    # 且回放【真透传】进了 loop 的 replay_context
+        assert r["turn_type"] == "followup"               # 有回放 → followup(零模型调用派生)
+        assert calls["replay"] == 1
+        assert calls["passed_ctx"] == _REPLAY_SENTINEL    # 回放【真透传】进 loop
     finally:
-        _restore_loop(sl); _restore_router(saved)
+        _restore_loop(sl); orch.mcp_client = m
 
 
-# ── meta:进 loop(不再模板早返回),且取了回放 ─────────────
-def test_meta_reaches_loop_and_replays():
+# ── 首轮(有会话但回放为空)→ turn_type=new,仍进 loop ─────────────
+def test_first_turn_derives_new():
     s = Session("t")
-    v = RouterVerdict(decision="answer", turn_type="meta", intent="meta")
-    saved = _stub_router(v)
-
-    def boom(*a, **k):
-        raise RuntimeError("REACHED_LOOP")
-    sl, calls = _stub_loop(boom)
+    m = _stub_mcp()
+    sl, calls = _stub_loop(_boom, replay=None)            # 空会话 → 无回放
     try:
-        r = orch.run_query("how did you get that", session=s)
+        r = orch.run_query("你好", session=s)              # 闲聊也进 loop(无前置门)
         assert r["status"] == "error" and "REACHED_LOOP" in r["error"], r
-        assert r["turn_type"] == "followup"               # loop-primary:有回放即派生 followup(meta 不再独立)
-        assert calls["replay"] == 1                       # 仍取回放(由 loop 解释"怎么算的")
-        assert calls["passed_ctx"] == _REPLAY_SENTINEL    # 回放透传进 loop
+        assert r["turn_type"] == "new"
+        assert calls["passed_ctx"] is None
     finally:
-        _restore_loop(sl); _restore_router(saved)
+        _restore_loop(sl); orch.mcp_client = m
 
 
-# ── 方案A:回放不被 Router 轮型卡 —— 即使被误标成 new,有会话就仍取回放透传给 loop ──
-# (回归护栏:Router 漏判裸代词"它"标成 new 时,loop 仍拿得到上文,不会饿着反问)
-def test_session_turn_gets_replay_even_when_tagged_new():
+# ── 无 session:向后兼容(不建回放、session_id=None)─────────────
+def test_no_session_backcompat():
+    m = _stub_mcp()
+    sl, calls = _stub_loop(_boom)
+    try:
+        r = orch.run_query("how many videos")
+        assert r["status"] == "error" and "REACHED_LOOP" in r["error"], r
+        assert r["session_id"] is None and r["turn_type"] == "new"
+        assert calls["replay"] == 0 and calls["passed_ctx"] is None
+    finally:
+        _restore_loop(sl); orch.mcp_client = m
+
+
+# ── 短语境回复(ok / 我想看):无前置门可误杀,直接带回放进 loop ────
+def test_context_dependent_shorts_reach_loop():
+    m = _stub_mcp()
+    for q in ("ok", "我想看"):
+        s = Session("t")
+        sl, calls = _stub_loop(_boom)
+        try:
+            r = orch.run_query(q, session=s)
+            assert r["status"] == "error" and "REACHED_LOOP" in r["error"], (q, r)
+            assert calls["passed_ctx"] == _REPLAY_SENTINEL
+        finally:
+            _restore_loop(sl)
+    orch.mcp_client = m
+
+
+# ── 成功轮:轮号推进 + 结果形状 ────────────────────────────────
+def test_success_turn_advances_and_shapes():
     s = Session("t")
-    v = RouterVerdict(decision="answer", turn_type="new", intent="retrieve")   # 故意 new(模拟误判)
-    saved = _stub_router(v)
+    m = _stub_mcp()
 
     def fake_loop(nl, **kw):
         return LoopOutcome(answer="共 1 条 skiing 视频", steps=1, terminated="text",
@@ -127,122 +136,12 @@ def test_session_turn_gets_replay_even_when_tagged_new():
                                    "inputs": {}, "uses": [], "ok": True}])
     sl, calls = _stub_loop(fake_loop)
     try:
-        r = orch.run_query("它是什么类型?", session=s)     # 裸代词
-        assert r["status"] == "ok", r
-        assert r["answer"] == "共 1 条 skiing 视频"
-        # loop-primary:有会话即建回放、turn_type 据回放派生 followup(不靠 Router 标轮型)
+        r = orch.run_query("它是什么类型?", session=s)
+        assert r["status"] == "ok" and r["answer"] == "共 1 条 skiing 视频"
         assert r["session_id"] == "t" and r["turn_type"] == "followup"
-        assert s._turn_no == 1                           # 轮号推进了(供 record_loop_turn)
-        assert calls["replay"] == 1                      # 有会话 → 建了回放
-        assert calls["passed_ctx"] == _REPLAY_SENTINEL   # 且回放透传进了 loop
+        assert s._turn_no == 1                            # 轮号推进(供 record_loop_turn)
     finally:
-        _restore_loop(sl); _restore_router(saved)
-
-
-def test_no_session_backcompat():
-    v = RouterVerdict(decision="answer", turn_type="new", intent="retrieve")
-    saved = _stub_router(v)
-
-    def boom(*a, **k):
-        raise RuntimeError("REACHED")
-    sl, calls = _stub_loop(boom)
-    try:
-        r = orch.run_query("how many videos")   # 无 session
-        assert r["status"] == "error" and "REACHED" in r["error"], r
-        assert r["session_id"] is None and r["turn_type"] == "new"
-        assert calls["replay"] == 0 and calls["passed_ctx"] is None   # 无会话 → 不建回放
-    finally:
-        _restore_loop(sl); _restore_router(saved)
-
-
-# ── ① smalltalk/refuse 门:有上文(回放非空)时【不终结】,落到 loop ──────────
-# (修「ok」被判 smalltalk 回寒暄、「我想看」被判 refuse 回「太模糊」—— 这俩只有结合上文才看得懂,
-#  本应进 loop 用回放解;门由 context-blind 的 Router 判,不该对它们做终局裁决)
-def test_smalltalk_with_history_falls_through_to_loop():
-    s = Session("t")
-    v = RouterVerdict(decision="smalltalk", confidence=0.95, turn_type="new", intent="other")
-    saved = _stub_router(v)
-
-    def boom(*a, **k):
-        raise RuntimeError("REACHED_LOOP")
-    sl, calls = _stub_loop(boom)                          # build_loop_context → 非空哨兵
-    try:
-        r = orch.run_query("ok", session=s)
-        assert r["status"] == "error" and "REACHED_LOOP" in r["error"], r   # 落到 loop,没回寒暄
-        assert calls["passed_ctx"] == _REPLAY_SENTINEL    # 回放透传进 loop
-    finally:
-        _restore_loop(sl); _restore_router(saved)
-
-
-def test_refuse_with_history_falls_through_to_loop():
-    s = Session("t")
-    v = RouterVerdict(decision="refuse", confidence=0.95, reason="太模糊",
-                      turn_type="new", intent="other")
-    saved = _stub_router(v)
-
-    def boom(*a, **k):
-        raise RuntimeError("REACHED_LOOP")
-    sl, calls = _stub_loop(boom)
-    try:
-        r = orch.run_query("我想看", session=s)
-        assert r["status"] == "error" and "REACHED_LOOP" in r["error"], r   # 落到 loop,没回「太模糊」
-    finally:
-        _restore_loop(sl); _restore_router(saved)
-
-
-# 旧门路径(USE_ROUTER_GATE=1)回归:无上文(回放为空)时,smalltalk 仍直接寒暄、不进 loop
-def test_smalltalk_no_replay_stays_smalltalk():
-    s = Session("t")
-    v = RouterVerdict(decision="smalltalk", confidence=0.95, turn_type="new", intent="other")
-    saved = _stub_router(v)
-    saved_loop = (loop_driver.run_query_loop, loop_memory.build_loop_context,
-                  loop_memory.record_loop_turn, orch.smalltalk_reply)
-    gate_saved = cfg.USE_ROUTER_GATE
-    cfg.USE_ROUTER_GATE = True                              # 这条测的是【旧 Router 门】路径
-
-    def boom(*a, **k):
-        raise RuntimeError("SHOULD_NOT_REACH_LOOP")
-    loop_driver.run_query_loop = boom
-    loop_memory.build_loop_context = lambda *a, **k: None   # 空会话 → 无回放
-    loop_memory.record_loop_turn = lambda *a, **k: None
-    orch.smalltalk_reply = lambda nl: "嗨"                  # 离线桩,不调模型
-    try:
-        r = orch.run_query("你好", session=s)
-        assert r["status"] == "smalltalk", r               # 无上文 → 仍寒暄,没进 loop
-        assert r["answer"] == "嗨"
-    finally:
-        cfg.USE_ROUTER_GATE = gate_saved
-        (loop_driver.run_query_loop, loop_memory.build_loop_context,
-         loop_memory.record_loop_turn, orch.smalltalk_reply) = saved_loop
-        _restore_router(saved)
-
-
-# 单 loop 主路(USE_ROUTER_GATE=0,默认):根本不调 Router,连「你好」也进 loop(loop 自己处理寒暄)
-def test_loop_primary_skips_router_and_reaches_loop():
-    s = Session("t")
-    gate_saved = cfg.USE_ROUTER_GATE
-    cfg.USE_ROUTER_GATE = False
-    called = {"router": 0}
-    saved = (orch.mcp_client, orch.Router)
-    orch.mcp_client = types.SimpleNamespace(get_schema=lambda: {"video_facts": []})
-
-    class CountingRouter:
-        def judge(self, q, **kw):
-            called["router"] += 1                          # loop-primary 下不该被调用
-            return RouterVerdict(decision="smalltalk")
-    orch.Router = CountingRouter
-
-    def boom(*a, **k):
-        raise RuntimeError("REACHED_LOOP")
-    sl, calls = _stub_loop(boom)
-    try:
-        r = orch.run_query("你好", session=s)              # 连寒暄也落到 loop
-        assert r["status"] == "error" and "REACHED_LOOP" in r["error"], r
-        assert called["router"] == 0                       # 关键:Router 根本没被调用(省一次 flash)
-        assert calls["passed_ctx"] == _REPLAY_SENTINEL     # 回放照常透传
-    finally:
-        cfg.USE_ROUTER_GATE = gate_saved
-        _restore_loop(sl); orch.mcp_client, orch.Router = saved
+        _restore_loop(sl); orch.mcp_client = m
 
 
 # ── 回放真正进了 loop 的 system prompt(_loop_system 拼接)─────────────
@@ -251,31 +150,30 @@ def test_loop_system_splices_replay_context():
     schema = {"video_facts": [{"column": "id"}]}
     s_none = _loop_system(schema, None)
     s_ctx = _loop_system(schema, _REPLAY_SENTINEL)
-    assert _REPLAY_SENTINEL not in s_none                 # 无回放 → system 不含它
-    assert _REPLAY_SENTINEL in s_ctx                      # 有回放 → 拼进 system prompt
-    assert s_ctx.startswith(s_none)                       # 规则+schema 段不变,回放追加在尾部
+    assert _REPLAY_SENTINEL not in s_none
+    assert _REPLAY_SENTINEL in s_ctx
+    assert s_ctx.startswith(s_none)                       # 静态段不变,回放追加在尾部(缓存前提)
 
 
 # ── Pro 模式:pro_video 透传成 analyze_video 的模型覆盖 ─────────────
 def test_pro_video_sets_analyze_model_override():
     from perception import analyze_video_contextual as AVC
     s = Session("t")
-    v = RouterVerdict(decision="answer", turn_type="new", intent="analyze")
-    saved = _stub_router(v)
+    m = _stub_mcp()
     seen = {}
 
     def fake_loop(nl, **kw):
-        seen["model"] = AVC.MODEL_OVERRIDE.get()      # run_query 已据 pro_video 设好
+        seen["model"] = AVC.MODEL_OVERRIDE.get()
         return LoopOutcome(answer="ok", steps=1, terminated="text", final_tool="sql_query",
                            final_value=[{"x": 1}], preview_value=[{"x": 1}], results={}, trace=[])
     sl, calls = _stub_loop(fake_loop)
     try:
         orch.run_query("最帅的视频", session=s, pro_video=True)
-        assert seen["model"] == AVC.PRO_MODEL          # Pro → 覆盖成 pro 模型
+        assert seen["model"] == AVC.PRO_MODEL
         orch.run_query("最帅的视频", session=s, pro_video=False)
-        assert seen["model"] is None                   # 默认 → 不覆盖(用 flash)
+        assert seen["model"] is None
     finally:
-        _restore_loop(sl); _restore_router(saved)
+        _restore_loop(sl); orch.mcp_client = m
 
 
 def main() -> int:

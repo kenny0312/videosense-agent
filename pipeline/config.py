@@ -69,12 +69,6 @@ SEMANTIC_SEARCH_K   = int(os.environ.get("SEMANTIC_SEARCH_K", "8"))
 MAX_LOOP_STEPS     = int(os.environ.get("MAX_LOOP_STEPS", "16"))    # 终止护栏:防死循环
 LOOP_REPEAT_LIMIT  = int(os.environ.get("LOOP_REPEAT_LIMIT", "2"))  # 同一(工具,参数)连续失败上限
 
-# 路由层(设计 one-loop-router-demote.md):
-#   0 = 单 loop 主路(默认)—— 不调前置 Router,loop 带完整 transcript 回放自己判 闲聊/超范围拒/clarify。
-#       省每轮一次 flash,且根治"context-blind 的前置门误杀只有结合上文才看得懂的短回复(ok/我想看)"。
-#   1 = 保留旧 Router 终结门(回退开关;一键恢复旧行为,无需改代码)。
-USE_ROUTER_GATE = os.environ.get("USE_ROUTER_GATE", "0").lower() in ("1", "true", "yes")
-
 # 自检 B(设计 self-check-critic.md):收口前插一个显式 critic 判"满足用户没",没满足喂回再来一轮。
 #   opt-in(默认 0;每个收口轮多一次 flash + 可能多一轮);MAX_ROUNDS = critic 驱动的"再来"上限(防空转)。
 USE_SELF_CHECK_CRITIC = os.environ.get("USE_SELF_CHECK_CRITIC", "0").lower() in ("1", "true", "yes")
