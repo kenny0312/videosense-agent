@@ -62,6 +62,37 @@ def test_id_pattern_shapes():
         assert not ID_PAT.search(tok), tok
 
 
+# ── review 加固:CJK 贴邻 / 哨兵精准清理 / 键形兼容 / fail-open ────
+def test_cjk_adjacent_ids_are_caught():
+    """\\b 对 CJK 失效(中文也是 \\w)→ ASCII lookaround 后「视频803…很棒」也抓得到。"""
+    out, hits = scrub_ids("视频803174656_822455_10761781481860很棒", [])
+    assert hits == 1 and "803174656" not in out
+    out, hits = scrub_ids("看v_-02DygXbn6w这个视频", [])          # v_ 段不吞中文,只删 id
+    assert hits == 1 and "v_-02" not in out and "这个视频" in out
+
+
+def test_tidy_only_touches_scrub_sites():
+    """哨兵法:清理只围着删除点做 —— 答案里合法的空引号/空括号不受伤(review 确认项)。"""
+    ans = "id 803174656_1234_000123456789 对应查询 WHERE title = '' 那条()逻辑"
+    out, hits = scrub_ids(ans, [])
+    assert hits == 1 and "''" in out and "()" in out              # 合法空壳保留
+    assert "803174656" not in out
+
+
+def test_show_map_accepts_id_key_and_bad_rows():
+    out, hits = scrub_ids("GX010523 不错", [
+        {"note": "x", "items": [{"n": "bad"}, "garbage", {"n": 3, "id": "GX010523"}]}])
+    assert hits == 1 and "第 3 个" in out                          # id 键也认;坏行跳过不崩
+
+
+def test_scrub_failopen_on_malformed_ledger():
+    class _Evil(dict):                        # 是 dict → 通过 isinstance,但 .get 抛错
+        def get(self, *_):
+            raise RuntimeError("boom")
+    out, hits = scrub_ids("有 GX010523 一个", [_Evil()])
+    assert out == "有 GX010523 一个" and hits == 0                 # 守卫崩了 → 原文返回,不反噬答案
+
+
 # ── 教训集纪律(预算/字段齐全/渲染)─────────────────────────
 def test_lessons_budget_and_fields():
     from pipeline.lessons import LESSONS, MAX_LESSONS, render
