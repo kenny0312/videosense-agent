@@ -148,7 +148,7 @@ def _gemini_generate(gcs_uri: str, prompt: str, time_range=None) -> str:
     vm = None
     if time_range:                                    # M4.5:硬裁剪 —— Gemini 只处理 [起,止] 秒这一段
         start, end = float(time_range[0]), float(time_range[1])
-        vm = types.VideoMetadata(start_offset=f"{int(start)}s", end_offset=f"{int(end)}s")
+        vm = types.VideoMetadata(start_offset=f"{start:g}s", end_offset=f"{end:g}s")   # 保留亚秒精度
     video = types.Part(file_data=types.FileData(file_uri=gcs_uri, mime_type=mime),
                        video_metadata=vm)
     resp = get_client().models.generate_content(

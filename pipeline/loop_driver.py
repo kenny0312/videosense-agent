@@ -158,8 +158,9 @@ def run_loop(user_query: str, conversation, execute: Callable, *,
                     msg = (f"[自检] 你刚才的回答可能还没满足用户:{hint}。"
                            "请据此继续把它做到位;如果确实做不到,就诚实说清楚。")
                     continue
-            if on_step:
-                on_step({"type": "answer", "text": answer})
+            if on_step:                     # SSE 线上事件同样过清洗(review 修:别让未清洗文本上网线)
+                on_step({"type": "answer",
+                         "text": scrub_ids(answer, (er.value for er in ledger.values()))[0]})
             return LoopResult(answer, step, "text", trace, ledger, llm_calls, step_walls)
 
         # ① 准备(主线程):算 cid/sig/upstream;重复失败 → 即时终止
