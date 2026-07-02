@@ -52,6 +52,8 @@ def loop_function_declarations() -> list[dict]:
             continue
         if d["name"] == "update_memory" and not config.USE_USER_MEMORY:
             continue
+        if d["name"] == "semantic_search" and not config.USE_SEMANTIC_SEARCH:
+            continue
         d = copy.deepcopy(d)
         handles = UPSTREAM_HANDLES.get(d["name"], [])
         if handles:
@@ -356,6 +358,8 @@ def _make_executor(sandbox, trace, schema, session_id, owner: str = "anon") -> C
         # (编造引用),必须让它看到完整综述。
         if name in ("analyze_video", "web_search"):
             pv, n = _preview(nr.value, cell=ANALYZE_PREVIEW_CELL)       # 答案含完整理由/综述
+        elif name == "semantic_search":
+            pv, n = _preview(nr.value, rows=20, cell=300)               # k≤20 行全给,snippet 别砍太狠
         elif name == "sql_query":
             pv, n = _preview(nr.value, rows=SQL_PREVIEW_ROWS)           # 列举类:看到更多行,别只看 3 行就编/漏
         else:

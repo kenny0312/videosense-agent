@@ -360,6 +360,21 @@ async function resignVideos(ids){
     return (await r.json()).signed||{};
   }catch(e){ return {}; }
 }
+// V1: segment marker bar — highlights [start_ts,end_ts] under the player; click seeks to the moment.
+function markerBar(vid, v){
+  if(v.start_ts==null) return null;
+  const bar=el('<div style="position:relative;height:5px;margin:0 1px;border-radius:3px;background:#1d2229;cursor:pointer" title="Matched segment — click to jump"></div>');
+  const seg=el('<div style="position:absolute;top:0;height:5px;border-radius:3px;background:#3f7bf0;min-width:6px"></div>');
+  bar.appendChild(seg);
+  const place=()=>{
+    const dur=vid.duration||v.duration_sec||0; if(!dur) return;
+    const s=Math.max(0,Math.min(v.start_ts,dur)), e=Math.max(s,Math.min(v.end_ts!=null?v.end_ts:s+3,dur));
+    seg.style.left=(s/dur*100)+'%'; seg.style.width=Math.max(1,(e-s)/dur*100)+'%';
+  };
+  vid.addEventListener('loadedmetadata', place, {once:true}); place();
+  bar.onclick=()=>{ try{ vid.currentTime=v.start_ts; vid.play(); }catch(e){} };
+  return bar;
+}
 function mountVideo(vid, v){
   let resigned=false;
   if(v.start_ts!=null){ vid.addEventListener('loadedmetadata',()=>{ try{vid.currentTime=v.start_ts;}catch(e){} }, {once:true}); }
@@ -385,6 +400,7 @@ function renderVideos(list){
       const vid=el('<video controls preload="metadata" playsinline></video>');
       mountVideo(vid, v);
       card.appendChild(vid);
+      const mb=markerBar(vid, v); if(mb) card.appendChild(mb);
       if(v.marks && v.marks.length){
         const chips=el('<div class="chips"></div>'); chips.style.padding='9px 11px';
         v.marks.forEach(m=>{

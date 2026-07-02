@@ -142,6 +142,27 @@ SPECS: dict[str, NodeSpec] = {
             ["query"],
         ),
     ),
+    "semantic_search": NodeSpec(
+        tool="semantic_search",
+        needs_sandbox=False,
+        planner_desc=(
+            "【语义找片段】:按意思(而非字面/词表)在全库内容索引里找最相关的视频片段 —— "
+            "「模糊描述 / 找某个瞬间 / 说不清具体类别」的问题用它(如「有人摔倒的画面」「海边慢镜头」)。"
+            "定位:sql_query 管精确条件/计数,本工具管语义模糊,analyze_video 管看细节;"
+            "常用组合 = 先用本工具把候选缩到几个,再对最相关的 analyze_video 细看。"
+            "inputs.query = 检索意图,【用英文写】(索引 snippet 是英文,英文查询显著更准;"
+            "把用户的中文意图翻成英文短语);inputs.k = 返回条数(默认 8)。"
+            "返回行列表 [{n, video_id, snippet, start_ts, end_ts, score}] —— 带时间段。"
+            "【要播命中片段时,把本工具的 result_id 填进 show_video 的 data_result_id】"
+            "(时间段会自动带到播放器的片段标记,用户能一键跳到那一刻),别只抄 video_ids。"
+            "score<0.6 视为弱相关,别硬用。"
+        ),
+        parameters=_obj(
+            {"query": {"type": "string", "description": "检索意图(英文短语;把中文意图翻成英文)"},
+             "k": {"type": "integer", "description": "返回条数,默认 8"}},
+            ["query"],
+        ),
+    ),
     "update_memory": NodeSpec(
         tool="update_memory",
         needs_sandbox=False,

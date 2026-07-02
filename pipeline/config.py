@@ -61,6 +61,11 @@ WEB_SEARCH_MODEL = os.environ.get("WEB_SEARCH_MODEL", "gemini-2.5-flash")
 # L2:跨会话用户记忆(每 owner 一块,GCS user-memory/;update_memory 工具写入)。
 USE_USER_MEMORY       = os.environ.get("USE_USER_MEMORY", "1").lower() in ("1", "true", "yes")
 USER_MEMORY_MAX_CHARS = int(os.environ.get("USER_MEMORY_MAX_CHARS", "6000"))   # ≈2k tokens
+
+# V1:语义检索(pgvector 内容级;semantic_search 工具 + analyze 随用写钩子)。
+#   0 = 工具从声明消失且写钩子停用(零残留)。S4 验收通过(2026-07-02)→ 默认开。
+USE_SEMANTIC_SEARCH = os.environ.get("USE_SEMANTIC_SEARCH", "1").lower() in ("1", "true", "yes")
+SEMANTIC_SEARCH_K   = int(os.environ.get("SEMANTIC_SEARCH_K", "8"))
 MAX_LOOP_STEPS     = int(os.environ.get("MAX_LOOP_STEPS", "16"))    # 终止护栏:防死循环
 LOOP_REPEAT_LIMIT  = int(os.environ.get("LOOP_REPEAT_LIMIT", "2"))  # 同一(工具,参数)连续失败上限
 
