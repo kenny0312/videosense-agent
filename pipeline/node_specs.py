@@ -351,10 +351,3 @@ def build_function_declarations(specs: "dict[str, NodeSpec] | None" = None) -> l
     ]
 
 
-def catalog_for_planner() -> str:
-    """拼成 Planner system prompt 里的"可用工具"清单。"""
-    lines = []
-    for spec in SPECS.values():
-        where = "主进程/MCP" if not spec.needs_sandbox else "沙箱"
-        lines.append(f"- {spec.tool} [{where}]: {spec.planner_desc}")
-    return "\n".join(lines)
