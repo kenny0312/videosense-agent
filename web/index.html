@@ -3,6 +3,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>VideoSense</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/tabler-icons/3.24.0/tabler-icons.min.css"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.9/purify.min.js"></script>
 <style>
   :root{
     --bg:#0a0b0d; --surface:#111418; --surface2:#181b20; --hover:#1e222833; --border:#22262d; --border2:#2c313a;
@@ -56,7 +58,24 @@
   .user .bubble{background:var(--accent-dim);color:#d7e4ff}
   .av{width:27px;height:27px;border-radius:8px;background:#151920;display:flex;align-items:center;justify-content:center;color:var(--accent-soft);font-size:14px;flex-shrink:0}
   .card{flex:1;background:var(--surface);border:1px solid var(--border);border-radius:var(--card-radius);padding:13px 16px;max-width:calc(100% - 38px)}
-  .answer{font-size:14px;line-height:1.65;white-space:pre-wrap;word-break:break-word}
+  .answer{font-size:14px;line-height:1.65;word-break:break-word}
+  /* markdown 渲染排版(C:结论先行/编号列表/加粗数字的层级) */
+  .answer p{margin:0 0 8px}
+  .answer p:last-child{margin-bottom:0}
+  .answer strong{font-weight:600;color:#f0f3f7}
+  .answer h1,.answer h2,.answer h3{font-size:14.5px;font-weight:600;margin:12px 0 6px;color:#eef1f5}
+  .answer h1:first-child,.answer h2:first-child,.answer h3:first-child{margin-top:0}
+  .answer ul,.answer ol{margin:4px 0 8px;padding-left:22px}
+  .answer li{margin:3px 0}
+  .answer li::marker{color:var(--muted)}
+  .answer code{background:var(--surface2);border-radius:5px;padding:1px 5px;font:12.5px ui-monospace,Consolas,monospace}
+  .answer pre{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;overflow-x:auto}
+  .answer pre code{background:none;padding:0}
+  .answer blockquote{border-left:3px solid var(--border);margin:6px 0;padding:2px 0 2px 12px;color:var(--muted)}
+  .answer a{color:var(--accent);text-decoration:none}
+  .answer a:hover{text-decoration:underline}
+  .answer table{border-collapse:collapse;font-size:13px;margin:6px 0}
+  .answer th,.answer td{border:1px solid var(--border);padding:5px 9px;text-align:left}
   .badge{font-size:11.5px;padding:3px 9px;border-radius:999px;display:inline-flex;align-items:center;gap:5px;margin-bottom:8px}
   .badge.refused{background:#3a2526;color:#e7a3a3}
   .sub{font-size:12px;color:var(--hint);font-variant-numeric:tabular-nums}
@@ -256,8 +275,23 @@ function renderAssistant(card, d, ms){
 
 function badge(cls,txt){const b=el('<span class="badge"></span>');b.classList.add(cls);b.textContent=txt;return b;}
 function sub(txt){const s=el('<span class="sub"></span>');s.textContent=txt;return s;}
-function textBlock(txt){const p=el('<div class="answer"></div>');p.textContent=txt;return p;}
-function answerBlock(txt){const p=el('<div class="answer"></div>');p.textContent=txt;return p;}
+// C: 把大脑写的 markdown 真正渲染出来(结论先行/加粗数字/编号列表更清晰);marked+DOMPurify 都在 → 安全 HTML,
+// 否则降级为纯文本(绝不因 CDN 失败而空白)。内容是后端模型输出(id 已在服务端清洗),DOMPurify 再兜一层 XSS。
+function mdHtml(txt){
+  try{
+    if(window.marked && window.DOMPurify){
+      const raw=window.marked.parse(String(txt||''), {breaks:true, gfm:true});
+      return window.DOMPurify.sanitize(raw, {USE_PROFILES:{html:true}});
+    }
+  }catch(e){}
+  return null;
+}
+function textBlock(txt){
+  const p=el('<div class="answer"></div>');
+  const h=mdHtml(txt); if(h!=null) p.innerHTML=h; else p.textContent=txt;
+  return p;
+}
+function answerBlock(txt){ return textBlock(txt); }
 
 // ── 答案分形:表格 / 统计卡 / 标量 / 文本 ──────────────
 function renderAnswer(ans){
@@ -682,6 +716,8 @@ $('#upFile').onchange=async(e)=>{
     const put=await fetch(d.upload_url,{method:'PUT',body:f,
       headers:{'Content-Type':d.content_type,'x-goog-content-length-range':'0,'+d.max_bytes}}); // 大小上限已签进 URL
     if(!put.ok){ alert('Upload failed: '+put.status+' (may exceed the size limit)'); return; }
+    fetch('/v1/enrich',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({video_id:d.video_id})}).catch(()=>{});  // V1.5: fire-and-forget enrichment (transcript+caption -> semantic index)
     const q=$('#q'); q.value=`I uploaded a video (${d.video_id}), `; q.focus(); // 预填 → 用户接着问
     btn.innerHTML='<i class="ti ti-check" aria-hidden="true"></i>';
   }catch(err){ alert('Upload error: '+err); }
