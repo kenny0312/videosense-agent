@@ -23,8 +23,10 @@ CREATE TABLE IF NOT EXISTS content_embeddings (
     content_key TEXT UNIQUE,
     created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
-CREATE INDEX IF NOT EXISTS ix_ce_ivf ON content_embeddings
-    USING ivfflat (embedding vector_cosine_ops) WITH (lists = 20);
+-- review 修:【不建 ivfflat】。库小(几百~几千行),精确 KNN(顺序扫)亚毫秒且【100% 召回】;
+-- ivfflat 需数据在建索引时聚类、且默认 probes=1 只扫 1 个列表 → 小表上是纯负担(漏最近邻)。
+-- 若某天 >5 万行,再上 hnsw(建后不需重建、召回稳),别回 ivfflat。这里显式 DROP 掉早期误建的。
+DROP INDEX IF EXISTS ix_ce_ivf;
 """
 
 UPSERT_SQL = ("INSERT INTO content_embeddings "
@@ -89,6 +91,9 @@ import threading as _threading
 _log = _logging.getLogger("pipeline.semantic_index")
 _CONN = None
 _CONN_LOCK = _threading.Lock()
+# 单模块级连接;psycopg2 连接【非线程安全】(不能并发跑游标)。写钩子跑在并行 analyze 的
+# 线程池里,可能与 search 或彼此并发 → 用执行锁把游标操作串行化(单用户低频,串行代价可忽略)。
+_EXEC_LOCK = _threading.RLock()
 
 
 def _conn():
@@ -108,24 +113,25 @@ def _conn():
 
 
 def _execute(sql: str, params: tuple):
-    """带一次断线重连的执行(Neon 池会掐空闲连接)。"""
+    """带一次断线重连的执行(Neon 池会掐空闲连接)。执行锁串行化 → 共享连接线程安全。"""
     global _CONN
-    for attempt in (0, 1):
-        try:
-            conn = _conn()
-            with conn.cursor() as cur:
-                cur.execute(sql, params)
-                return cur.description and cur.fetchall() or []
-        except Exception:
-            with _CONN_LOCK:
-                try:
-                    if _CONN is not None:
-                        _CONN.close()
-                except Exception:
-                    pass
-                _CONN = None
-            if attempt:
-                raise
+    with _EXEC_LOCK:                          # 同一时刻只有一个游标操作(连接非线程安全)
+        for attempt in (0, 1):
+            try:
+                conn = _conn()
+                with conn.cursor() as cur:
+                    cur.execute(sql, params)
+                    return cur.description and cur.fetchall() or []
+            except Exception:
+                with _CONN_LOCK:
+                    try:
+                        if _CONN is not None:
+                            _CONN.close()
+                    except Exception:
+                        pass
+                    _CONN = None
+                if attempt:
+                    raise
     return []
 
 
