@@ -425,7 +425,18 @@ def _run_semantic_search(node: Node) -> NodeResult:
     if vec is None:
         raise ValueError("query embedding 失败(稍后重试,或改用 sql_query/analyze_video)")
     rows = semantic_index.search(vec_literal(vec), k)
-    return NodeResult(node.id, node.tool, ok=True, value=rows)
+    # 治过度召回(结构性,非靠大脑自觉):全是 weak(或空)= 库里【没有真正匹配的】。
+    # 此时返回【信封 dict 而非行列表】—— show_video 结构上无法把它当"找到的视频"来展示,
+    # 大脑只能读 note 如实说"没有,最接近的是…"。有 strong 命中才返回行列表(正常走 show)。
+    strong = [r for r in rows if r.get("relevance") == "strong"]
+    if not strong:
+        closest = [{"snippet": r["snippet"][:80], "score": r["score"]} for r in rows[:3]]
+        return NodeResult(node.id, node.tool, ok=True, value={
+            "no_strong_match": True,
+            "note": "库里没有与该查询【真正匹配】的内容(全部为弱相关)。如实告诉用户没有,"
+                    "最多提一句最接近的是什么;别把这些弱命中当成找到了、也别造一个不存在的类目。",
+            "closest": closest})
+    return NodeResult(node.id, node.tool, ok=True, value=strong)
 
 
 def _index_analyze_result(video_id: str, dump: dict, content_key: str) -> None:

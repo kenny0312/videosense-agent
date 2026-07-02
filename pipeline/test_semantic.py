@@ -43,6 +43,15 @@ def test_analyze_snippet_skips_failure_and_parses_evidence():
     assert analyze_snippet("v", {"answer": "ok", "evidence_ts": "not-a-list"}, "k")[2] is None
 
 
+def test_search_marks_weak_relevance(monkeypatch):
+    from pipeline import semantic_index as si
+    monkeypatch.setattr(si, "_execute",
+                        lambda sql, params: [("v1", "fact", "close match", 1.0, 2.0, 0.82),
+                                             ("v2", "fact", "far match", None, None, 0.41)])
+    rows = si.search("[0]", 2)
+    assert rows[0]["relevance"] == "strong" and rows[1]["relevance"] == "weak"
+
+
 def test_upsert_params_order_matches_sql():
     entry = ("fact:v:p", "p: r", 1.0, 2.0)
     params = upsert_params(entry, "v", "fact", "[0.1,0.2]")
@@ -92,17 +101,32 @@ def test_run_semantic_search(monkeypatch):
     monkeypatch.setattr(e, "embed_query", lambda q: [0.0] * 768)
     seen = {}
     monkeypatch.setattr(si, "search", lambda lit, k: seen.setdefault("k", k) and [] or
-                        [{"n": 1, "video_id": "v1", "source": "fact", "snippet": "s",
+                        [{"n": 1, "video_id": "v1", "source": "fact", "snippet": "s", "relevance": "strong",
                           "start_ts": 1.0, "end_ts": 2.0, "score": 0.9, "label": "s"}])
     r = ne._run_semantic_search(Node(id="s1", tool="semantic_search",
                                      inputs={"query": "falling", "k": 99}))
-    assert r.ok and isinstance(r.value, list) and r.value[0]["video_id"] == "v1"
+    assert r.ok and isinstance(r.value, list) and r.value[0]["video_id"] == "v1"   # 有 strong → 行列表
     assert seen["k"] == 20                                     # k 被夹在 [1,20]
     with pytest.raises(ValueError):
         ne._run_semantic_search(Node(id="s2", tool="semantic_search", inputs={}))
     monkeypatch.setattr(config, "USE_SEMANTIC_SEARCH", False)
     with pytest.raises(ValueError):
         ne._run_semantic_search(Node(id="s3", tool="semantic_search", inputs={"query": "x"}))
+
+
+def test_run_semantic_search_all_weak_returns_envelope(monkeypatch):
+    """全 weak → 信封 dict(no_strong_match)而非行列表 —— show 结构上无法当'找到了'展示(治过度召回)。"""
+    from pipeline import config, embeddings as e, semantic_index as si
+    from pipeline import node_executor as ne
+    from pipeline.dag_schema import Node
+    monkeypatch.setattr(config, "USE_SEMANTIC_SEARCH", True)
+    monkeypatch.setattr(e, "embed_query", lambda q: [0.0] * 768)
+    monkeypatch.setattr(si, "search", lambda lit, k: [
+        {"n": 1, "video_id": "v1", "source": "analyze", "snippet": "a video camera",
+         "start_ts": None, "end_ts": None, "score": 0.58, "relevance": "weak", "label": "x"}])
+    r = ne._run_semantic_search(Node(id="s", tool="semantic_search", inputs={"query": "tech gadgets"}))
+    assert isinstance(r.value, dict) and r.value["no_strong_match"] is True
+    assert "没有" in r.value["note"] and r.value["closest"][0]["score"] == 0.58
 
 
 def test_index_analyze_hook_failopen(monkeypatch):

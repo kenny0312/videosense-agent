@@ -486,15 +486,35 @@ _LOOP_SYSTEM = (
 )
 
 
-def runtime_facts_line(usage_cum: "dict | None") -> str:
+def _detect_lang(nl: "str | None") -> str:
+    """粗判用户这句的主语言(治中英漂移:把'该用哪种语言'变成注入的硬事实,不靠模型自觉)。
+    有 CJK 字符 → 中文;否则(纯 ASCII 字母为主)→ 英文。"""
+    if not nl:
+        return ""
+    cjk = sum(1 for c in nl if "一" <= c <= "鿿")
+    ascii_alpha = sum(1 for c in nl if c.isascii() and c.isalpha())
+    if cjk == 0 and ascii_alpha >= 3:
+        return "en"
+    if cjk > 0:
+        return "zh"
+    return ""
+
+
+def runtime_facts_line(usage_cum: "dict | None", nl: "str | None" = None) -> str:
     """U3 自我认知:把系统掌握的【真实运行时数字】拼成 prompt 注入节(元问题按此作答,不编数)。
-    usage_cum = session.usage_cum(到上一轮为止的会话累计;None/空 = 首轮)。"""
+    usage_cum = session.usage_cum(到上一轮为止的会话累计;None/空 = 首轮)。
+    nl = 用户这句(用于语言指令,治中英漂移)。"""
     tier = "flash" if "flash" in (config.LOOP_MODEL or "") else "pro"
     win_wan = config.LOOP_CONTEXT_WINDOW // 10000            # 100 万 → 100(万为单位,中文习惯)
-    lines = [
-        "# 运行时状态(系统注入的真实数字;元问题据此答)",
-        f"主脑模型 {tier} 档(analyze_video 默认 flash,可切 pro);上下文窗口约 {win_wan} 万 token。",
-    ]
+    lines = ["# 运行时状态(系统注入的真实数字;元问题据此答)"]
+    lang = _detect_lang(nl)
+    if lang == "en":
+        lines.append("LANGUAGE: the user is writing in English — write your ENTIRE final answer "
+                     "in English. Do not drift to Chinese.")
+    elif lang == "zh":
+        lines.append("语言:用户在用中文提问 —— 最终答案【全程用中文】写,别夹英文段落。")
+    lines.append(
+        f"主脑模型 {tier} 档(analyze_video 默认 flash,可切 pro);上下文窗口约 {win_wan} 万 token。")
     if usage_cum and usage_cum.get("turns"):
         last = usage_cum.get("last") or {}
         lines.append(

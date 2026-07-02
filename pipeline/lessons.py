@@ -73,6 +73,16 @@ LESSONS: list[Lesson] = [
            "用户要【看 / 播放 / 展示】时,收口前必须用 show_video 把选中的那(几)个交付出去 —— "
            "analyze 只是你自己看,不 show 用户端就什么都没有。",
            "换模型后回归 3 次无违例,且 show_video 声明已含此用途 → 退役"),
+    Lesson("L11", "2026-07-02", "Pandora 对照测 B-T5:「tech gadgets」库里没有,却把勉强凑的几个包装成一个不存在的类目",
+           "semantic_search 永远返回'最接近'的几条(库里没有你要的也会塞) —— 每行带 relevance=strong/weak。"
+           "【所有命中都是 weak(或结果为空)时:如实说'没有真正匹配的',最多提一句最接近的是什么,"
+           "绝不把弱命中包装成一个存在的类目或假装找到了】。别造实际不存在的分类。",
+           "语义搜召回质量观察 8 周,或阈值下沉成代码硬过滤后重评"),
+    Lesson("L12", "2026-07-02", "Pandora 对照测 C-T8:top-5 类目排名把 walking(13)漏了、personal care 越位",
+           "排名 / top-N / 「最多的几类」这类【排序题】必须用【单条 SQL】的 "
+           "ORDER BY COUNT(DISTINCT video_id) DESC LIMIT N 一次排好 —— 别靠脑子回忆或跨轮拼凑手工排序"
+           "(数字对了序也会错)。",
+           "SQL 排序护栏下沉成代码后 → 退役"),
 ]
 
 
