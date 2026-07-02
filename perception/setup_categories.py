@@ -56,15 +56,17 @@ VF_UPSERT = ("INSERT INTO video_facts (video_id, predicate, matched, confidence,
 
 
 def sync_vocab(cur) -> None:
-    """seed → 两表(先补 categories,再全量对齐 aliases;删除词表里已不存在的旧行)。"""
+    """seed → 两表。顺序有讲究(review 修):新 categories 先进 → aliases 对齐 →
+    【先删】过期 aliases →【再删】过期 categories —— 反过来会撞 category_aliases.label
+    的外键(从 seed 移除一个还有别名指着的大类时,幂等重跑直接 IntegrityError)。"""
     cur.execute(DDL)
     for c in CATEGORIES:
         cur.execute("INSERT INTO categories(label) VALUES (%s) ON CONFLICT DO NOTHING", (c,))
-    cur.execute("DELETE FROM categories WHERE label != ALL(%s)", (list(CATEGORIES),))
     for alias, label in ALIASES.items():
         cur.execute("INSERT INTO category_aliases(alias, label) VALUES (%s, %s) "
                     "ON CONFLICT (alias) DO UPDATE SET label = EXCLUDED.label", (alias, label))
     cur.execute("DELETE FROM category_aliases WHERE alias != ALL(%s)", (list(ALIASES.keys()),))
+    cur.execute("DELETE FROM categories WHERE label != ALL(%s)", (list(CATEGORIES),))
 
 
 def backfill(cur, dry: bool) -> tuple[int, list[str]]:

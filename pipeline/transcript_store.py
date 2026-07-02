@@ -103,21 +103,33 @@ class RedisGcsTranscriptStore(BaseTranscriptStore):
         try:
             seq = int(self._r.incr(f"vs:txseq:{key}"))
             if seq == 1:                              # 计数器是新的,但会话可能已有旧命名的 GCS 历史
-                existing = self._gcs_count(key)       #   (老代码写下的)→ 对齐到其后,防首写覆盖
-                if existing:
-                    seq = existing + 1
+                nxt = self._gcs_next_seq(key)         #   → 对齐到【最大旧序号 + 1】(review 修:
+                if nxt is None:                       #     count 会被历史空洞骗到复用旧名)
+                    try:                              # 探测失败 → 回退计数下次再探,本次退时间戳名,
+                        self._r.set(f"vs:txseq:{key}", 0)   # 任何情况下【绝不】冒险复用序号 1
+                    except Exception:
+                        pass
+                    return f"t{time.time_ns()}"
+                if nxt > 1:
+                    seq = nxt
                     self._r.set(f"vs:txseq:{key}", seq)
             return f"{seq:09d}"
         except Exception:
             return f"t{time.time_ns()}"
 
-    def _gcs_count(self, key: str) -> int:
+    def _gcs_next_seq(self, key: str) -> "int | None":
+        """旧 GCS 历史之后的下一个安全序号:max(数字名) + 1;无历史 = 1;列举失败 = None。"""
         try:
             from google.cloud import storage
             bkt = storage.Client(project=config.GCP_PROJECT).bucket(config.GCS_BUCKET)
-            return sum(1 for _ in bkt.list_blobs(prefix=f"transcripts/{key.replace(':', '/')}/"))
+            mx = 0
+            for b in bkt.list_blobs(prefix=f"transcripts/{key.replace(':', '/')}/"):
+                stem = b.name.rsplit("/", 1)[-1].split(".")[0]
+                if stem.isdigit():
+                    mx = max(mx, int(stem))
+            return mx + 1
         except Exception:
-            return 0
+            return None
 
     def append(self, key, line):
         blob = json.dumps(line, ensure_ascii=False, default=str)
