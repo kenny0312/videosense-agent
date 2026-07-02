@@ -350,6 +350,28 @@ function renderChart(url){
 }
 
 // ── 视频展示:内嵌 <video> 播放数据库里的视频/片段(show_video 节点产出)──────
+// 签名直链 15 分钟就过期:离开后重开历史(或页面开着超时再点播)时旧 URL 已死。
+// 渲染时按需向 /v1/resign 换一批新鲜 URL;播放报错再兜底重签一次。(浏览器对同源自动带 Basic 认证。)
+async function resignVideos(ids){
+  try{
+    const r=await fetch('/v1/resign',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({video_ids:ids})});
+    if(!r.ok) return {};
+    return (await r.json()).signed||{};
+  }catch(e){ return {}; }
+}
+function mountVideo(vid, v){
+  let resigned=false;
+  if(v.start_ts!=null){ vid.addEventListener('loadedmetadata',()=>{ try{vid.currentTime=v.start_ts;}catch(e){} }, {once:true}); }
+  const resign=async()=>{                    // 换一次新鲜 URL(至多一次,防死循环)
+    if(resigned || !v.video_id) return; resigned=true;
+    const url=(await resignVideos([v.video_id]))[v.video_id];
+    if(url) vid.src=safeUrl(url);
+  };
+  if(v.signed_url) vid.src=safeUrl(v.signed_url);   // 刚回答的当场播(URL 新鲜)
+  else resign();                                    // 历史渲染:signed_url 已被剥离 → 直接重签
+  vid.addEventListener('error', resign, {once:true});   // 开着太久 URL 过期 → 报错时重签
+}
 function renderVideos(list){
   const wrap=el('<div class="vgrid"></div>');
   list.forEach((v,i)=>{
@@ -359,10 +381,9 @@ function renderVideos(list){
     head.appendChild(Object.assign(el('<span></span>'),{textContent:(v.title||('Video '+(i+1))),
       style:'overflow:hidden;text-overflow:ellipsis;white-space:nowrap'}));
     card.appendChild(head);
-    if(v.playable && v.signed_url){
+    if(v.playable && v.video_id){
       const vid=el('<video controls preload="metadata" playsinline></video>');
-      vid.src=safeUrl(v.signed_url);
-      if(v.start_ts!=null){ vid.addEventListener('loadedmetadata',()=>{ try{vid.currentTime=v.start_ts;}catch(e){} }, {once:true}); }
+      mountVideo(vid, v);
       card.appendChild(vid);
       if(v.marks && v.marks.length){
         const chips=el('<div class="chips"></div>'); chips.style.padding='9px 11px';
@@ -602,6 +623,8 @@ async function send(text){
     if(c){
       if(d.session_id && c.id!==d.session_id) c.id=d.session_id;   // 对齐后端 session_id(过期/重建)
       c.messages.push({role:'user', text:q});
+      // 存历史前剥掉短命的 signed_url(15 分钟即失效;重开时按 video_id 重签,见 mountVideo)
+      if(d.videos) d.videos.forEach(v=>{ delete v.signed_url; });
       c.messages.push({role:'assistant', data:d, ms});
       c.updatedAt=Date.now();
       chats=[c, ...chats.filter(x=>x!==c)];     // 最近活跃置顶
