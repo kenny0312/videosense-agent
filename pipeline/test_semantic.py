@@ -127,3 +127,23 @@ def test_embed_texts_stub_and_failopen(monkeypatch):
     monkeypatch.setattr(genai_client, "_CLIENT", _stub_client(fail=True))
     assert emb.embed_texts(["a"]) is None                       # API 失败 → None(fail-open)
     assert emb.embed_query("x") is None
+
+
+# ── review 修:resign id 白名单(防 _resolve_gcs 的 f-string 注入)────
+def test_resign_rejects_bad_ids(monkeypatch):
+    import base64
+    from fastapi.testclient import TestClient
+    from pipeline import video_url
+    monkeypatch.setenv("APP_ACCESS_KEYS", "kenny:pw")
+    monkeypatch.setattr(video_url, "sign_gcs_uri", lambda g, **k: "https://x/" + g if g else None)
+    import importlib, api.server as srv
+    importlib.reload(srv)
+    from pipeline import node_executor as ne
+    monkeypatch.setattr(ne, "_resolve_gcs", lambda vid: "gs://b/" + vid + ".mp4")
+    c = TestClient(srv.app)
+    auth = {"Authorization": "Basic " + base64.b64encode(b"kenny:pw").decode()}
+    r = c.post("/v1/resign", json={"video_ids": ["good_id-1", "bad' OR '1'='1", "x; DROP TABLE"]}, headers=auth)
+    assert r.status_code == 200
+    signed = r.json()["signed"]
+    assert signed["good_id-1"] and signed["good_id-1"].startswith("https://")   # 合法 id 照签
+    assert signed["bad' OR '1'='1"] is None and signed["x; DROP TABLE"] is None  # 注入 id 直接 None

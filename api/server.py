@@ -254,11 +254,18 @@ class ResignRequest(BaseModel):
 def resign(req: ResignRequest, request: Request):
     """重签视频播放 URL。签名直链短命(TTL 15 分钟),前端把它连同回答存进 localStorage;
     离开后重新打开历史会话时旧 URL 已过期 → 播不了。前端渲染历史(或播放报错)时调本端点
-    换一批新鲜 URL。owner 作用域走 _resolve_gcs(up_ 上传视频经注册表,与 show_video 同一能力面)。"""
-    from pipeline.node_executor import _resolve_gcs
+    换一批新鲜 URL。
+    能力面 = 与 show_video 完全一致(任意库内 video_id 可签;up_ 上传视频经注册表能力式解析)。
+    【注意:本端点不做 owner 隔离】—— 与现存 show_video 同一敞口,单用户下无影响;多用户前
+    需把 owner 贯通到 _resolve_gcs(deferred upload-IDOR task)。id 先过白名单再拼 SQL(防注入)。"""
+    from pipeline.node_executor import _VIDEO_ID_RE, _resolve_gcs
     from pipeline.video_url import sign_gcs_uri
     signed: dict[str, str | None] = {}
     for vid in (req.video_ids or [])[:8]:              # 与 show_video 一致:一次最多 8 个
+        vid = str(vid)
+        if not _VIDEO_ID_RE.match(vid):                # 白名单校验:_resolve_gcs 内是 f-string 拼 SQL,
+            signed[vid] = None                         #   必须挡住注入(与 show_video 同一道防线)
+            continue
         try:
             gcs = _resolve_gcs(vid)                     # up_ 走注册表(能力式);其余查 video_metadata
             signed[vid] = sign_gcs_uri(gcs) if gcs else None
