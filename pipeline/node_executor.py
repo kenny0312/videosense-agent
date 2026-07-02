@@ -306,6 +306,7 @@ def _run_analyze_video(node: Node, upstream: dict[str, Any]) -> NodeResult:
         dump = analyze(req, gcs).model_dump()         # 看视频 → 最小信封
         if not str(dump.get("answer", "")).startswith(FAILURE_ANSWER_PREFIX):
             analyze_cache.put(ckey, dump)             # 失败信封不缓存(避免钉死瞬时报错)
+            _index_analyze_result(vid, dump, ckey)    # V1:顺手入语义索引(旁路,fail-open)
     # value:video_id 在前、answer 紧随 → loop preview 露出"哪个视频 + 结论(前置)+ enough"
     return NodeResult(node.id, node.tool, ok=True, attempts=1, cache_hit=cache_hit,
                       value={"video_id": vid, **dump})
@@ -408,6 +409,44 @@ def _run_web_search(node: Node) -> NodeResult:
     return NodeResult(node.id, node.tool, ok=True, value=value)
 
 
+def _run_semantic_search(node: Node) -> NodeResult:
+    """V1:语义检索(pgvector 近邻,直连 Neon)。返回行列表 —— 可直接作 show_video/show_table
+    的上游(带 video_id/start_ts/end_ts/label),score 降序。"""
+    from pipeline import config as _cfg
+    from pipeline.embeddings import embed_query, vec_literal
+    from pipeline import semantic_index
+    if not _cfg.USE_SEMANTIC_SEARCH:
+        raise ValueError("semantic_search 未开启(USE_SEMANTIC_SEARCH=0)")
+    query = str(node.inputs.get("query") or "").strip()
+    if not query:
+        raise ValueError("semantic_search 需要 inputs.query")
+    k = max(1, min(int(node.inputs.get("k") or _cfg.SEMANTIC_SEARCH_K), 20))
+    vec = embed_query(query)
+    if vec is None:
+        raise ValueError("query embedding 失败(稍后重试,或改用 sql_query/analyze_video)")
+    rows = semantic_index.search(vec_literal(vec), k)
+    return NodeResult(node.id, node.tool, ok=True, value=rows)
+
+
+def _index_analyze_result(video_id: str, dump: dict, content_key: str) -> None:
+    """V1 写钩子:analyze 出结果顺手入语义索引 —— 每次付费观看永久变免费检索。
+    旁路 + 全程 fail-open:任何失败只损失这条索引,绝不影响本轮作答。"""
+    try:
+        from pipeline import config as _cfg
+        if not _cfg.USE_SEMANTIC_SEARCH:
+            return
+        from pipeline.embeddings import embed_texts, vec_literal
+        from pipeline.semantic_index import analyze_snippet, index_entry
+        entry = analyze_snippet(video_id, dump, content_key)
+        if entry is None:
+            return
+        vecs = embed_texts([entry[1]])
+        if vecs:
+            index_entry(video_id, "analyze", entry, vec_literal(vecs[0]))
+    except Exception:
+        pass
+
+
 def _run_update_memory(node: Node, owner: str) -> NodeResult:
     """L2:写跨会话用户记忆(判据在工具声明里从严;后端见 pipeline/user_memory)。"""
     from pipeline import config as _cfg, user_memory
@@ -443,6 +482,8 @@ def execute_node(node: Node, upstream: dict[str, Any],
                 res = _run_web_search(node)
             elif node.tool == "update_memory":
                 res = _run_update_memory(node, owner)
+            elif node.tool == "semantic_search":
+                res = _run_semantic_search(node)
             else:
                 raise ValueError(f"未知数据工具: {node.tool}")
             step.ok(rows=len(res.videos) if res.videos else
