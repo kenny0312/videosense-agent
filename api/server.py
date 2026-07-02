@@ -246,6 +246,27 @@ def upload_url(req: UploadUrlRequest, request: Request):
             "content_type": req.content_type, "max_bytes": config.MAX_UPLOAD_BYTES}
 
 
+class ResignRequest(BaseModel):
+    video_ids: list[str] = Field(default_factory=list, description="要重新签发播放 URL 的 video_id 列表")
+
+
+@app.post("/v1/resign")
+def resign(req: ResignRequest, request: Request):
+    """重签视频播放 URL。签名直链短命(TTL 15 分钟),前端把它连同回答存进 localStorage;
+    离开后重新打开历史会话时旧 URL 已过期 → 播不了。前端渲染历史(或播放报错)时调本端点
+    换一批新鲜 URL。owner 作用域走 _resolve_gcs(up_ 上传视频经注册表,与 show_video 同一能力面)。"""
+    from pipeline.node_executor import _resolve_gcs
+    from pipeline.video_url import sign_gcs_uri
+    signed: dict[str, str | None] = {}
+    for vid in (req.video_ids or [])[:8]:              # 与 show_video 一致:一次最多 8 个
+        try:
+            gcs = _resolve_gcs(vid)                     # up_ 走注册表(能力式);其余查 video_metadata
+            signed[vid] = sign_gcs_uri(gcs) if gcs else None
+        except Exception:
+            signed[vid] = None                         # 单个失败不拖累其余(fail-open)
+    return {"signed": signed}
+
+
 @app.post("/v1/video_vibe_query/stream")
 def video_vibe_query_stream(req: VibeQueryRequest, request: Request):
     """SSE 流式(M6b):loop 多步往返时把每步进度实时推给前端,最后推一条 result。
