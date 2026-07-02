@@ -24,9 +24,11 @@ _LOCK = threading.Lock()
 # (上下文缓存、计费四舍五入、赠金都会偏差)。按需更新:
 #   https://cloud.google.com/vertex-ai/generative-ai/pricing
 _PRICE = {
-    "gemini-2.5-pro":   {"in": 1.25, "out": 10.0},
-    "gemini-2.5-flash": {"in": 0.30, "out": 2.50},
-    "gemini-3.5-flash": {"in": 1.50, "out": 9.00},   # U5:global 端点价(非 global 1.65/9.90)
+    # cached = 隐式缓存命中部分的单价(L3:静态前缀字节稳定后自动命中,已实测;
+    # 2.5 系 = 75% 折扣,3.5-flash 官方 cached 价 $0.15)
+    "gemini-2.5-pro":   {"in": 1.25, "out": 10.0, "cached": 0.3125},
+    "gemini-2.5-flash": {"in": 0.30, "out": 2.50, "cached": 0.075},
+    "gemini-3.5-flash": {"in": 1.50, "out": 9.00, "cached": 0.15},   # U5:global 端点价
 }
 
 
@@ -47,11 +49,13 @@ def add_usage(resp, model: str) -> None:
     if not m:
         return
     with _LOCK:                         # 并行 worker 共享同一 dict → 增量需互斥
-        d = u.setdefault(model, {"in": 0, "out": 0, "total": 0, "calls": 0})
+        d = u.setdefault(model, {"in": 0, "out": 0, "total": 0, "calls": 0, "cached": 0})
         d["in"]    += getattr(m, "prompt_token_count", 0) or 0
         d["out"]   += getattr(m, "candidates_token_count", 0) or 0
         d["total"] += getattr(m, "total_token_count", 0) or 0
         d["calls"] += 1
+        # L3:隐式缓存命中的输入 tokens(是 prompt_token_count 的子集,便宜 ~10x;两 SDK 同字段名)
+        d["cached"] += getattr(m, "cached_content_token_count", 0) or 0
 
 
 def get_usage() -> dict:
@@ -66,15 +70,21 @@ def summarize(usage: dict | None = None) -> dict:
     tout  = sum(d["out"]   for d in usage.values())
     ttot  = sum(d["total"] for d in usage.values())
     calls = sum(d["calls"] for d in usage.values())
+    tcach = sum(d.get("cached", 0) for d in usage.values())
     cost = 0.0
     for model, d in usage.items():
         p = _PRICE.get(model)
-        if p:
-            cost += d["in"] / 1e6 * p["in"] + d["out"] / 1e6 * p["out"]
+        if not p:
+            continue
+        cached = min(d.get("cached", 0), d["in"])     # cached ⊂ in;防脏数据把成本算成负
+        cost += ((d["in"] - cached) / 1e6 * p["in"]
+                 + cached / 1e6 * p.get("cached", p["in"])
+                 + d["out"] / 1e6 * p["out"])
     return {
         "tokens_in":    tin,
         "tokens_out":   tout,
         "tokens_total": ttot,
+        "tokens_cached": tcach,          # L3:命中隐式缓存的输入(已按折扣价计入 cost)
         "llm_calls":    calls,
         "cost_usd":     round(cost, 6),
         "by_model":     usage,

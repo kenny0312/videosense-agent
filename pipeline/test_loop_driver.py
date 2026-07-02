@@ -350,6 +350,20 @@ def test_price_table_covers_35flash():
     s = u.summarize({"gemini-3.5-flash": {"in": 1_000_000, "out": 100_000,
                                           "total": 1_100_000, "calls": 2}})
     assert abs(s["cost_usd"] - (1.50 + 0.90)) < 1e-9      # $1.5/M in + $9/M out
+    assert s["tokens_cached"] == 0                        # 无 cached 键 → 兼容旧形状
+
+
+def test_cached_tokens_discounted():
+    """L3:命中隐式缓存的输入按折扣价计;cached ⊂ in,防负数。"""
+    from pipeline import usage as u
+    s = u.summarize({"gemini-3.5-flash": {"in": 1_000_000, "out": 0, "total": 1_000_000,
+                                          "calls": 1, "cached": 600_000}})
+    expect = 0.4 * 1.50 + 0.6 * 0.15                      # 40% 全价 + 60% 缓存价
+    assert abs(s["cost_usd"] - expect) < 1e-9
+    assert s["tokens_cached"] == 600_000
+    dirty = u.summarize({"gemini-3.5-flash": {"in": 100, "out": 0, "total": 100,
+                                              "calls": 1, "cached": 999}})
+    assert dirty["cost_usd"] >= 0                          # 脏数据 cached>in 不产生负成本
 
 
 # ── U6:web_search(声明门控 + 结果解析,全离线 stub)──────────
