@@ -74,14 +74,20 @@ def _run_one(task: dict, *, execute, sandbox, trace, schema, session_id, owner,
     """跑一个子 agent 到收敛,返回 {instruction, output}。任一异常 → 软失败进 output(不炸整批)。"""
     from pipeline import loop_driver
     instruction = task["instruction"]
-    allow = set(task["tools"])
-    # 受限声明:全量 loop 声明按名过滤到本子 agent 的工具子集。spawn_agents 不在白名单 →
-    # 天然被过滤掉(即使模型硬塞进 tools 也在 _clean_tasks 被丢),保证一层、无递归。
-    decls = [d for d in loop_driver.loop_function_declarations() if d["name"] in allow]
+    # 受限声明:先取【当前真正启用】的工具(loop_function_declarations 已按 USE_* 门过滤 ——
+    # 关掉的 web_search/semantic_search 等根本不在里面),再与本任务请求的子集求交。
+    # 请求的工具若被 feature flag 关掉 → 不进 decls;交集为空(请求的全被关)→ 退回默认子集里
+    # 【仍启用】的(analyze_video/sql_query 从不设门,恒非空)—— 避免 decls=[] 造出空 Tool,
+    # 那会让子 agent 无工具凭空编答案(review 确认)。spawn_agents 不在 _SUBAGENT_ALLOWED,
+    # task["tools"] 里天然没有 → 一层、无递归。
+    loop_decls = loop_driver.loop_function_declarations()
+    enabled = {d["name"] for d in loop_decls}
+    usable = {t for t in task["tools"] if t in enabled} or {t for t in _SUBAGENT_DEFAULT if t in enabled}
+    decls = [d for d in loop_decls if d["name"] in usable]
     system = _SUBAGENT_SYSTEM
     if task["video_ids"]:
         system += f"\n\n【只针对这些视频作答】:{task['video_ids']}"
-    if "sql_query" in allow and schema:                  # 要写 SQL 就得看库结构(镜像主 loop 的 _loop_system)
+    if "sql_query" in usable and schema:                 # 要写 SQL 就得看库结构(镜像主 loop 的 _loop_system)
         import json as _json
         system += "\n\n# 数据库结构(sql_query 用)\n" + _json.dumps(schema, ensure_ascii=False)
     try:
@@ -101,14 +107,15 @@ def run_fanout(tasks: Any, *, sandbox, trace, schema: dict | None = None,
     """spawn_agents 主体:并行跑 K 个子 agent,按【任务顺序】返回 [{instruction, output}...]
     (若截断,末尾追加一条系统提示行)。综合归主脑 —— 本函数不再调 LLM 汇总(设计 §4/§10-③)。"""
     from pipeline import config
-    cleaned, note = _clean_tasks(tasks, config.SUBAGENT_MAX_FANOUT)
+    max_fanout = max(1, config.SUBAGENT_MAX_FANOUT)      # 防误配 0/负 → 截断成空 → 后面 cleaned[0] IndexError(review 确认)
+    cleaned, note = _clean_tasks(tasks, max_fanout)
     kw = dict(execute=execute, sandbox=sandbox, trace=trace, schema=schema,
               session_id=session_id, owner=owner,
               model=(config.SUBAGENT_MODEL or config.LOOP_MODEL),
               max_steps=config.SUBAGENT_MAX_STEPS)
-    n = len(cleaned)
+    n = len(cleaned)                                     # _clean_tasks 已保证 1 ≤ n ≤ max_fanout
     results: list[dict] = [None] * n                     # 预分配 → 按任务顺序回填(确定性)
-    workers = min(n, config.SUBAGENT_MAX_FANOUT)
+    workers = min(n, max_fanout)
     if workers > 1:
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futs = {}

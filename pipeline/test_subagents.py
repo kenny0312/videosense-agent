@@ -102,6 +102,39 @@ def test_run_fanout_truncation_appends_system_row(monkeypatch):
     assert "超过扇出上限" in out[-1]["output"]
 
 
+def test_gated_off_tool_falls_back_to_enabled_default(monkeypatch):
+    """review#1:请求的工具被 feature flag 关掉(不在 loop_function_declarations)→ 退回默认启用子集,
+    decls 绝不为空(否则子 agent 无工具凭空编)。"""
+    from pipeline import loop_driver
+    captured: list = []
+    # 模拟 USE_WEB_SEARCH=0 / USE_SEMANTIC_SEARCH=0:只有 analyze_video/sql_query 启用
+    monkeypatch.setattr(loop_driver, "loop_function_declarations",
+                        lambda: [{"name": n} for n in ("analyze_video", "sql_query")])
+
+    def cap(model, decls, system, image=None):
+        captured.append([d["name"] for d in decls])
+        return object()
+    monkeypatch.setattr(loop_driver, "make_conversation", cap)
+    monkeypatch.setattr(loop_driver, "run_loop", lambda uq, c, e, **k: _fake_lr("OUT"))
+    out = subagents.run_fanout([{"instruction": "x", "tools": ["web_search"]}],
+                               sandbox=None, trace=None, execute=lambda *a, **k: None)
+    assert out[0]["output"] == "OUT"                     # 没有 soft-fail
+    assert captured[0]                                    # decls 非空(退回启用默认)
+    assert "web_search" not in captured[0]               # 被关的工具没进去
+    assert set(captured[0]) <= {"analyze_video", "sql_query"}
+
+
+def test_fanout_zero_or_negative_config_does_not_crash(monkeypatch):
+    """review#2:SUBAGENT_MAX_FANOUT 误配 0/负 → clamp 到 1,至少跑 1 个,不 IndexError。"""
+    monkeypatch.setattr(config, "SUBAGENT_MAX_FANOUT", 0)
+    _stub_loop(monkeypatch)
+    _stub_run_loop(monkeypatch)
+    out = subagents.run_fanout([{"instruction": "A"}, {"instruction": "B"}],
+                               sandbox=None, trace=None, execute=lambda *a, **k: None)
+    assert out[0]["output"] == "OUT:A"                    # 跑了(clamp 到 1)
+    assert any("超过扇出上限" in r["output"] for r in out)  # 其余截断并告知
+
+
 def test_subagent_never_sees_spawn_agents(monkeypatch):
     """一层、无递归:即便 task.tools 里塞了 spawn_agents,子 agent 的声明里也不含它。"""
     captured: list = []
