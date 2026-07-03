@@ -30,9 +30,6 @@ log = logging.getLogger("pipeline.loop_driver")
 
 # 上游句柄约定(M2 spike 验过 10/10):多输入工具用命名 result_id 参数引用上游步。
 UPSTREAM_HANDLES: dict[str, list[str]] = {
-    "merge_asof":  ["left_result_id", "right_result_id"],
-    "interpolate": ["data_result_id"],
-    "ols_regress": ["data_result_id"],
     "plot":        ["data_result_id"],
     "python":      ["data_result_id"],
     "show_video":  ["data_result_id"],   # 可选(也可直接给 video_ids)
@@ -442,8 +439,7 @@ class LoopOutcome:
 _CONSTITUTION = (
     "你是视频分析查询的编排器。每步可调用工具;工具执行后会返回 result_id + 结果预览。\n"
     "要把某个先前结果喂给下游工具,就把它的 result_id 填进该工具的句柄参数"
-    "(如 plot 的 data_result_id;merge_asof 的 left_result_id=左表/视频侧、"
-    "right_result_id=右表/传感器侧)。\n"
+    "(如 show_table / plot 的 data_result_id = 上一步 sql_query 的结果)。\n"
     "拿到足够信息后,用【纯文本】回答用户,不要再调用工具;回答一律用用户的语言。\n\n"
     "# 先看这一轮是什么(闲聊 / 超范围 / 不清楚也由你判 —— 你有完整上文)\n"
     "- 纯打招呼 / 问你是谁 / 闲聊 → 以【Kenny Qiu 手下的视频理解智能体】身份用一句话轻松答"

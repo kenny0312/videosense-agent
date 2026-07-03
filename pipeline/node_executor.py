@@ -1,14 +1,14 @@
 """
-单节点执行器 —— DAG 里一个节点的执行单元。
+单节点执行器 —— loop 每步一个工具调用的执行单元。
 
 路由:
-    数据获取类(sql_query / threshold_sweep)
-        → 主进程经 MCP 执行(持有凭证、可信),不进沙箱
-    数据科学类(merge_asof / interpolate / ols_regress / plot / ...)
-        → Code Generator 生成 Python → 注入上游数据 → Stage 5 沙箱执行
-          → 失败把 stderr 回喂重写(Stage 6 自愈),最多 CODE_MAX_RETRIES 次
+    数据获取类(sql_query / show_* / analyze_video / semantic_search / …)
+        → 主进程经 MCP / 内建 handler 执行(持有凭证、可信),不进沙箱
+    数据科学类(plot / python)
+        → Code Generator 生成 Python → 注入上游数据 → 沙箱执行
+          → 失败把 stderr 回喂重写(自愈),最多 CODE_MAX_RETRIES 次
 
-自愈作用在**单个节点**上:n3 失败只重试 n3,上游 n1/n2 的结果不丢。
+自愈作用在**单个工具调用**上:失败只重试它,上游结果不丢。
 """
 from __future__ import annotations
 
@@ -312,23 +312,7 @@ def _run_analyze_video(node: Node, upstream: dict[str, Any]) -> NodeResult:
                       value={"video_id": vid, **dump})
 
 
-def _run_threshold_sweep(node: Node) -> NodeResult:
-    """Stage 9 动态探针:主进程当 MCP 代理,逐阈值代入模板查询并汇总。"""
-    template = node.inputs.get("sql_template", "")
-    thresholds = node.inputs.get("thresholds", [0.5, 0.6, 0.7, 0.8, 0.9])
-    out = []
-    for t in thresholds:
-        sql = template.replace("{threshold}", str(t))
-        rows = mcp_client.query_db(sql)
-        # 约定模板返回单行单聚合列;取首行首个数值列
-        agg = {}
-        if rows:
-            agg = {k: v for k, v in rows[0].items()}
-        out.append({"threshold": t, **agg})
-    return NodeResult(node.id, node.tool, ok=True, value=out, attempts=1)
-
-
-# ── 沙箱类(CodeGen + Stage 5/6)───────────────
+# ── 沙箱类(CodeGen + 沙箱执行 + 自愈)───────────────
 
 def _run_sandbox_node(node: Node, upstream: dict[str, Any],
                       sandbox: SandboxClient, trace: Trace) -> NodeResult:
@@ -495,13 +479,11 @@ def execute_node(node: Node, upstream: dict[str, Any],
     if node.tool == "sql_query":
         return _run_sql_query(node, schema or {}, trace)
 
-    # 其它数据节点(threshold_sweep):主进程经 MCP,单次执行
+    # 其它数据节点:主进程经 MCP / 内建 handler,单次执行
     if not needs_sandbox(node.tool):
         step = trace.step(f"[{node.id}/{node.tool}] MCP query")
         try:
-            if node.tool == "threshold_sweep":
-                res = _run_threshold_sweep(node)
-            elif node.tool == "show_video":
+            if node.tool == "show_video":
                 res = _run_show_video(node, upstream)
             elif node.tool == "show_table":
                 res = _run_show_table(node, upstream)

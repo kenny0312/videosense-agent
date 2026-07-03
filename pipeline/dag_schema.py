@@ -21,29 +21,20 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 #
 # 两类:
 #   数据获取类(在主进程经 MCP 执行,不进沙箱)
-#       sql_query        Planner 直接写 SQL,经 MCP query_db 执行
-#       threshold_sweep  阈值扫描:主进程循环拼 SQL 经 MCP 查,做"动态探针"(Stage 9)
+#       sql_query        直接写 SQL,经 MCP query_db 执行
 #
-#   数据科学类(Code Generator 生成 Python,进 Stage 5 沙箱执行 + Stage 6 自愈)
-#       load_sensor_csv  生成/加载传感器 CSV(Stage 7 mock 数据)
-#       merge_asof       近似时间匹配,跨模态合并(Stage 7)
-#       interpolate      scipy 插值重采样到统一时间轴(Stage 8)
-#       ols_regress      statsmodels OLS 回归(Stage 9)
-#       plot             matplotlib 出图(Stage 10,产物存回 GCS/本地)
+#   数据科学类(Code Generator 生成 Python,进沙箱执行 + 自愈)
+#       plot             纯 Python 生成 SVG 出图(产物存回 GCS/本地)
 #       python           通用逃生舱:任意 NL 描述的分析
-DATA_TOOLS = {"sql_query", "threshold_sweep", "show_video", "show_table", "analyze_video",
+DATA_TOOLS = {"sql_query", "show_video", "show_table", "analyze_video",
               "web_search", "update_memory", "semantic_search", "spawn_agents"}
-SANDBOX_TOOLS = {
-    "load_sensor_csv", "merge_asof", "interpolate",
-    "ols_regress", "plot", "python",
-}
+SANDBOX_TOOLS = {"plot", "python"}
 ALL_TOOLS = DATA_TOOLS | SANDBOX_TOOLS
 
 ToolName = Literal[
-    "sql_query", "threshold_sweep", "show_video", "show_table", "analyze_video",
+    "sql_query", "show_video", "show_table", "analyze_video",
     "web_search", "update_memory", "semantic_search", "spawn_agents",
-    "load_sensor_csv", "merge_asof", "interpolate",
-    "ols_regress", "plot", "python",
+    "plot", "python",
 ]
 
 

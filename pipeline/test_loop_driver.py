@@ -47,18 +47,18 @@ def test_converges_on_text():
 
 
 def test_handle_resolution_passes_upstream_in_order():
+    # 控制流验证:多个上游按顺序解析进 upstream(与具体工具无关,用 python 逃生舱当载体)
     conv = ScriptedConv([
-        ([Call("sql_query", {"sql": "video"}, []), Call("sql_query", {"sql": "sensor"}, [])], None),
-        ([Call("merge_asof", {"left_on": "ts", "right_on": "t", "tolerance_ms": 500},
-               ["c0_0", "c0_1"])], None),
+        ([Call("sql_query", {"sql": "a"}, []), Call("sql_query", {"sql": "b"}, [])], None),
+        ([Call("python", {"instruction": "combine"}, ["c0_0", "c0_1"])], None),
         ([], "merged"),
     ])
-    ex = make_exec(values={"sql_query": [{"x": 1}], "merge_asof": [{"m": 1}]})
+    ex = make_exec(values={"sql_query": [{"x": 1}], "python": [{"m": 1}]})
     r = run_loop("q", conv, ex, max_steps=8)
     assert r.answer == "merged"
-    merge = [c for c in ex.seen if c["name"] == "merge_asof"][0]
-    assert merge["uses"] == ["c0_0", "c0_1"]                 # 顺序保留(左、右)
-    assert set(merge["upstream"]) == {"c0_0", "c0_1"}        # upstream 由 ledger 解析得到
+    step = [c for c in ex.seen if c["name"] == "python"][0]
+    assert step["uses"] == ["c0_0", "c0_1"]                 # 顺序保留
+    assert set(step["upstream"]) == {"c0_0", "c0_1"}        # upstream 由 ledger 解析得到
 
 
 def test_max_steps_termination():
@@ -96,11 +96,8 @@ def test_failed_step_feeds_error_not_crash():
 
 def test_declarations_have_handles_without_mutating_specs():
     decls = ld.loop_function_declarations()
-    merge = next(d for d in decls if d["name"] == "merge_asof")
-    assert "left_result_id" in merge["parameters"]["properties"]
-    assert "right_result_id" in merge["parameters"]["required"]
     plot = next(d for d in decls if d["name"] == "plot")
-    assert "data_result_id" in plot["parameters"]["required"]
+    assert "data_result_id" in plot["parameters"]["required"]   # 必填句柄注入
     show = next(d for d in decls if d["name"] == "show_video")
     assert "data_result_id" in show["parameters"]["properties"]
     assert "data_result_id" not in show["parameters"]["required"]   # show_video 句柄可选
