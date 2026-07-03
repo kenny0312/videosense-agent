@@ -1,216 +1,72 @@
 <div align="center">
 
-# 🎬 VideoSense Agent
+<img src="docs/hero.svg" alt="VideoSense — 随便问你的视频库，它用证据回答" width="100%" />
 
-### 面向任意视频库的自然语言理解与分析 —— 用大白话提问,拿到答案、图表,以及背后的代码。
-
-[![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-Production-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
-[![Powered by Gemini](https://img.shields.io/badge/Powered%20by-Gemini%202.5-4285F4?logo=google&logoColor=white)](https://deepmind.google/technologies/gemini/)
-[![Neon](https://img.shields.io/badge/Neon-Serverless%20Postgres-00E599?logo=postgresql&logoColor=white)](https://neon.tech/)
-[![Google Cloud](https://img.shields.io/badge/Google%20Cloud-Cloud%20Run%20%C2%B7%20Vertex%20AI-4285F4?logo=googlecloud&logoColor=white)](https://cloud.google.com/run)
+<br/><br/>
 
 [English](README.md) · **简体中文**
 
-</div>
-
----
-
-## 演示
-
-<div align="center">
-
-<img src="docs/demo.gif" alt="VideoSense Agent 演示" width="800"/>
-
-<sub>一个问题 → 一份多步计划 → 自愈执行 → 答案 + 代码。<a href="docs/DEMO.md"><b>查看完整走读 →</b></a></sub>
+### 你的视频里藏着答案。VideoSense 帮你找到它——<br/>它真的看视频、自己推理，并用可播放的片段和图表来证明。
 
 </div>
 
-```
-你:   Find every video that contains skiing or snowboarding.
-→     3 个视频 · Skiing in Aspen · Snowboarding Slopes · Backcountry Snowboarding Run
+<br/>
 
-你:   Plot start time vs. detection confidence for all confirmed activities.
-→     散点图  →  http://localhost:8000/plots/bb9ab8e1.svg
+<div align="center">
+  <img src="docs/demo.gif" alt="VideoSense 实机演示——一个问题变成一个带片段的答案" width="820" />
+</div>
 
-你:   Take the 3 highest-confidence skiing clips, align them with heart-rate
-      sensor data, resample to 10 Hz, and run an OLS regression.
-→     时间对齐样本上的 R² · 外加算出它的那段确切 Python 代码
-```
+<br/>
 
----
+## 💬 你来问 · 它来答
 
-## 它能做什么
+| 你问… | …你得到 |
+|:---|:---|
+| 🪂 &nbsp;*“有多少条翼装飞行的视频？”* | **“12 条”**——每一条它都看过并标注了阶段 |
+| 🎬 &nbsp;*“放一下最短的那条”* | **就地播放** |
+| 🔎 &nbsp;*“哪些片段只有自由落体、没开伞？”* | 一份筛选好的列表，每条都**可播放** |
+| 📊 &nbsp;*“画一下置信度分布”* | 一张**图表** |
+| 💬 &nbsp;*“再列几条 · 你是怎么得出来的？”* | **记得**上下文，接着聊 |
 
-**VideoSense Agent 把原始视频变成一个可以用自然语言追问的知识库。**
+<br/>
 
-一个多模态大模型逐条"观看"视频,抽取出带置信度的结构化事实
-("*snowboarding*, 0.96, 3s–36s")。在这层事实之上,你像问数据分析师一样提问 ——
-*"找"*、*"对比"*、*"关联"*、*"画图"* —— 系统会:
+## ✨ 为什么不一样
 
-1. **路由(Route)**:先判断这个问题用现有数据和工具到底能不能答,以及它是不是对上一轮的**追问**。同一会话里,*"把那批画出来"*、*"你刚才怎么算的?"* 这类指代会对照**之前真正算过的结果**去解析;只有实在对不上号时,它才会**老实说答不了,而不是瞎猜**。
-2. **规划(Plan)**:把问题编译成一张可执行的步骤图。
-3. **写码(Write)**:为每个分析步骤即时生成 Python。
-4. **运行(Run)**:在隔离沙箱里跑这些代码,**出错能自我修复**(数据库步骤同样会自愈)。
-5. **返回(Return)**:给出答案、图表,以及产出它们的那段确切代码。
+<table>
+<tr>
+<td width="33%" valign="top" align="center"><br/>💬<h3>直接问</h3><sub>不写 SQL，不配仪表盘。<br/>大白话进，答案出。</sub><br/><br/></td>
+<td width="33%" valign="top" align="center"><br/>🧠<h3>它真的在看</h3><sub>Gemini 多模态读的是画面本身，<br/>不是文件名和元数据。</sub><br/><br/></td>
+<td width="33%" valign="top" align="center"><br/>🎬<h3>看得见的答案</h3><sub>答案 + 片段 + 图表，<br/>连推理过程也给你看。</sub><br/><br/></td>
+</tr>
+</table>
 
-不用配仪表盘、不用写 SQL、不用伺候 notebook。问就完事。
-
-### 凭什么不一样
-
-| | 传统视频搜索 | VideoSense Agent |
-|---|---|---|
-| **查询方式** | 关键词 / 标签匹配 | 完整自然语言 |
-| **结果** | 一串片段 | 计算分析、回归、图表 |
-| **新问题** | 搭一条新流水线 | 直接问 —— 代码按问题即时生成 |
-| **追问上文** | 每次从头来 | 记得这次会话 —— *"把那批画出来"*、*"你刚才怎么算的?"* 直接接得上 |
-| **可信度** | 黑盒 | 同时返回**计划**和**可运行的代码** |
-| **答不了时** | 给错的或空的结果 | 诚实拒答,并附一句大白话理由 |
-
----
-
-## 工作原理
+<br/>
 
 <div align="center">
 
-<img src="docs/how-it-works.svg" alt="VideoSense 架构:自然语言问题流经 Router → Planner → Code Generator → Secure Sandbox 得到答案;Upstash Redis 持有跨轮、跨实例的会话记忆,Neon Postgres 知识库经 MCP 喂给 Planner。" width="900"/>
+### 🚀 30 秒跑起来——免费 mock 模式
 
 </div>
 
-整条流水线把**"决定做什么"**(一份透明、可审计的计划)和**"具体去做"**(在隔离环境里运行、能自我修复的生成代码)分开。简单查询走快速通道;只有分析类工作才需要付出代码生成与沙箱执行的成本。
-
----
-
-## 技术栈
-
-构建在现代云原生 AI 栈之上:
-
-- **🧠 多模态 AI** —— Gemini 2.5(Vertex AI),同时负责感知与代码生成
-- **🔌 Model Context Protocol** —— 标准化、基于真实 schema 的数据库访问
-- **🛡️ 隔离执行** —— Cloud Run + gVisor 沙箱,带 AST 策略闸门
-- **🗄️ 云端数据** —— Neon serverless Postgres · Google Cloud Storage
-- **💬 共享会话记忆** —— Upstash Redis · 跨轮 *且* 跨实例(多副本续聊),与查询库物理隔离
-- **📊 逐请求审计** —— 谁 · token · 成本 → Cloud Logging
-- **⚡ 生产级 API** —— FastAPI on Cloud Run(多副本 + 会话亲和),全容器化
-
----
-
-## 环境要求
-
-- **Python** 3.11+
-- **Google Cloud** 账号(已开启 Vertex AI),且 `gcloud` CLI 已认证
-- **(可选)** Neon(或任意 PostgreSQL)—— *或者*用零成本 **mock 模式**(无需数据库)
-
-安装依赖:
-
 ```bash
-pip install -r requirements.txt
+export GCP_PROJECT="your-gcp-project"  REPL_USE_MOCK_DB=1
+uvicorn api.server:app --port 8000        # 然后打开 http://localhost:8000
 ```
 
-认证 Google Cloud(Gemini 需要):
+<sub>不需要数据库、零成本——内置示例视频库。只需 <code>gcloud auth application-default login</code> 用于调用 Gemini。</sub>
 
-```bash
-gcloud auth application-default login
-```
+<br/>
 
----
+## 🧠 它是怎么回答的
 
-## 快速开始
+没有写死的流水线。一个以 **Gemini 2.5** 为大脑的 agent 循环自己决定下一步——看视频、查它抽取过的事实、语义检索、跑计算、画图——直到能**证明**一个答案为止，每一步都实时流式返回。它跨会话记得你、按请求计量自己的成本，并带着 **146 个测试**跑在 Cloud Run 生产环境上。
 
-最快的体验方式 —— **mock 模式**用一个内存数据库,内置示例视频事实,
-**无需数据库、存储零成本**。
+<sub>想看内部实现？架构笔记在 [`docs/design/`](docs/design/)。</sub>
 
-### 1. 配置环境
-
-```powershell
-$env:GCP_PROJECT      = "your-gcp-project-id"                  # Vertex AI 项目(Gemini 必填)
-$env:REPL_USE_MOCK_DB = "1"                                    # 零成本内存数据
-$env:SANDBOX_URL      = "https://your-sandbox-xxxxx.run.app"   # 托管的安全沙箱(仅科学步骤需要)
-$env:SANDBOX_TOKEN    = (gcloud auth print-identity-token)
-```
-
-### 2. 启动 API
-
-```bash
-uvicorn api.server:app --port 8000
-```
-
-### 3. 提问
-
-在浏览器打开内置**聊天界面** —— 或 Swagger 文档:
-
-```
-http://localhost:8000/         # 聊天界面 —— 多轮、历史会话侧栏、富渲染(表格/图表/代码)
-http://localhost:8000/docs     # 交互式 API 文档
-```
-
-或直接调用:
-
-```bash
-curl -X POST http://localhost:8000/v1/video_vibe_query \
-  -H "Content-Type: application/json" \
-  -d '{"query": "Find every video that contains skiing or snowboarding."}'
-```
-
-> 💡 想用真实数据?去掉 `REPL_USE_MOCK_DB`,把 `ALLOYDB_*` 变量指向你的 Neon 数据库。
-> 想在终端用 CLI 而非 HTTP?运行 `python -m pipeline.main`。
-
----
-
-## 调用 API
-
-**`POST /v1/video_vibe_query`**
-
-```jsonc
-// 请求(省略 session_id 即开新会话)
-{ "query": "Plot start time vs. confidence for those.", "session_id": "ab12cd34…" }
-
-// 响应
-{
-  "ok": true,
-  "status": "ok",                                  // ok · refused · error · smalltalk
-  "session_id": "ab12cd34…",                       // 下一轮把它带回来即可续聊
-  "turn_type": "followup",                         // new · followup · meta
-  "answer": { "n_points": 45 },
-  "dag": { "nodes": [ /* 实际执行的计划 */ ] },
-  "generated_code": { "n2": "import json ..." },   // 真正跑过的代码
-  "plot_url": "http://localhost:8000/plots/bb9ab8e1.svg",
-  "trace": [ /* 每一步,带耗时 */ ],
-  "trace_summary": "trace: 4/4 steps ok, total 53578ms"
-}
-```
-
-图表直接由 API 提供 —— 在浏览器打开 `plot_url` 即可。
-
-把响应里的 `session_id` 在下一次请求带回来,就能**接着聊** —— *"把那批画出来"*、*"你刚才怎么算的?"*
-这类追问会对照之前真正算过的结果去解析。只有指代实在对不上任何真实结果时,响应才返回
-`"status": "refused"` 和一句大白话 `reason` —— 绝不编造答案。
-
-### 可以试试这些问题
-
-| 这样问 | 你会得到 |
-|----------|---------|
-| `How many videos are in the database?` | 一个计数 |
-| `Find every video that contains skiing or snowboarding.` | 一个筛选列表 |
-| `Plot start time vs. confidence for all confirmed activities.` | 一个散点图 URL |
-| `Show the distribution of confidence scores in 0.1 buckets.` | 一个直方图 |
-| `Take the top-3 skiing clips, align them with heart-rate data, resample to 10 Hz, and run an OLS regression.` | 一个回归结果 + 代码 |
-
----
-
-## 项目结构
-
-```
-pipeline/     查询引擎:router · planner · code generator · executor · orchestrator
-api/          FastAPI 服务(POST /v1/video_vibe_query)
-sandbox/      隔离代码执行服务(Cloud Run + gVisor)
-mcp_server/   基于真实 schema 的数据库访问(经 MCP)
-perception/   从视频中做多模态事实抽取
-ingestion/    视频 → 转码 → 云存储 → 元数据
-```
-
----
+<br/>
 
 <div align="center">
-<sub>基于 Gemini、MCP 与自愈代码沙箱,构建于 Google Cloud。</sub>
+
+<sub>由 <a href="https://kenny0312.github.io">Kenny Qiu</a> 构建 &nbsp;·&nbsp; 另见 <a href="https://github.com/kenny0312/social-video-insights">SocialLens</a>——社媒视频洞察 demo &nbsp;·&nbsp; <a href="README.md">English</a></sub>
+
 </div>
