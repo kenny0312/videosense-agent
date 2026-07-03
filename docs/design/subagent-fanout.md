@@ -1,6 +1,6 @@
 # 设计:可选子 agent fan-out(CC-ultra 式,按需 spawn 不加默认层)
 
-> 状态:Design(评审后动手) · 范围:`pipeline/subagents.py`(新)、`node_specs`/`node_executor`(新 `spawn_agents` 工具)、`loop_driver`(复用 run_loop) · 关联:[architecture-prefer-simplicity](../../.claude/...)(本设计的核心张力)、analyze-video-cost、one-loop-and-runtime-flags
+> 状态:**Shipped**(PR [#92](https://github.com/kenny0312/videosense-agent/pull/92),2026-07-03;`USE_SUBAGENTS` 默认 0,验收见 releases/2026-07-03-sa-subagents.md) · 范围:`pipeline/subagents.py`(新)、`node_specs`/`node_executor`(新 `spawn_agents` 工具)、`loop_driver`(复用 run_loop) · 关联:[architecture-prefer-simplicity](../../.claude/...)(本设计的核心张力)、analyze-video-cost、one-loop-and-runtime-flags
 
 ## 1. 背景与核心张力
 
