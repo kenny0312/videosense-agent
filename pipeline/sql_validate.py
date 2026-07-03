@@ -44,9 +44,9 @@ def validate_sql_columns(dag: DAG, schema: dict) -> None:
         return   # 没有 schema 信息 → fail-open,不校验
 
     for node in dag.nodes:
-        if node.tool not in ("sql_query", "threshold_sweep"):
+        if node.tool != "sql_query":
             continue
-        sql = node.inputs.get("sql") or node.inputs.get("sql_template") or ""
+        sql = node.inputs.get("sql") or ""
         if not sql:
             continue
         ctes = _cte_names(sql)

@@ -46,24 +46,6 @@ SPECS: dict[str, NodeSpec] = {
             ["sql"],
         ),
     ),
-    "threshold_sweep": NodeSpec(
-        tool="threshold_sweep",
-        needs_sandbox=False,
-        planner_desc=(
-            "动态阈值扫描(Stage 9)。inputs.sql_template = 含 {threshold} 占位符的 SQL,"
-            "inputs.thresholds = 数值列表(如 [0.5,0.6,0.7,0.8,0.9])。"
-            "主进程对每个阈值代入模板、经 MCP 查询,汇总为一张 "
-            "[{threshold, <聚合列>}] 表返回。"
-        ),
-        parameters=_obj(
-            {
-                "sql_template": {"type": "string", "description": "含 {threshold} 占位符的 SQL"},
-                "thresholds": {"type": "array", "items": {"type": "number"},
-                               "description": "阈值数值列表"},
-            },
-            ["sql_template", "thresholds"],
-        ),
-    ),
     "show_video": NodeSpec(
         tool="show_video",
         needs_sandbox=False,
@@ -223,99 +205,6 @@ SPECS: dict[str, NodeSpec] = {
         ),
     ),
     # ── 数据科学(沙箱 / CodeGen)────────────────
-    "load_sensor_csv": NodeSpec(
-        tool="load_sensor_csv",
-        needs_sandbox=True,
-        planner_desc=(
-            "生成模拟传感器数据(Stage 7)。inputs.rows=行数(默认1000),"
-            "inputs.columns=字段列表(如 ['timestamp','heart_rate']),"
-            "inputs.jitter_ms=时间戳抖动毫秒。返回 list[dict]。无上游依赖。"
-        ),
-        codegen_hint=(
-            "用 numpy 生成 inputs['rows'] 行传感器数据。timestamp 从 0 递增(秒),"
-            "按 inputs['jitter_ms'] 加随机毫秒抖动;heart_rate 在 60~160 之间合理波动。"
-            "用 random 种子保证可复现。最后 print(json.dumps(records))。"
-        ),
-        parameters=_obj(
-            {
-                "rows": {"type": "integer", "description": "行数,默认 1000"},
-                "columns": {"type": "array", "items": {"type": "string"},
-                            "description": "字段列表(如 ['timestamp','heart_rate'])"},
-                "jitter_ms": {"type": "number", "description": "时间戳抖动毫秒"},
-            },
-        ),
-    ),
-    "merge_asof": NodeSpec(
-        tool="merge_asof",
-        needs_sandbox=True,
-        planner_desc=(
-            "近似时间匹配合并两张表(Stage 7)。依赖两个上游节点:第一个是左表(视频侧),"
-            "第二个是右表(传感器侧)。inputs.left_on / right_on = 时间列名,"
-            "inputs.tolerance_ms = 容差毫秒。返回合并后的 list[dict]。"
-        ),
-        codegen_hint=(
-            "用 pandas.merge_asof 按时间列近似合并。两个上游 DataFrame 都要先按时间列排序;"
-            "把时间列转成 pd.to_timedelta(seconds, unit='s') 再用 "
-            "tolerance=pd.Timedelta(f\"{inputs['tolerance_ms']}ms\"), direction='nearest'。"
-            "dropna 掉没匹配上的行。print(json.dumps(merged_records))。"
-        ),
-        parameters=_obj(
-            {
-                "left_on": {"type": "string", "description": "左表(视频侧)时间列名"},
-                "right_on": {"type": "string", "description": "右表(传感器侧)时间列名"},
-                "tolerance_ms": {"type": "number", "description": "近似匹配容差毫秒"},
-            },
-            ["left_on", "right_on", "tolerance_ms"],
-        ),
-    ),
-    "interpolate": NodeSpec(
-        tool="interpolate",
-        needs_sandbox=True,
-        planner_desc=(
-            "用 scipy 把不同采样率的数据重采样到统一时间轴(Stage 8)。依赖一个上游节点。"
-            "inputs.target_hz = 目标频率(如 10),inputs.columns = 要插值的数值列。"
-            "返回统一时间轴上的 list[dict]。"
-        ),
-        codegen_hint=(
-            "用 scipy.interpolate.interp1d 对 inputs['columns'] 每列做线性插值。"
-            "以上游数据的时间列为 x,生成 np.arange(t_min, t_max, 1/inputs['target_hz']) 新时间轴。"
-            "interp1d(kind='linear', bounds_error=False, fill_value='extrapolate')。"
-            "注意:某分组样本不足 2 个时 interp1d 会抛错,需跳过或保护。"
-            "print(json.dumps(resampled_records))。"
-        ),
-        parameters=_obj(
-            {
-                "target_hz": {"type": "number", "description": "目标重采样频率(Hz)"},
-                "columns": {"type": "array", "items": {"type": "string"},
-                            "description": "要插值的数值列"},
-            },
-            ["target_hz", "columns"],
-        ),
-    ),
-    "ols_regress": NodeSpec(
-        tool="ols_regress",
-        needs_sandbox=True,
-        planner_desc=(
-            "OLS 线性回归(Stage 9)。依赖一个上游节点(含自变量与因变量列)。"
-            "inputs.y = 因变量列名,inputs.x = 自变量列名列表。"
-            "返回 {coef, r_squared, p_values, n} 这类回归摘要。"
-        ),
-        codegen_hint=(
-            "用 statsmodels.api。X = sm.add_constant(df[inputs['x']]);"
-            "model = sm.OLS(df[inputs['y']], X).fit()。"
-            "print(json.dumps({'params': model.params.to_dict(), "
-            "'r_squared': float(model.rsquared), 'pvalues': model.pvalues.to_dict(), "
-            "'n': int(model.nobs)}))。所有数值转成 python float/int 再 json。"
-        ),
-        parameters=_obj(
-            {
-                "y": {"type": "string", "description": "因变量列名"},
-                "x": {"type": "array", "items": {"type": "string"},
-                      "description": "自变量列名列表"},
-            },
-            ["y", "x"],
-        ),
-    ),
     "plot": NodeSpec(
         tool="plot",
         needs_sandbox=True,

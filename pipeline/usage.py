@@ -1,8 +1,8 @@
 """
 每请求 LLM token 记账(使用审计用)。
 
-run_query 期间,各模型调用点(router/planner/code_generator/sql_fixer)在
-generate_content 之后调一次 add_usage(resp, model),把 resp.usage_metadata
+run_query 期间,各模型调用点(loop 大脑 / analyze_video / code_generator / sql_fixer /
+web_search / 子 agent 等)在 generate_content 之后调一次 add_usage(resp, model),把 resp.usage_metadata
 累加进一个 contextvar。orchestrator 在 run_query 开头 reset_usage()、收尾时
 summarize() 取回扁平总计 + 估算成本,塞进返回的 result。
 

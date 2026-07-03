@@ -1,17 +1,14 @@
 """
-编排核心(Stage 10)—— 把 Planner → CodeGen → Sandbox/MCP 串成一条流水线。
+编排核心 —— 单一大脑 probe-and-step loop 的请求级封装(旧 Planner→DAG→CodeGen 流水线已退役)。
 
     run_query(nl):
-        1. Planner.plan(nl)            自然语言 → DAG(已校验)
-        2. dag.topo_order()            拓扑排序
-        3. for node in order:          逐节点执行
-              upstream = {dep: 上游结果}
-              execute_node(node, upstream, ...)   数据节点走 MCP / 科学节点走沙箱+自愈
-              失败 → 中止,返回到此为止的 trace
-        4. 汇总:最终答案 + 每节点生成的代码 + 图表产物
+        1. reset_usage / 设 analyze 模型档(pro/flash)
+        2. 取 schema、建 transcript 回放上下文(多轮)
+        3. run_query_loop(...)         loop 大脑逐步调工具直到纯文本收口
+        4. 落 transcript、累计 usage;异常/未收敛 → 优雅重试提示
 
-返回结构对齐大纲 Stage 10 的交付物:
-    answer / dag / generated_code / plot(png_base64) / trace
+返回结构:
+    answer / videos(show_video) / table(show_table) / plot / trace / loop(审计) / usage
 """
 from __future__ import annotations
 

@@ -39,20 +39,23 @@ def test_build_declarations_accepts_subset():
 
 def test_required_inputs_helper():
     assert ns.required_inputs("sql_query") == ("sql",)
-    assert set(ns.required_inputs("merge_asof")) == {"left_on", "right_on", "tolerance_ms"}
     assert ns.required_inputs("show_video") == ()        # 上游可替代,无必填
 
 
 def test_spot_check_key_schemas():
     assert ns.SPECS["sql_query"].parameters["required"] == ["sql"]
-    assert set(ns.SPECS["ols_regress"].parameters["required"]) == {"y", "x"}
-    assert ns.SPECS["ols_regress"].parameters["properties"]["x"]["type"] == "array"
     assert ns.SPECS["plot"].parameters["properties"]["kind"]["enum"] == ["scatter", "line"]
     assert "load_artifact" not in ns.SPECS              # 记忆简化:值复用工具已下线
+
+
+def test_sensor_fusion_tools_removed():
+    # chore/purge-sensor-tools:Stage 7-9 传感器融合 demo 工具已下线(视频产品零用途)
+    for t in ("load_sensor_csv", "merge_asof", "interpolate", "ols_regress", "threshold_sweep"):
+        assert t not in ns.SPECS, f"{t} 应已从 SPECS 移除"
 
 
 def test_existing_helpers_unchanged():
     # 加 parameters 不应破坏既有用途
     assert ns.needs_sandbox("sql_query") is False
-    assert ns.needs_sandbox("ols_regress") is True
+    assert ns.needs_sandbox("plot") is True             # 沙箱类保留 plot/python
     assert "纯 Python" in ns.codegen_hint("plot")
