@@ -335,6 +335,14 @@ def test_send_retry_reraises_deterministic():
         m._send_with_retry(bad, attempts=3)          # 400 不是瞬时 → 立即上抛,不重试
 
 
+def test_runtime_facts_image_directive():
+    from pipeline.loop_driver import runtime_facts_line
+    with_img = runtime_facts_line(None, nl="what is this?", has_image=True)
+    assert "附了图片" in with_img and "别把它当成" not in with_img[:0]   # 有图 → 注入指令
+    assert "超范围请求拒掉" in with_img
+    assert "附了图片" not in runtime_facts_line(None, nl="hi", has_image=False)  # 无图 → 不注入
+
+
 def test_detect_lang_directive():
     from pipeline.loop_driver import _detect_lang, runtime_facts_line
     assert _detect_lang("How many videos are there?") == "en"
