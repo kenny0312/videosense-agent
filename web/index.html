@@ -180,6 +180,7 @@
     <div class="thread" id="thread"></div>
     <div class="composer">
       <div class="cwrap">
+        <div id="imgPreview" style="display:none;padding:0 2px 8px"></div>
         <div class="box">
           <button class="ibtn" id="upBtn" type="button" aria-label="Upload a video"
                   title="Upload your own video to analyze (temporary, expires; not added to the main library)"><i class="ti ti-upload" aria-hidden="true"></i></button>
@@ -239,11 +240,34 @@ function showEmpty(){
 }
 
 // ── 气泡 ──────────────────────────────────────────────
-function addUser(text){
+function addUser(text, imgUrl){
   if($('.empty'))thread.innerHTML='';
   const r=el('<div class="row user"></div>');
-  const b=el('<div class="bubble"></div>'); b.textContent=text;
+  const b=el('<div class="bubble"></div>');
+  if(imgUrl){                                  // 粘贴的截图:气泡里先显示缩略图
+    const im=el('<img alt="pasted image">'); im.src=imgUrl;
+    im.style.cssText='max-width:220px;max-height:180px;border-radius:9px;display:block;margin-bottom:6px';
+    b.appendChild(im);
+  }
+  if(text){ const t=el('<span></span>'); t.textContent=text; b.appendChild(t); }
   r.appendChild(b); thread.appendChild(r); scroll();
+}
+
+// ── 粘贴/移除截图 ──────────────────────────────────────
+let pendingImage=null;                         // data URL(仅当轮用,不入 localStorage 防撑爆)
+function setPendingImage(dataUrl){
+  pendingImage=dataUrl;
+  const wrap=$('#imgPreview'); wrap.innerHTML='';
+  if(!dataUrl){ wrap.style.display='none'; return; }
+  wrap.style.display='block';
+  const chip=el('<div style="position:relative;display:inline-block"></div>');
+  const img=el('<img alt="pasted screenshot">'); img.src=dataUrl;
+  img.style.cssText='max-height:64px;max-width:130px;border-radius:8px;border:1px solid var(--border2);display:block';
+  const x=el('<button aria-label="Remove image" title="Remove"></button>');
+  x.innerHTML='<i class="ti ti-x"></i>';
+  x.style.cssText='position:absolute;top:-7px;right:-7px;width:19px;height:19px;border-radius:50%;border:none;background:#2a2f37;color:#cfd5dd;cursor:pointer;font-size:12px;line-height:1;display:flex;align-items:center;justify-content:center';
+  x.onclick=()=>setPendingImage(null);
+  chip.appendChild(img); chip.appendChild(x); wrap.appendChild(chip);
 }
 function assistantShell(){
   const r=el('<div class="row"><div class="av"><i class="ti ti-sparkles" aria-hidden="true"></i></div></div>');
@@ -618,9 +642,11 @@ function deleteChat(id, ev){
 // ── 发送 ──────────────────────────────────────────────
 // SSE 流式消费(M6b):POST → 读 ReadableStream → 逐条 data: 事件;step/answer 给进度,result 给最终。
 // dag 路径不发 step 事件,只收 result —— 自动降级为"转圈到出结果"。
-async function streamQuery(q, sentSid, onEvent){
+async function streamQuery(q, sentSid, onEvent, image){
+  const body={query:q, session_id:sentSid, pro_video:proOn};
+  if(image) body.image=image;
   const r=await fetch('/v1/video_vibe_query/stream',{method:'POST',
-    headers:{'Content-Type':'application/json'}, body:JSON.stringify({query:q, session_id:sentSid, pro_video:proOn})});
+    headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
   if(!r.ok || !r.body) throw new Error('stream HTTP '+r.status);
   const reader=r.body.getReader(), dec=new TextDecoder();
   let buf='', result=null;
@@ -638,10 +664,13 @@ async function streamQuery(q, sentSid, onEvent){
   return result;
 }
 async function send(text){
-  const q = text!=null ? text : $('#q').value.trim();
-  if(!q || sending) return;                    // in-flight 守卫:防狂按 Enter 重复发、并发建重复会话
+  let q = text!=null ? text : $('#q').value.trim();
+  const image = pendingImage;                  // 抓住本轮图(下面即清空预览)
+  if((!q && !image) || sending) return;        // in-flight 守卫;有图可只发图
   sending=true;
-  $('#q').value=''; autosize(); addUser(q);
+  const shownQ = q || '';                       // 气泡显示用户真正打的字(可空)
+  if(image && !q) q = 'What is in this image, and is it related to any of my videos?';  // 只发图 → 给模型一个默认意图
+  $('#q').value=''; autosize(); setPendingImage(null); addUser(shownQ, image);
   $('#send').disabled=true;
   const card=assistantShell();
   const think=el('<div class="think"><span class="breathe"></span><span class="tmsg">Thinking…</span></div>');
@@ -662,7 +691,7 @@ async function send(text){
   const t0=performance.now();
   const originId=activeId, originDraft=activeDraft, sentSid=sessionId;   // 快照:发起时的归属
   try{
-    const d=await streamQuery(q, sentSid, onEvent) || {status:'error', error:'no result'};
+    const d=await streamQuery(q, sentSid, onEvent, image) || {status:'error', error:'no result'};
     const ms=Math.round(performance.now()-t0);
     updateContext(d);
     // 路由到【发起时】的会话,而非 await 后的当前会话 —— 中途切换/删除都不会错配
@@ -698,6 +727,18 @@ $('#toggle').onclick=()=>$('#shell').classList.toggle('nosb');
 $('#scrim').onclick=()=>$('#shell').classList.add('nosb');
 $('#q').addEventListener('input',autosize);
 $('#q').addEventListener('keydown',e=>{ if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();} });
+// Ctrl+V 粘贴截图 → 缩略图预览(不把二进制当文本粘进输入框)
+$('#q').addEventListener('paste',e=>{
+  const items=(e.clipboardData&&e.clipboardData.items)||[];
+  for(const it of items){
+    if(it.type&&it.type.indexOf('image/')===0){
+      const f=it.getAsFile(); if(!f) return;
+      if(f.size>8*1024*1024){ alert('Image too large (max 8MB).'); e.preventDefault(); return; }
+      const rd=new FileReader(); rd.onload=()=>setPendingImage(rd.result); rd.readAsDataURL(f);
+      e.preventDefault(); return;
+    }
+  }
+});
 
 // ── Pro 模式开关 + 本会话累计监控(成本 $ + 累计 token 占窗口环)──
 let proOn=false;

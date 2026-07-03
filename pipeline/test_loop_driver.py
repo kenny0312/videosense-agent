@@ -389,7 +389,7 @@ def test_loop_system_injects_runtime_facts():
 def test_make_conversation_backend_choice(monkeypatch):
     picked = {}
     monkeypatch.setattr(ld, "GeminiConversation", lambda m, d, s: picked.setdefault("legacy", m))
-    monkeypatch.setattr(ld, "GenAIConversation", lambda m, d, s: picked.setdefault("genai", m))
+    monkeypatch.setattr(ld, "GenAIConversation", lambda m, d, s, image=None: picked.setdefault("genai", m))
     ld.make_conversation("gemini-2.5-flash", [], "s")     # 回滚路径:旧 SDK
     ld.make_conversation("gemini-3.5-flash", [], "s")     # 默认:genai
     ld.make_conversation("gemini-4-flash", [], "s")       # 未来代际也走 genai(负向匹配 1.x/2.x)
@@ -485,3 +485,27 @@ def test_loop_system_contains_category_vocab_and_guards():
     assert "不许下「没有」的结论" in s                      # 存在性护栏
     assert "COUNT(DISTINCT video_id)" in s                 # 去重护栏
     assert "%skiing%/%snowboarding%" not in s              # 诱发重复计数的旧示例已移除
+
+
+# ── 粘贴图片:多模态首轮把图附在用户消息里 ──
+def test_genai_conversation_attaches_image_first_turn(monkeypatch):
+    import pipeline.loop_driver as m
+    sent = {}
+    class _FakeChat:
+        def send_message(self, payload):
+            sent.setdefault("payloads", []).append(payload)
+            class _R:
+                candidates = []; usage_metadata = None
+            return _R()
+    class _FakeClient:
+        def chats(self): pass
+    # 直接构造 GenAIConversation 但注入 fake chat
+    conv = object.__new__(m.GenAIConversation)
+    from google.genai import types
+    conv._types = types; conv._chat = _FakeChat(); conv._model_name = "x"; conv.tokens = 0
+    conv._pending_image = (b"\x89PNG\r\n", "image/png")
+    conv.send("what is this?")                    # 首轮:图 + 文本
+    conv.send("follow up")                         # 次轮:纯文本,不再带图
+    p1, p2 = sent["payloads"]
+    assert isinstance(p1, list) and len(p1) == 2   # [image_part, text]
+    assert p2 == "follow up"                        # 图只附一次

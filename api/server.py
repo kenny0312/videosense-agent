@@ -114,6 +114,29 @@ class VibeQueryRequest(BaseModel):
         None, description="多轮会话 id;省略则开新会话,响应会回传一个 session_id 供下一轮带上")
     pro_video: bool = Field(
         False, description="Pro 视频分析:本请求的 analyze_video 用更强的 pro 模型(更准、更慢)")
+    image: str | None = Field(
+        None, description="可选:粘贴的截图,data URL(data:image/png;base64,...)。作多模态输入附在本轮。")
+
+
+# 粘贴图片:data URL → (bytes, mime)。限类型 + 大小(防超大 base64 撑爆请求/成本)。
+_IMG_MIMES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
+_MAX_IMG_BYTES = int(os.environ.get("MAX_IMAGE_BYTES", str(8 * 1024 * 1024)))   # 解码后 8MB
+
+
+def _parse_image(data_url: str | None) -> "tuple[bytes, str] | None":
+    if not data_url or not data_url.startswith("data:"):
+        return None
+    try:
+        head, _, b64 = data_url.partition(",")
+        mime = head[5:].split(";")[0].strip().lower()
+        if mime not in _IMG_MIMES or "base64" not in head:
+            return None
+        raw = base64.b64decode(b64, validate=True)
+        if not raw or len(raw) > _MAX_IMG_BYTES:
+            return None
+        return raw, mime
+    except Exception:
+        return None
 
 
 @app.get("/")
@@ -198,7 +221,7 @@ def video_vibe_query(req: VibeQueryRequest, request: Request):
     with _session_lock(f"{owner}:{sid}"):           # 同会话 read-modify-write 串行,防丢轮
         session = STORE.get_or_create(sid, owner=owner)
         result = run_query(req.query, quiet_trace=True, session=session, owner=owner,
-                           pro_video=req.pro_video)
+                           pro_video=req.pro_video, image=_parse_image(req.image))
         STORE.save(session, owner=owner)            # 写时机:每请求一次(纯内存模式无操作)
     result["session_id"] = sid                      # 回传,客户端下一轮带上即可续聊
     usage = result.pop("usage", {}) or {}           # token/成本:内部审计用,不回传给前端
@@ -274,6 +297,39 @@ def resign(req: ResignRequest, request: Request):
     return {"signed": signed}
 
 
+class EnrichRequest(BaseModel):
+    video_id: str = Field(..., description="要富化的视频 id(上传 PUT 成功后调用)")
+
+
+@app.post("/v1/enrich")
+def enrich(req: EnrichRequest, request: Request):
+    """V1.5:入库富化(转录+caption → 语义索引)。前端直传 GCS 成功后调用;幂等
+    (已富化直接返回);后台线程执行不阻塞。语义层关闭时 no-op。全程 fail-open。"""
+    from pipeline.node_executor import _VIDEO_ID_RE, _resolve_gcs
+    if not config.USE_SEMANTIC_SEARCH:
+        return {"status": "disabled"}
+    vid = str(req.video_id or "")
+    if not _VIDEO_ID_RE.match(vid):
+        return Response(status_code=422, content="非法 video_id")
+    from pipeline import enrichment
+    if enrichment.already_enriched(vid):
+        return {"status": "already"}
+    try:
+        gcs = _resolve_gcs(vid)
+    except Exception:
+        gcs = None
+    if not gcs:
+        return Response(status_code=404, content="找不到该视频")
+
+    def work():
+        try:
+            log.info("enrich 完成: %s", enrichment.enrich_video(vid, gcs))
+        except Exception:
+            log.warning("enrich 失败(fail-open): %s", vid, exc_info=True)
+    threading.Thread(target=work, daemon=True).start()
+    return {"status": "started"}
+
+
 @app.post("/v1/video_vibe_query/stream")
 def video_vibe_query_stream(req: VibeQueryRequest, request: Request):
     """SSE 流式(M6b):loop 多步往返时把每步进度实时推给前端,最后推一条 result。
@@ -289,7 +345,8 @@ def video_vibe_query_stream(req: VibeQueryRequest, request: Request):
             with _session_lock(f"{owner}:{sid}"):
                 session = STORE.get_or_create(sid, owner=owner)
                 result = run_query(req.query, quiet_trace=True, session=session, owner=owner,
-                                   on_step=lambda ev: q.put(ev), pro_video=req.pro_video)
+                                   on_step=lambda ev: q.put(ev), pro_video=req.pro_video,
+                                   image=_parse_image(req.image))
                 STORE.save(session, owner=owner)
             result["session_id"] = sid
             usage = result.get("usage", {}) or {}        # get(非 pop):留在 result 里给前端 context 监控

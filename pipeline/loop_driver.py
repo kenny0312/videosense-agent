@@ -284,7 +284,8 @@ class GeminiConversation:
 class GenAIConversation:
     """google-genai 后端;接口与 GeminiConversation 完全一致(send(msg)->(calls,text))。
     声明沿用原生 dict(spike 验过 genai 接受);usage_metadata 字段名与旧 SDK 相同,add_usage 直用。"""
-    def __init__(self, model_name: str, declarations: list[dict], system: str):
+    def __init__(self, model_name: str, declarations: list[dict], system: str,
+                 image: "tuple[bytes, str] | None" = None):
         from google.genai import types
         from pipeline.genai_client import get_client
         self._types = types
@@ -294,12 +295,19 @@ class GenAIConversation:
         self._chat = get_client().chats.create(model=model_name, config=cfg)
         self._model_name = model_name
         self.tokens = 0
+        self._pending_image = image          # (bytes, mime):粘贴的截图,首轮附在用户消息里
 
     def send(self, msg):
         from pipeline import usage
         t = self._types
-        payload = msg if isinstance(msg, str) else [
-            t.Part.from_function_response(name=n, response=r) for n, r in msg]
+        if isinstance(msg, str):
+            payload: Any = msg
+            if self._pending_image is not None:   # 首次发送:把图作为多模态 part 附在文本前
+                data, mime = self._pending_image
+                payload = [t.Part.from_bytes(data=data, mime_type=mime), msg]
+                self._pending_image = None        # 只附一次(图属于这一轮)
+        else:
+            payload = [t.Part.from_function_response(name=n, response=r) for n, r in msg]
         resp = _send_with_retry(lambda: self._chat.send_message(payload))
         try:
             self.tokens += resp.usage_metadata.total_token_count
@@ -320,12 +328,14 @@ class GenAIConversation:
         return calls, ("".join(texts) if texts else None)
 
 
-def make_conversation(model_name: str, declarations: list[dict], system: str):
+def make_conversation(model_name: str, declarations: list[dict], system: str,
+                      image: "tuple[bytes, str] | None" = None):
     """按模型代际选后端:gemini-1.x/2.x → 旧 vertexai SDK(不动);其余(3.x 起)→ google-genai。
-    回滚 = LOOP_MODEL 环境变量退回 gemini-2.5-flash,自动回到旧路径,零代码改动。"""
+    回滚 = LOOP_MODEL 环境变量退回 gemini-2.5-flash,自动回到旧路径,零代码改动。
+    image(粘贴截图)只在 genai 多模态路径生效;旧 SDK 回滚路径忽略(极少用)。"""
     if (model_name or "").startswith(("gemini-1", "gemini-2")):
         return GeminiConversation(model_name, declarations, system)
-    return GenAIConversation(model_name, declarations, system)
+    return GenAIConversation(model_name, declarations, system, image=image)
 
 
 def make_self_check_critic():
@@ -548,13 +558,15 @@ def _loop_system(schema: dict, replay_context: "str | None",
 
 def run_query_loop(nl: str, *, schema: dict, replay_context: "str | None", sandbox, trace,
                    session_id: "str | None", on_step=None,
-                   runtime_facts: "str | None" = None, owner: str = "anon") -> LoopOutcome:
+                   runtime_facts: "str | None" = None, owner: str = "anon",
+                   image: "tuple[bytes, str] | None" = None) -> LoopOutcome:
     """orchestrator 的 loop 入口:建会话 + 执行器 → run_loop → 收产物(纯 handle,无合成 DAG)。
     replay_context(M5)= 从 transcript 回放出的多轮上下文(取代旧 recipe 块)。
     on_step(M6b)= 每步回调,供 SSE 流式。runtime_facts(U3)= 运行时状态注入节(自我认知)。
-    owner(L2)= 认证身份,供 update_memory 等按 owner 作用域的工具。"""
+    owner(L2)= 认证身份,供 update_memory 等按 owner 作用域的工具。
+    image(粘贴截图,bytes+mime)= 附在首轮用户消息作多模态输入。"""
     conv = make_conversation(config.LOOP_MODEL, loop_function_declarations(),
-                             _loop_system(schema, replay_context, runtime_facts))
+                             _loop_system(schema, replay_context, runtime_facts), image=image)
     execute = _make_executor(sandbox, trace, schema, session_id, owner=owner)
     critic = make_self_check_critic() if config.USE_SELF_CHECK_CRITIC else None   # 自检 B:opt-in
     r = run_loop(nl, conv, execute, on_step=on_step, critic=critic)
