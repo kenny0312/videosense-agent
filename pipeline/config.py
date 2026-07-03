@@ -73,6 +73,16 @@ LOOP_REPEAT_LIMIT  = int(os.environ.get("LOOP_REPEAT_LIMIT", "2"))  # 同一(工
 #   opt-in(默认 0;每个收口轮多一次 flash + 可能多一轮);MAX_ROUNDS = critic 驱动的"再来"上限(防空转)。
 USE_SELF_CHECK_CRITIC = os.environ.get("USE_SELF_CHECK_CRITIC", "0").lower() in ("1", "true", "yes")
 SELF_CHECK_MAX_ROUNDS = int(os.environ.get("SELF_CHECK_MAX_ROUNDS", "1"))
+
+# ── 子 agent 编排(spawn_agents;设计 docs/design/subagent-fanout.md §3)──
+#   主脑把一个【能拆成几个彼此独立、各自多步】的大任务,当场为每个子 agent 写不同 instruction、
+#   并行跑受限工具集的 mini-loop,收集各 output 自己综合。opt-in(默认 0;开 = 工具对大脑可见,
+#   关 = 从声明消失,零残留,同 web_search)。
+#   FANOUT = 一次最多并行几个子 agent(扇出/成本护栏);MAX_STEPS = 每个子 agent 的循环步上限(防子循环空转)。
+USE_SUBAGENTS       = os.environ.get("USE_SUBAGENTS", "0").lower() in ("1", "true", "yes")
+SUBAGENT_MAX_FANOUT = int(os.environ.get("SUBAGENT_MAX_FANOUT", "6"))
+SUBAGENT_MAX_STEPS  = int(os.environ.get("SUBAGENT_MAX_STEPS", "4"))
+SUBAGENT_MODEL      = os.environ.get("SUBAGENT_MODEL", LOOP_MODEL)   # 默认同主脑;可单独覆盖(如子 agent 用更强/更省档,见 SA-0 spike)
 # M5 记忆:loop 路径 transcript 回放 + 压缩(决策④)
 # CC 式「全量注入 + 临窗压缩」:默认把整段回放原文喂 loop,只在【逼近 context window】时才压缩。
 # 预算跟 LOOP_MODEL 的窗口挂钩(flash=1M),留头寸(FRACTION)给 system+schema+tools+本轮步骤+输出,

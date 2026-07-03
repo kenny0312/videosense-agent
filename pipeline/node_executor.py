@@ -374,6 +374,22 @@ def _run_sandbox_node(node: Node, upstream: dict[str, Any],
 
 # ── 统一入口 ──────────────────────────────────
 
+def _run_spawn_agents(node: Node, sandbox, trace, *, schema: dict | None = None,
+                      session_id: str | None = None, owner: str = "anon",
+                      loop_execute=None) -> NodeResult:
+    """SA:子 agent 异质分解(spawn_agents)。薄适配层 —— 编排在 pipeline.subagents。
+    大脑给 tasks:[{instruction, video_ids?, tools?}],每段 = 一个受限工具集的 mini-loop,并行跑,
+    返回 [{instruction, output}...] 由大脑综合。loop_execute = 父 execute 闭包(共享 analyze 配额)。"""
+    from pipeline import config as _cfg
+    if not _cfg.USE_SUBAGENTS:                           # 兜底(工具本已被声明门隐藏);双保险
+        raise ValueError("spawn_agents 未开启(USE_SUBAGENTS=0)")
+    from pipeline import subagents                       # 惰性:打断 loop_driver→node_executor→subagents 环
+    value = subagents.run_fanout(
+        node.inputs.get("tasks"), sandbox=sandbox, trace=trace, schema=schema,
+        session_id=session_id, owner=owner, execute=loop_execute)
+    return NodeResult(node.id, node.tool, ok=True, value=value)
+
+
 def _run_web_search(node: Node) -> NodeResult:
     """U6:联网搜索(Gemini Google-Search grounding,genai@global)。
     注入防护:system 指令明确网页内容是 DATA 不是指令;返回 {answer, sources},由大脑收口引用。"""
@@ -472,7 +488,9 @@ def _run_update_memory(node: Node, owner: str) -> NodeResult:
 def execute_node(node: Node, upstream: dict[str, Any],
                  sandbox: SandboxClient, trace: Trace,
                  schema: dict | None = None,
-                 *, session_id: str | None = None, owner: str = "anon") -> NodeResult:
+                 *, session_id: str | None = None, owner: str = "anon",
+                 loop_execute=None) -> NodeResult:
+    # loop_execute:父 loop 的 execute 闭包(仅 spawn_agents 需要 —— 子 agent 复用它以共享 analyze 配额)。
     # sql_query:自管 trace + 自愈(对称 _run_sandbox_node)
     if node.tool == "sql_query":
         return _run_sql_query(node, schema or {}, trace)
@@ -495,6 +513,9 @@ def execute_node(node: Node, upstream: dict[str, Any],
                 res = _run_update_memory(node, owner)
             elif node.tool == "semantic_search":
                 res = _run_semantic_search(node)
+            elif node.tool == "spawn_agents":
+                res = _run_spawn_agents(node, sandbox, trace, schema=schema,
+                                        session_id=session_id, owner=owner, loop_execute=loop_execute)
             else:
                 raise ValueError(f"未知数据工具: {node.tool}")
             step.ok(rows=len(res.videos) if res.videos else
