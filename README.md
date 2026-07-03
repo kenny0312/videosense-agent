@@ -42,6 +42,30 @@
 
 <br/>
 
+## 🧾 A real session, unedited
+
+Straight answers, receipts attached. Ask in plain language, get a structured reply — and every reply carries a quiet **Steps** footer, so the full reasoning session is one click away.
+
+<img src="docs/shot-answer.png" alt="A real answer — three videos found, with a Steps footer on the reply" width="100%" />
+
+<br/>
+
+### 🔧 It shows its work — and fixes its own mistakes
+
+Expand the footer and you're watching the loop think: ten SQL probes, a syntax error, two self-repairs, a strategy change — and still the right answer. Nothing is hidden.
+
+<img src="docs/shot-trace.png" alt="The expanded trace — SQL probes, a syntax error, and two automatic repairs" width="100%" />
+
+<br/>
+
+### 💸 Costs are part of the product
+
+Every session meters its own spend live in the composer — tokens, dollars, and a budget ring. The same telemetry streams to BigQuery in production.
+
+<img src="docs/shot-cost.png" alt="Live cost meter in the composer — dollars, tokens, budget ring" width="100%" />
+
+<br/>
+
 <div align="center">
 
 ### 🚀 Try it in 30 seconds — free mock mode
