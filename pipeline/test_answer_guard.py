@@ -79,6 +79,24 @@ def test_tidy_only_touches_scrub_sites():
     assert "803174656" not in out
 
 
+def test_scrub_tidies_labeled_id_wrapper():
+    """观察到的 bug(2026-07-03):「…(视频 ID:<id>)…」里 id 删除后残留空壳「(视频 ID:)」。
+    标签把哨兵和括号隔开,旧 _WRAPPED_SENTINEL 漏清 → 修复后连标签一起清掉。"""
+    ans = "第 1 个视频（视频 ID：GX010534）的完整时长是 123.97 秒。"
+    out, hits = scrub_ids(ans, [])                                 # 无 show 映射 → id 删除
+    assert hits == 1 and "GX010534" not in out
+    assert "视频 ID" not in out and "（）" not in out and "()" not in out
+    assert out == "第 1 个视频的完整时长是 123.97 秒。"             # 空壳被整段清掉,句子通顺
+
+
+def test_scrub_tidies_english_label_and_dangling_scaffold():
+    out, hits = scrub_ids("Best clip (video id: v_-02DygXbn6w) here.", [])
+    assert hits == 1 and "v_-02" not in out
+    assert "video id" not in out and "()" not in out               # 英文标签+括号空壳清掉
+    out2, hits2 = scrub_ids("该片段 ID：GX010537_2 拍得不错。", [])   # 括号外裸标签脚手架
+    assert hits2 == 1 and "GX010537" not in out2 and "ID：" not in out2
+
+
 def test_show_map_accepts_id_key_and_bad_rows():
     out, hits = scrub_ids("GX010523 不错", [
         {"note": "x", "items": [{"n": "bad"}, "garbage", {"n": 3, "id": "GX010523"}]}])
