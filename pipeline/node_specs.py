@@ -183,6 +183,45 @@ SPECS: dict[str, NodeSpec] = {
             ["text"],
         ),
     ),
+    "spawn_agents": NodeSpec(
+        tool="spawn_agents",
+        needs_sandbox=False,
+        planner_desc=(
+            "【子 agent 分解】把一个【能拆成几个彼此独立、各自需要多步深看】的大任务,当场拆成 K 段"
+            "子任务并行交给 K 个子 agent —— 每段的 instruction 由【你自己现场写】(各做各的、可以完全不同),"
+            "它们各自跑一个受限工具集的小循环、把结论交回,你再【自己综合】收口。"
+            "inputs.tasks = [{instruction: 这个子 agent 要做什么(自由文本,你写), "
+            "video_ids?: 让它聚焦的视频 id 列表, tools?: 限它只能用的工具子集(默认 "
+            "analyze_video/semantic_search/sql_query)}, ...]。"
+            "【用途】跨多个视频的深度比较/排名/多维评估,或「A 组做 X、B 组做 Y、再查 Z」这种"
+            "可并行的异质分解(如「跳伞 vs 滑雪 哪个更精彩」=一个 agent 深评跳伞组、一个深评滑雪组)。"
+            "【别用】只是计数/分类(sql_query COUNT 就够)、只看单个视频(直接 analyze_video)、"
+            "语义找片段(semantic_search)—— 这些别 spawn,多 agent 又贵又慢。"
+            "先用 sql_query/semantic_search 把候选缩小、想清怎么拆,再一次给出 K 段【不同的】instruction。"
+            "返回 [{instruction, output}...] —— 是各子 agent 的原始结论,你【自己】读完综合成最终答案"
+            "(需要交付视频时,由【你】再调 show_video,子 agent 不负责交付)。"
+        ),
+        parameters=_obj(
+            {"tasks": {
+                "type": "array",
+                "description": "K 个彼此独立的子任务;每个 spawn 成一个子 agent,并行跑。",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "instruction": {"type": "string",
+                                        "description": "这个子 agent 要做什么(自由文本,你现场写)"},
+                        "video_ids": {"type": "array", "items": {"type": "string"},
+                                      "description": "可选:让它聚焦的视频 id"},
+                        "tools": {"type": "array", "items": {"type": "string"},
+                                  "description": "可选:限它只能用这些工具(默认 "
+                                                 "analyze_video/semantic_search/sql_query)"},
+                    },
+                    "required": ["instruction"],
+                },
+            }},
+            ["tasks"],
+        ),
+    ),
     # ── 数据科学(沙箱 / CodeGen)────────────────
     "load_sensor_csv": NodeSpec(
         tool="load_sensor_csv",

@@ -41,6 +41,7 @@ UPSTREAM_HANDLES: dict[str, list[str]] = {
 _OPTIONAL_HANDLE = {"show_video", "python"}   # 句柄非必填:python 逃生舱可带上游、也可独立写代码
 ANALYZE_PREVIEW_CELL = 1200               # #2:analyze_video 结果给大预览(答案含完整理由,默认 80 会砍掉)
 SQL_PREVIEW_ROWS = 30                      # sql_query 列举类:大脑看到更多行(默认 3 行 → 让它列 14 个就会编/重复)
+SUBAGENT_PREVIEW_CELL = 4000              # spawn_agents:每个子 agent 的结论要基本完整回到主脑(供综合),别砍成 80 字
 
 
 def loop_function_declarations() -> list[dict]:
@@ -53,6 +54,8 @@ def loop_function_declarations() -> list[dict]:
         if d["name"] == "update_memory" and not config.USE_USER_MEMORY:
             continue
         if d["name"] == "semantic_search" and not config.USE_SEMANTIC_SEARCH:
+            continue
+        if d["name"] == "spawn_agents" and not config.USE_SUBAGENTS:
             continue
         d = copy.deepcopy(d)
         handles = UPSTREAM_HANDLES.get(d["name"], [])
@@ -387,14 +390,19 @@ def _make_executor(sandbox, trace, schema, session_id, owner: str = "anon") -> C
                         pv, n = _preview({"answer": note, "enough": "no"})
                         return ExecResult(ok=True, value={"answer": note, "enough": "no"}, preview=pv, n=n)
                     quota["analyzed"] += 1
+        # loop_execute=execute:spawn_agents 的子 agent 复用【本】execute 闭包 → analyze 计入同一
+        # 配额(不绕过成本闸),token 也折进同一 usage 审计。execute 在下方定义,运行时已绑定(闭包)。
         nr = execute_node(node, upstream, sandbox, trace, schema=schema,
-                          session_id=session_id, owner=owner)
+                          session_id=session_id, owner=owner, loop_execute=execute)
         # #2 修:analyze_video 的结论+理由都在 answer 里;默认 80 字/格会把理由砍掉,大脑收口时
         # 只看到前 80 字 → 答案干瘪。给它大额度预览,完整证据进得了最终答案(其余工具仍用小预览省 token)。
         # U6 review 修:web_search 同理 —— 综述+来源被砍到 80 字会逼大脑拿自身知识脑补"搜索结果"
         # (编造引用),必须让它看到完整综述。
         if name in ("analyze_video", "web_search"):
             pv, n = _preview(nr.value, cell=ANALYZE_PREVIEW_CELL)       # 答案含完整理由/综述
+        elif name == "spawn_agents":
+            # 每个子 agent 的结论要基本完整回到主脑供综合 → 大格 + 覆盖全部子 agent(含末尾截断提示行)
+            pv, n = _preview(nr.value, rows=config.SUBAGENT_MAX_FANOUT + 1, cell=SUBAGENT_PREVIEW_CELL)
         elif name == "semantic_search":
             pv, n = _preview(nr.value, rows=20, cell=300)               # k≤20 行全给,snippet 别砍太狠
         elif name == "sql_query":

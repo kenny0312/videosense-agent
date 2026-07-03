@@ -32,7 +32,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 #       plot             matplotlib 出图(Stage 10,产物存回 GCS/本地)
 #       python           通用逃生舱:任意 NL 描述的分析
 DATA_TOOLS = {"sql_query", "threshold_sweep", "show_video", "show_table", "analyze_video",
-              "web_search", "update_memory", "semantic_search"}
+              "web_search", "update_memory", "semantic_search", "spawn_agents"}
 SANDBOX_TOOLS = {
     "load_sensor_csv", "merge_asof", "interpolate",
     "ols_regress", "plot", "python",
@@ -41,7 +41,7 @@ ALL_TOOLS = DATA_TOOLS | SANDBOX_TOOLS
 
 ToolName = Literal[
     "sql_query", "threshold_sweep", "show_video", "show_table", "analyze_video",
-    "web_search", "update_memory", "semantic_search",
+    "web_search", "update_memory", "semantic_search", "spawn_agents",
     "load_sensor_csv", "merge_asof", "interpolate",
     "ols_regress", "plot", "python",
 ]
