@@ -26,7 +26,12 @@ _CORE = (r"\d{6,}_\d{4,}_\d{8,}"
 ID_PAT = re.compile(rf"(?<![0-9A-Za-z_-])(?:{_CORE})(?![0-9A-Za-z_-])")
 
 _SENTINEL = "\x00"
-_WRAPPED_SENTINEL = re.compile(r"[(（\[【`'\"]\s*\x00\s*[)）\]】`'\"]")   # 只清"包着哨兵"的空壳
+# id 脚手架标签(如「视频 ID:」「video id:」「编号:」):模型常把裸 id 包成「(视频 ID:<id>)」。
+# id 删成哨兵后,标签+外层括号就成了空壳「(视频 ID:)」——旧的 _WRAPPED_SENTINEL 只认紧贴括号的
+# 哨兵,标签把它俩隔开就漏清(2026-07-03 观察到)。这里允许括号内哨兵前带一个 id 标签。
+_ID_LABEL = r"(?:视频\s*)?(?:ID|id|Id|编号|video\s*id)\s*[:：]?\s*"
+_WRAPPED_SENTINEL = re.compile(rf"[(（\[【`'\"]\s*(?:{_ID_LABEL})?\x00\s*[)）\]】`'\"]")  # "(可选标签+哨兵)"空壳
+_DANGLING_LABEL = re.compile(rf"(?:{_ID_LABEL})\x00")                    # 未被括号包住的裸标签脚手架「视频 ID:␀」
 _LOOSE_SENTINEL = re.compile(r"\x00 ?")                                  # 哨兵本体(至多吃一个尾随空格,保留前导空格防粘词)
 
 
@@ -80,6 +85,7 @@ def scrub_ids(answer: str, ledger_values: Iterable[Any] = ()) -> tuple[str, int]
             while prev != out:              # 逐层坍缩嵌套包壳(每层替回哨兵);合法括号无哨兵→永不匹配
                 prev = out
                 out = _WRAPPED_SENTINEL.sub(_SENTINEL, out)
+            out = _DANGLING_LABEL.sub(_SENTINEL, out)   # 括号外裸露的「视频 ID:」脚手架 → 连哨兵一并清
             out = _LOOSE_SENTINEL.sub("", out)
         return out, hits
     except Exception:
