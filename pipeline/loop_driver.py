@@ -518,10 +518,11 @@ def _detect_lang(nl: "str | None") -> str:
     return ""
 
 
-def runtime_facts_line(usage_cum: "dict | None", nl: "str | None" = None) -> str:
+def runtime_facts_line(usage_cum: "dict | None", nl: "str | None" = None,
+                       has_image: bool = False) -> str:
     """U3 自我认知:把系统掌握的【真实运行时数字】拼成 prompt 注入节(元问题按此作答,不编数)。
     usage_cum = session.usage_cum(到上一轮为止的会话累计;None/空 = 首轮)。
-    nl = 用户这句(用于语言指令,治中英漂移)。"""
+    nl = 用户这句(用于语言指令,治中英漂移)。has_image = 本轮是否附了粘贴的图片。"""
     tier = "flash" if "flash" in (config.LOOP_MODEL or "") else "pro"
     win_wan = config.LOOP_CONTEXT_WINDOW // 10000            # 100 万 → 100(万为单位,中文习惯)
     lines = ["# 运行时状态(系统注入的真实数字;元问题据此答)"]
@@ -531,6 +532,12 @@ def runtime_facts_line(usage_cum: "dict | None", nl: "str | None" = None) -> str
                      "in English. Do not drift to Chinese.")
     elif lang == "zh":
         lines.append("语言:用户在用中文提问 —— 最终答案【全程用中文】写,别夹英文段落。")
+    if has_image:
+        lines.append(
+            "本轮附了图片:用户这一轮粘贴了一张图片,已作为多模态输入直接给你 —— 你【能看到它】。"
+            "看这张图,据它回答用户:描述画面、和视频库关联(可据图里的活动/场景去 semantic_search"
+            "或按大类查库里有没有类似视频)、或按用户的问题用它。这【属于】你的工作范围,"
+            "【绝不要】把它当成『只做视频、不描述图片』的超范围请求拒掉。")
     lines.append(
         f"主脑模型 {tier} 档(analyze_video 默认 flash,可切 pro);上下文窗口约 {win_wan} 万 token。")
     if usage_cum and usage_cum.get("turns"):
