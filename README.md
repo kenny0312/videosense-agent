@@ -8,13 +8,33 @@
 
 ### Your videos hold answers. VideoSense finds them —<br/>it watches, reasons, and replies with the clip and the chart to prove it.
 
+<br/>
+
+<p align="center">
+  <img alt="146 tests passing" src="https://img.shields.io/badge/tests-146%20passing-43c88a?style=for-the-badge&labelColor=0d1016">
+  &nbsp;
+  <img alt="live on Cloud Run" src="https://img.shields.io/badge/live-Cloud%20Run-3f7bf0?style=for-the-badge&labelColor=0d1016">
+  &nbsp;
+  <img alt="eval baseline 78 percent" src="https://img.shields.io/badge/eval-78%25%20baseline-b79df2?style=for-the-badge&labelColor=0d1016">
+</p>
+
 </div>
 
 <br/>
 
 <div align="center">
-  <img src="docs/demo.gif" alt="VideoSense in action — a question becomes an answer with playable clips" width="820" />
+  <a href="https://kenny0312.github.io/demo/videosense.html"><img src="docs/demo-replay.svg" alt="A replayed VideoSense session: the question 'which clips show only freefall' is typed, the agent streams its tool steps — including a self-repair — then answers '3 of 12' with three real, labelled skydiving clips and a quiet Steps footer." width="860" /></a>
+  <br/><br/>
+  <sub>A real session, replayed — the question is typed, the agent streams its tool steps (one self-repair included), then answers with <b>three real clips</b> from the library. &nbsp;<a href="https://kenny0312.github.io/demo/videosense.html"><b>▶ Play the interactive demo</b></a></sub>
 </div>
+
+<br/>
+
+<details align="center">
+  <summary><sub>▶ &nbsp;Prefer the raw screen recording? &nbsp;<i>(4&nbsp;MB GIF)</i></sub></summary>
+  <br/>
+  <img src="docs/demo.gif" alt="VideoSense in action — a question becomes an answer with playable clips" width="820" />
+</details>
 
 <br/>
 
@@ -55,6 +75,14 @@ Straight answers, receipts attached. Ask in plain language, get a structured rep
 Expand the footer and you're watching the loop think: ten SQL probes, a syntax error, two self-repairs, a strategy change — and still the right answer. Nothing is hidden.
 
 <img src="docs/shot-trace.png" alt="The expanded trace — SQL probes, a syntax error, and two automatic repairs" width="100%" />
+
+<br/><br/>
+
+<div align="center">
+  <a href="docs/DEMO.md"><img src="docs/demo-cast.svg" alt="One question, planned into a five-step analysis and self-healed end to end — steps rewrite their own code when a library is missing, returning an OLS regression result over 481 samples." width="860" /></a>
+  <br/><br/>
+  <sub>The extreme case: one question → a five-step analysis, <b>self-healed</b> live — it rewrites its own code when <code>scipy</code> is missing. &nbsp;<a href="docs/DEMO.md"><b>See the full run →</b></a></sub>
+</div>
 
 <br/>
 

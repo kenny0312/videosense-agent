@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="860" height="424" viewBox="0 0 860 424" font-family="ui-monospace,'SF Mono',SFMono-Regular,Menlo,Consolas,monospace" role="img" aria-label="VideoSense self-healing analysis run: one question is planned into a five-node DAG; three steps fail on missing libraries and the agent rewrites its own code in numpy, returning an OLS regression result over 481 samples.">
+  <defs>
+    <linearGradient id="cbg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0d1016"/>
+      <stop offset="1" stop-color="#090b0f"/>
+    </linearGradient>
+    <linearGradient id="cglow" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#3f7bf0" stop-opacity="0"/>
+      <stop offset=".5" stop-color="#6ea2ff" stop-opacity=".6"/>
+      <stop offset="1" stop-color="#3f7bf0" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="1" y="1" width="858" height="422" rx="14" fill="url(#cbg)" stroke="#22262d"/>
+  <rect x="1" y="1" width="858" height="42" rx="14" fill="#0c0e12"/>
+  <rect x="1" y="30" width="858" height="13" fill="#0c0e12"/>
+  <circle cx="26" cy="22" r="6" fill="#e05a5a"/>
+  <circle cx="46" cy="22" r="6" fill="#e0a23b"/>
+  <circle cx="66" cy="22" r="6" fill="#43c88a"/>
+  <text x="92" y="26.5" fill="#69727e" font-size="12.5" font-family="system-ui,Segoe UI,sans-serif">videosense · one question → a self-healing analysis run</text>
+  <line x1="1" y1="43" x2="859" y2="43" stroke="#22262d"/>
+
+  <g font-size="14.5">
+    <text y="80"><tspan x="26" fill="#6ea2ff">? </tspan><tspan fill="#e8ebef">top 3 skiing clips → synth heart-rate → align → </tspan><tspan fill="#ffffff" font-weight="bold">OLS regression</tspan></text>
+    <text y="110"><tspan x="26" fill="#69727e">▸ plan   sql_query → load_sensor → merge_asof → interpolate → ols_regress</tspan></text>
+
+    <text y="150"><tspan x="26" fill="#43c88a">✔</tspan><tspan x="48" fill="#c8d0da">n1  sql_query</tspan><tspan x="270" fill="#69727e">124 rows · 4ms</tspan></text>
+    <text y="178"><tspan x="26" fill="#43c88a">✔</tspan><tspan x="48" fill="#c8d0da">n2  load_sensor_csv</tspan><tspan x="270" fill="#69727e">1000 rows</tspan></text>
+    <text y="206"><tspan x="26" fill="#e0a23b">↻</tspan><tspan x="48" fill="#c8d0da">n3  merge_asof</tspan><tspan x="270" fill="#e0a23b">timedelta dtype → auto-fixed</tspan></text>
+    <text y="234"><tspan x="26" fill="#e0a23b">↻</tspan><tspan x="48" fill="#c8d0da">n4  interpolate</tspan><tspan x="270" fill="#e0a23b">scipy missing → rewrote with numpy.interp</tspan></text>
+    <text y="262"><tspan x="26" fill="#e0a23b">↻</tspan><tspan x="48" fill="#c8d0da">n5  ols_regress</tspan><tspan x="270" fill="#e0a23b">statsmodels missing → pure numpy / math</tspan></text>
+
+    <rect x="20" y="286" width="820" height="40" rx="9" fill="#0f1622" stroke="#1e2a44"/>
+    <text y="311"><tspan x="34" fill="#43c88a">✔ result   </tspan><tspan fill="#ffffff" font-weight="bold">R² = 0.10</tspan><tspan fill="#69727e">  ·  </tspan><tspan fill="#ffffff" font-weight="bold">p = 1.8e-13</tspan><tspan fill="#69727e">  ·  </tspan><tspan fill="#ffffff" font-weight="bold">n = 481</tspan></text>
+  </g>
+
+  <line x1="1" y1="358" x2="859" y2="358" stroke="#22262d"/>
+  <rect x="26" y="380" width="120" height="2" rx="1" fill="url(#cglow)"/>
+  <text x="26" y="398" font-size="12.5" fill="#69727e" font-family="system-ui,Segoe UI,sans-serif">15/20 steps green on the first pass — every failure was found and repaired by the agent, not a human.</text>
+</svg>

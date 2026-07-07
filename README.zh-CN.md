@@ -8,13 +8,33 @@
 
 ### 你的视频里藏着答案。VideoSense 帮你找到它——<br/>它真的看视频、自己推理，并用可播放的片段和图表来证明。
 
+<br/>
+
+<p align="center">
+  <img alt="146 个测试通过" src="https://img.shields.io/badge/tests-146%20passing-43c88a?style=for-the-badge&labelColor=0d1016">
+  &nbsp;
+  <img alt="Cloud Run 在线" src="https://img.shields.io/badge/live-Cloud%20Run-3f7bf0?style=for-the-badge&labelColor=0d1016">
+  &nbsp;
+  <img alt="评测基线 78%" src="https://img.shields.io/badge/eval-78%25%20baseline-b79df2?style=for-the-badge&labelColor=0d1016">
+</p>
+
 </div>
 
 <br/>
 
 <div align="center">
-  <img src="docs/demo.gif" alt="VideoSense 实机演示——一个问题变成一个带片段的答案" width="820" />
+  <a href="https://kenny0312.github.io/demo/videosense.html"><img src="docs/demo-replay.svg" alt="一段真实会话的回放：问题「哪些片段只有自由落体」被逐字打出，agent 流式展示工具步骤（含一次自我修复），然后给出「3 of 12」的结论和三个真实可播放的跳伞片段。" width="860" /></a>
+  <br/><br/>
+  <sub>一段真实会话的回放——问题被逐字打出，agent 流式跑完工具步骤（含一次自我修复），然后用<b>库里三段真实视频</b>作答。&nbsp;<a href="https://kenny0312.github.io/demo/videosense.html"><b>▶ 玩可交互版 demo</b></a></sub>
 </div>
+
+<br/>
+
+<details align="center">
+  <summary><sub>▶ &nbsp;想看原始录屏？点开 20 秒走查 &nbsp;<i>(4&nbsp;MB GIF)</i></sub></summary>
+  <br/>
+  <img src="docs/demo.gif" alt="VideoSense 实机演示——一个问题变成一个带片段的答案" width="820" />
+</details>
 
 <br/>
 
@@ -55,6 +75,14 @@
 展开页脚，你就在看这个循环思考：十次 SQL 探查、一次语法错误、两次自动修复、一次换策略——最后依然给出正确答案。没有黑箱。
 
 <img src="docs/shot-trace.png" alt="展开的执行轨迹——SQL 探查、语法错误与两次自动修复" width="100%" />
+
+<br/><br/>
+
+<div align="center">
+  <a href="docs/DEMO.md"><img src="docs/demo-cast.svg" alt="一个问题，被拆成五步分析并端到端自愈——缺库时步骤自己改写代码，最终跑出 481 个样本上的 OLS 回归结果。" width="860" /></a>
+  <br/><br/>
+  <sub>极限案例：一个问题 → 五步分析，边跑边<b>自愈</b>——缺 <code>scipy</code> 时它自己改写代码。&nbsp;<a href="docs/DEMO.md"><b>看完整过程 →</b></a></sub>
+</div>
 
 <br/>
 
