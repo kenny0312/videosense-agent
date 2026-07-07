@@ -4,9 +4,13 @@
 
 <br/><br/>
 
-**English** · [简体中文](README.zh-CN.md)
+<img src="docs/proof-strip.svg" alt="146 tests passing · live on Cloud Run · τ²-bench eval 78% · Gemini 2.5 multimodal" width="760" />
 
-### Your videos hold answers. VideoSense finds them —<br/>it watches, reasons, and replies with the clip and the chart to prove it.
+<br/><br/>
+
+It watches your videos, reasons about what it sees, and answers with the clip and the chart to prove it.
+
+<sub>**English** · [简体中文](README.zh-CN.md)</sub>
 
 </div>
 
@@ -20,42 +24,39 @@
 
 <br/>
 
-## 🧾 A real session, unedited
+## The answer — and what it cost
 
-Straight answers, receipts attached. Ask in plain language, get a structured reply — and every reply carries a quiet **Steps** footer, so the full reasoning session is one click away.
-
-<img src="docs/shot-answer.png" alt="A real answer — three videos found, with a Steps footer on the reply" width="100%" />
-
-<br/>
-
-### 💸 Costs are part of the product
-
-Every session meters its own spend live in the composer — tokens, dollars, and a budget ring. The same telemetry streams to BigQuery in production.
-
-<img src="docs/shot-cost.png" alt="Live cost meter in the composer — dollars, tokens, budget ring" width="100%" />
-
-<br/>
+Ask in plain language; get the conclusion first, the clips that prove it, and the numbers behind the claim. Every reply carries its receipts in a quiet footer: steps, tools, seconds — and dollars.
 
 <div align="center">
-
-### 🚀 Try it in 30 seconds — free mock mode
-
+  <img src="docs/answer-card.svg" alt="A finished VideoSense answer: '3 of 12 clips are pure freefall', three labelled clip cards with timecodes, a freefall-vs-canopy mini chart, and a footer reading Steps 12 · sql ×2 · watch ×3 · 8.4s · $0.0535 · 92k tok" width="860" />
 </div>
 
+<br/>
+
+## How it answers
+
+<div align="center">
+  <img src="docs/loop.svg" alt="The VideoSense agent loop: a Gemini 2.5 brain decides, calls a tool, reads the result, and repeats until proven — surrounded by its tools: watch a video, query the facts, semantic search, show clips and tables, draw a chart, run code. Guardrails: read-only SQL, ids scrubbed, every request metered." width="760" />
+</div>
+
+<br/>
+
+No pre-baked pipeline: the model picks every next move and keeps going until it can *prove* an answer, streaming each step back live. When a library went missing mid-analysis, it rewrote its own code and finished the job — [see that run](docs/DEMO.md).
+
+<sub>Curious about the internals? Architecture notes live in [`docs/design/`](docs/design/).</sub>
+
+<br/>
+
+## Run it in 30 seconds
+
 ```bash
-export GCP_PROJECT="your-gcp-project"  REPL_USE_MOCK_DB=1
+export GCP_PROJECT="your-gcp-project"
+export REPL_USE_MOCK_DB=1
 uvicorn api.server:app --port 8000        # then open http://localhost:8000
 ```
 
 <sub>No database, no cost — a built-in sample library. You only need <code>gcloud auth application-default login</code> for Gemini.</sub>
-
-<br/>
-
-## 🧠 How it answers
-
-There is no pre-baked pipeline. An agent loop with **Gemini 2.5** as the brain decides its own next move — watch a video, query the facts it has extracted, search semantically, run a calculation, draw a chart — and keeps going until it can *prove* an answer, streaming every step back live. It remembers you across sessions, meters its own cost per request, and runs in production on Cloud Run with **146 tests** behind it.
-
-<sub>Curious about the internals? Architecture notes live in [`docs/design/`](docs/design/).</sub>
 
 <br/>
 

@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="430" viewBox="0 0 760 430" font-family="system-ui,'Segoe UI',sans-serif" role="img" aria-label="How VideoSense answers: a Gemini 2.5 agent loop — decide, call a tool, read the result, repeat until proven. Tools: watch a video, query the facts, semantic search, run code, draw a chart, show clips and tables. Guardrails: read-only SQL, ids scrubbed, every request metered.">
+  <defs>
+    <linearGradient id="lbg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0d1016"/><stop offset="1" stop-color="#090b0f"/></linearGradient>
+    <marker id="lar" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L6.5,3 L0,6 Z" fill="#6ea2ff"/>
+    </marker>
+  </defs>
+
+  <rect x="1" y="1" width="758" height="428" rx="14" fill="url(#lbg)" stroke="#22262d"/>
+
+  <text x="380" y="46" text-anchor="middle" fill="#98a2ae" font-size="12.5">no fixed pipeline — the model chooses every step</text>
+
+  <!-- self-loop above the brain -->
+  <path d="M 428,166 A 48,30 0 1 0 332,166" fill="none" stroke="#6ea2ff" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#lar)"/>
+  <text x="380" y="96" text-anchor="middle" fill="#6ea2ff" font-size="11" font-family="ui-monospace,'SF Mono',Consolas,monospace">decide → call a tool → read the result → repeat until proven</text>
+
+  <!-- brain -->
+  <rect x="290" y="176" width="180" height="66" rx="14" fill="#16233f" stroke="#3f7bf0"/>
+  <text x="380" y="205" text-anchor="middle" fill="#dbe6f5" font-size="16.5" font-weight="700">Gemini 2.5</text>
+  <text x="380" y="226" text-anchor="middle" fill="#98a2ae" font-size="10.5">the brain — picks every next move</text>
+
+  <!-- left tool chips -->
+  <g>
+    <rect x="42" y="118" width="200" height="46" rx="10" fill="#101822" stroke="#2c313a"/>
+    <text x="58" y="138" fill="#e8ebef" font-size="12.5" font-weight="600">watch a video</text>
+    <text x="58" y="154" fill="#69727e" font-size="10.5" font-family="ui-monospace,Consolas,monospace">analyze_video · Gemini vision</text>
+
+    <rect x="42" y="186" width="200" height="46" rx="10" fill="#101822" stroke="#2c313a"/>
+    <text x="58" y="206" fill="#e8ebef" font-size="12.5" font-weight="600">query the facts</text>
+    <text x="58" y="222" fill="#69727e" font-size="10.5" font-family="ui-monospace,Consolas,monospace">sql_query · read-only</text>
+
+    <rect x="42" y="254" width="200" height="46" rx="10" fill="#101822" stroke="#2c313a"/>
+    <text x="58" y="274" fill="#e8ebef" font-size="12.5" font-weight="600">semantic search</text>
+    <text x="58" y="290" fill="#69727e" font-size="10.5" font-family="ui-monospace,Consolas,monospace">pgvector · content index</text>
+  </g>
+
+  <!-- right tool chips -->
+  <g>
+    <rect x="518" y="118" width="200" height="46" rx="10" fill="#101822" stroke="#2c313a"/>
+    <text x="534" y="138" fill="#e8ebef" font-size="12.5" font-weight="600">show clips &amp; tables</text>
+    <text x="534" y="154" fill="#69727e" font-size="10.5" font-family="ui-monospace,Consolas,monospace">side-channel to the UI</text>
+
+    <rect x="518" y="186" width="200" height="46" rx="10" fill="#101822" stroke="#2c313a"/>
+    <text x="534" y="206" fill="#e8ebef" font-size="12.5" font-weight="600">draw a chart</text>
+    <text x="534" y="222" fill="#69727e" font-size="10.5" font-family="ui-monospace,Consolas,monospace">plot · served from GCS</text>
+
+    <rect x="518" y="254" width="200" height="46" rx="10" fill="#101822" stroke="#2c313a"/>
+    <text x="534" y="274" fill="#e8ebef" font-size="12.5" font-weight="600">run code</text>
+    <text x="534" y="290" fill="#69727e" font-size="10.5" font-family="ui-monospace,Consolas,monospace">python · sandboxed escape hatch</text>
+  </g>
+
+  <!-- connectors -->
+  <g stroke="#2c313a" stroke-width="1.4">
+    <path d="M242,141 C270,141 268,192 290,196" fill="none"/>
+    <path d="M242,209 L290,209" fill="none"/>
+    <path d="M242,277 C270,277 268,228 290,224" fill="none"/>
+    <path d="M518,141 C490,141 492,192 470,196" fill="none"/>
+    <path d="M518,209 L470,209" fill="none"/>
+    <path d="M518,277 C490,277 492,228 470,224" fill="none"/>
+  </g>
+
+  <!-- guardrails -->
+  <line x1="42" y1="344" x2="718" y2="344" stroke="#22262d"/>
+  <text x="380" y="372" text-anchor="middle" fill="#69727e" font-size="11.5" font-family="ui-monospace,'SF Mono',Consolas,monospace">guardrails · SQL is read-only · raw ids scrubbed from every answer · each request metered ($ · tokens → BigQuery)</text>
+  <text x="380" y="398" text-anchor="middle" fill="#98a2ae" font-size="11.5">it remembers you across sessions — and when a library is missing mid-run, it rewrites its own code and keeps going</text>
+</svg>
