@@ -118,7 +118,18 @@ def run_case(task: dict, script=None, tool_results=None, n: int | None = None,
 def run_suite(tasks: list[dict], policies: dict | None = None, tool_results: dict | None = None,
               live: bool = False, n: int | None = None) -> list[dict]:
     if live:                                  # Mode B：真 Gemini。多轮/dual-control 暂走别的（未接运行）
-        return [run_case(t, live=True, n=n) for t in tasks if t.get("kind") != "multi"]
+        singles = [t for t in tasks if t.get("kind") != "multi"]
+        out = []
+        for i, t in enumerate(singles, 1):
+            try:
+                r = run_case(t, live=True, n=n)
+            except Exception as e:            # 单题崩溃不拖垮整场：记为没过 + 错误信息
+                r = {"id": t["id"], "pinned": t.get("pinned", False), "dims": t.get("dims", []),
+                     "n": n or 1, "successes": 0, "passed": False,
+                     "pass_k": {1: 0.0, 3: None, 5: None}, "scores": {}, "answer": f"[error] {e}"}
+            out.append(r)
+            print(f"[{i}/{len(singles)}] {t['id']:<34} {'过' if r['passed'] else '没过'}", flush=True)
+        return out
     tool_results = tool_results or {}         # 脚本车道：只跑有 fixture 策略的题（其余留给 Mode B）
     out = []
     for t in tasks:
@@ -256,8 +267,12 @@ def main(argv=None):
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     with open(args.out, "w", encoding="utf-8") as fh:
         fh.write(html)
+    results_path = args.out.rsplit(".", 1)[0] + ".results.jsonl"   # 每题结果落盘，便于归因
+    with open(results_path, "w", encoding="utf-8") as fh:
+        for r in cur_print:
+            fh.write(json.dumps(r, ensure_ascii=False, default=str) + "\n")
     print_summary(cur_print, base_print, v)
-    print(f"\n报告已生成：{args.out}")
+    print(f"\n报告已生成：{args.out}（每题明细：{results_path}）")
     return 0
 
 

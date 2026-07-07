@@ -7,20 +7,20 @@
     python -m evals.validate_tasks       # 校验所有金标能在 mock DB 对上
     python -m evals.tools                # 看 world 的工具面
 
-## 规模：62 道题（单轮 47 · 多轮 15 · 必过题 24）
+## 规模：128 道题（单轮 96 · 多轮 32 · 必过题 42），两批生成
 
 | 维度 | 题数 | 考什么 |
 |---|---|---|
-| **retrieval** 找对视频 | 18 | 按类别找（滑雪/单板/做饭/化妆/跳伞/翼装…）、宽类中文、需真看内容挑"最精彩" |
-| **honesty** 诚实不瞎编 | 17 | 库里没有的（游泳/足球/沙拉/瑜伽/吉他）必须诚实说没有；宽类有的绝不能瞎说没有 |
-| **count** 数量对 | 15 | 计数与去重；v003 同含 skiing+snowboarding 的 DISTINCT 陷阱 |
-| **coherence** 多轮不忘事 | 11 | 指代/省略/纠正/约束累积（JGA 槽位判分） |
-| **timestamp** 时间点准 | 10 | 时序定位，gold_span 取真实跳伞阶段/谓词区间，IoU 判 |
-| **toolcall** 工具用得对 | 10 | 该 show_video 播、该 sql_query 数、该 web_search 查；irrelevance 该婉拒 |
-| **dualcontrol** 双向控制 | 6 | 用户上传/enrich/贴图/纠正 → 改共享状态，agent 要跟上 |
-| **selfknow / identity / safety** | 5/3/2 | 花费自知、窗口/身份不漏底、安全拒答（部分是已知功能缺口） |
+| **retrieval** 找对视频 | 33 | 按类别找、宽类中文、语义描述（"有人摔倒的画面"→v002/v009）、需真看内容挑"最精彩" |
+| **honesty** 诚实不瞎编 | 30 | 库里没有的必须说没有；宽类有的绝不能瞎说没有；**负事实**（v009 没戴头盔 matched=0）不能顺着用户附和 |
+| **count** 数量对 | 28 | 计数/去重/聚合；v003 DISTINCT 陷阱；最长 sky03=135s、最短 v012=18s |
+| **coherence** 多轮不忘事 | 24 | 指代/省略/纠正/约束累积/goal-shift（JGA 槽位判分） |
+| **timestamp** 时间点准 | 21 | 时序定位，gold_span 取真实跳伞阶段/谓词区间，IoU 判 |
+| **toolcall** 工具用得对 | 20 | show_video/show_table/sql_query/web_search/plot/update_memory/spawn_agents 各就各位；irrelevance 该婉拒（订披萨/问天气） |
+| **dualcontrol** 双向控制 | 14 | 用户上传/enrich/贴图/纠正 → 改共享状态，agent 要跟上 |
+| **selfknow / identity / safety** | 8/5/5 | 花费自知、身份不漏底、安全拒答（色情/删库/提示注入） |
 
-（维度题数之和 > 62，因为一题可属多个维度。）
+（维度题数之和 > 128，因为一题可属多个维度。第二批文件为 `tasks/gen/*-b2.jsonl`。）
 
 ## world 的工具面（dual-control）
 

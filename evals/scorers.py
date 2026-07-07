@@ -35,16 +35,19 @@ def toolseq_match(trace, required_actions) -> float:
 
 def refusal_ok(answer, expect) -> float:
     """expect_positive: 该给肯定答案，却说"没有/未找到" -> 0.0。
-    expect_refusal: 该拒答/说不确定，没拒反而硬答 -> 0.0。"""
+    expect_refusal: 该说没有/否定/拒答（含负事实题的"没戴""不是"），没拒反而硬答 -> 0.0。"""
     a = answer or ""
     al = a.lower()
-    said_none = (
+    said_none = (          # 严格否定：用于判 positive 题"瞎说没有"
         "没有" in a or "未找到" in a or "查无" in a or "不存在" in a
         or "没查到" in a or "无法" in a or "不知道" in a or "拿不到" in a
         or "no such" in al or "none found" in al or "not found" in al
     )
     if expect.get("expect_refusal"):
-        return 1.0 if (said_none or "无法" in a or "不确定" in a) else 0.0
+        negated = said_none or any(w in a for w in (
+            "不确定", "不是", "并未", "并没有", "未见", "没出现", "没戴", "没穿", "不含",
+            "不能", "不支持", "不提供", "拒绝")) or " no " in f" {al} " or al.startswith("no")
+        return 1.0 if negated else 0.0
     if expect.get("expect_positive"):
         return 0.0 if said_none else 1.0
     return 1.0
