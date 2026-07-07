@@ -4,9 +4,12 @@
 
 <br/><br/>
 
-<img src="docs/proof-strip.svg" alt="146 个测试通过 · Cloud Run 在线 · τ²-bench 评测 78% · Gemini 2.5 多模态" width="760" />
-
-<br/><br/>
+[![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![Gemini 2.5](https://img.shields.io/badge/Gemini%202.5-1C69FF?logo=googlegemini&logoColor=white)](https://deepmind.google/technologies/gemini/)
+[![Postgres + pgvector](https://img.shields.io/badge/Postgres%20%2B%20pgvector-4169E1?logo=postgresql&logoColor=white)](https://github.com/pgvector/pgvector)
+[![Cloud Run](https://img.shields.io/badge/Cloud%20Run-4285F4?logo=googlecloud&logoColor=white)](https://cloud.google.com/run)
+[![BigQuery](https://img.shields.io/badge/BigQuery-669DF6?logo=googlebigquery&logoColor=white)](https://cloud.google.com/bigquery)
 
 它看你的视频、对看到的内容推理，并用可播放的片段和图表来证明它的回答。
 
@@ -57,6 +60,24 @@ uvicorn api.server:app --port 8000        # 然后打开 http://localhost:8000
 ```
 
 <sub>不需要数据库、零成本——内置示例视频库。只需 <code>gcloud auth application-default login</code> 用于调用 Gemini。</sub>
+
+<br/>
+
+## 30 秒跑评测
+
+VideoSense 自带一套 τ²-bench 风格的评测——**128 道题**、8 个能力维度，用确定性校验器打分（不用 LLM 裁判）。跑完自动弹出本地仪表盘，看通过率、各维度分数、以及跨轮次的走势。
+
+```bash
+python -m evals serve      # 本地控制台——点按钮跑，仪表盘自动刷新
+# python -m evals          # 脚本车道（免费，不花 token）
+# python -m evals live     # 真 Gemini 车道（花 token）
+```
+
+<div align="center">
+  <img src="docs/eval-dashboard.svg" alt="VideoSense 评测仪表盘：真 Gemini 车道 96 道单轮题通过率 78%（属于 128 题套件，确定性校验器），各维度通过率——时间戳 100%、计数 95%、工具选择 80%、检索 58%、诚实性 52%。" width="760" />
+</div>
+
+<sub>真 Gemini 车道稳定在 <b>78%</b> 基线——而且上线第一天就抓到了真 bug（一次提示注入泄漏、一次身份暴露），现已固化成回归题。完整报告见 <a href="evals/RESULTS.zh-CN.md">evals/RESULTS.zh-CN.md</a>。</sub>
 
 <br/>
 

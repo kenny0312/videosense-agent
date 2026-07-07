@@ -4,9 +4,12 @@
 
 <br/><br/>
 
-<img src="docs/proof-strip.svg" alt="146 tests passing · live on Cloud Run · τ²-bench eval 78% · Gemini 2.5 multimodal" width="760" />
-
-<br/><br/>
+[![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![Gemini 2.5](https://img.shields.io/badge/Gemini%202.5-1C69FF?logo=googlegemini&logoColor=white)](https://deepmind.google/technologies/gemini/)
+[![Postgres + pgvector](https://img.shields.io/badge/Postgres%20%2B%20pgvector-4169E1?logo=postgresql&logoColor=white)](https://github.com/pgvector/pgvector)
+[![Cloud Run](https://img.shields.io/badge/Cloud%20Run-4285F4?logo=googlecloud&logoColor=white)](https://cloud.google.com/run)
+[![BigQuery](https://img.shields.io/badge/BigQuery-669DF6?logo=googlebigquery&logoColor=white)](https://cloud.google.com/bigquery)
 
 It watches your videos, reasons about what it sees, and answers with the clip and the chart to prove it.
 
@@ -57,6 +60,24 @@ uvicorn api.server:app --port 8000        # then open http://localhost:8000
 ```
 
 <sub>No database, no cost — a built-in sample library. You only need <code>gcloud auth application-default login</code> for Gemini.</sub>
+
+<br/>
+
+## Eval it in 30 seconds
+
+VideoSense ships with its own τ²-bench-style evaluation — **128 tasks** across 8 capability dimensions, scored by deterministic verifiers (no LLM judge). Run it and a local dashboard opens with the pass rate, per-dimension scores, and the trend across runs.
+
+```bash
+python -m evals serve      # local console — click to run, dashboard auto-refreshes
+# python -m evals          # scripted lane  (free, no tokens)
+# python -m evals live     # real-Gemini lane  (spends tokens)
+```
+
+<div align="center">
+  <img src="docs/eval-dashboard.svg" alt="VideoSense eval dashboard: 78% pass on the real-Gemini lane over 96 single-turn tasks (part of a 128-task suite, deterministic verifiers), with per-dimension pass rates — timestamp 100%, counting 95%, tool-use 80%, retrieval 58%, honesty 52%." width="760" />
+</div>
+
+<sub>On the real-Gemini lane it holds a <b>78%</b> baseline — and it caught real bugs on day one (a prompt-injection leak, an identity slip), now pinned as regression tasks. Full write-up in <a href="evals/RESULTS.md">evals/RESULTS.md</a>.</sub>
 
 <br/>
 
