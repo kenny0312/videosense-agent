@@ -20,6 +20,7 @@ class TurnRecord:
     text: str
     action: dict | None = None
     trace: list = field(default_factory=list)
+    ledger: dict = field(default_factory=dict)     # cid -> ExecResult（交付面判分用）
 
 
 class DualControlSession:
@@ -50,6 +51,7 @@ class DualControlSession:
 
         if self.use_mock_db:
             os.environ.setdefault("REPL_USE_MOCK_DB", "1")
+            config.USE_SEMANTIC_SEARCH = False     # 密封，同 LiveWorld：semantic 会直连生产索引
 
         u = self.task["user"]
         user = SimulatedUser(u.get("persona", ""), u.get("goal", ""), script=u.get("script"))
@@ -68,7 +70,7 @@ class DualControlSession:
             turns.append(TurnRecord("user_sim", ut["utterance"], ut.get("action")))
             r = loop_driver.run_loop(ut["utterance"], conv, execute, max_steps=self.task.get("max_steps", 16))
             history.append({"who": "agent", "text": r.answer or ""})
-            turns.append(TurnRecord("agent", r.answer or "", trace=r.trace))
+            turns.append(TurnRecord("agent", r.answer or "", trace=r.trace, ledger=r.ledger))
             if ut.get("done"):
                 break
         return {"turns": turns, "world_state": world_state, "history": history}

@@ -55,6 +55,30 @@ def test_report_renders_html():
     assert "<html" in html and "整体通过率" in html
 
 
+def test_score_multi_offline():
+    """多轮判分纯函数：用假 TurnRecord 验证 jga + required_actions 走整场轨迹。"""
+    from types import SimpleNamespace as NS
+
+    task = {
+        "id": "x", "reward_basis": ["jga", "required_actions"],
+        "evaluation_criteria": {
+            "required_actions": [{"tool": "sql_query"}],
+            "jga_slots": [{"turn": 1, "video_ids": ["v006"]},
+                          {"turn": 2, "answer_contains": "60"}],
+        },
+    }
+    turns = [
+        NS(who="user_sim", text="有没有做饭的视频", trace=[], ledger={}),
+        NS(who="agent", text="有：v006 烤饼干。", trace=[{"tool": "sql_query", "inputs": {"sql": "..."}}], ledger={}),
+        NS(who="user_sim", text="第一个多长", trace=[], ledger={}),
+        NS(who="agent", text="60 秒。", trace=[], ledger={}),
+    ]
+    s = runner.score_multi(task, turns)
+    assert s["jga"] == 1.0 and s["required_actions"] == 1.0
+    turns[3] = NS(who="agent", text="不知道多长", trace=[], ledger={})
+    assert runner.score_multi(task, turns)["jga"] == 0.0
+
+
 def test_dashboard_save_and_rebuild(tmp_path, monkeypatch):
     from evals import dashboard
 

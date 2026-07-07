@@ -86,6 +86,22 @@ def test_surface_blob_covers_sidechannel():
     assert scorers.recall_at_k(R.answer, ["v006", "v007"]) == 0.0   # 只看文本就会冤枉
 
 
+def test_score_jga_multi_turn_slots():
+    titles = {"v006": "Baking Chocolate Chip Cookies", "v007": "Grill Cooking BBQ Ribs"}
+    blobs = [
+        "找到做饭视频：v006（烤饼干）、v007（烤肉）。",
+        "第一个是烤饼干（Baking Chocolate Chip Cookies），时长 60 秒。",
+    ]
+    slots = [
+        {"turn": 1, "video_ids": ["v006", "v007"]},
+        {"turn": 2, "resolved_ordinal": {"第一个": "v006"}, "answer_contains": "60"},
+    ]
+    assert scorers.score_jga(blobs, slots, titles) == 1.0
+    bad = [{"turn": 2, "resolved_ordinal": {"第一个": "v007"}}]      # 指代解析错 -> 没过
+    assert scorers.score_jga(blobs, bad, titles) == 0.0
+    assert scorers.score_jga(["只有一轮"], slots, titles) == 0.0     # 缺轮 -> 没过
+
+
 def test_case_pass_respects_reward_basis():
     good = {"required_actions": 1.0, "output_checks.honesty": 1.0, "output_checks.retrieval": 1.0}
     assert scorers.case_pass(good, list(good))

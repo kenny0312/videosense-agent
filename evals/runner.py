@@ -81,6 +81,71 @@ def dispatch_scorers(task: dict, res) -> dict:
     return s
 
 
+# ── 多轮（真 Gemini + 脚本用户，经 DualControlSession）────────────────
+_MUTATING_ACTIONS = {"upload_video", "enrich_video", "paste_image"}
+
+
+def _has_user_actions(task: dict) -> bool:
+    """要【改共享状态】才能判分的题（计分含 state_assertions，或脚本带上传/入库/贴图动作）——
+    世界动作还没接真执行器，先跳过。say/correct 只是说话，照跑。"""
+    if "state_assertions" in (task.get("reward_basis") or []):
+        return True
+    return any((step.get("action") or {}).get("type") in _MUTATING_ACTIONS
+               for step in task.get("user", {}).get("script", []) or [])
+
+
+def _titles() -> dict:
+    """每个视频的可区分别名：英文标题 + 时长数字（验指代解析用，见 scorers.score_jga）。"""
+    from repl._mock_db import VIDEOS
+
+    return {v[0]: [v[1], str(int(v[3]))] for v in VIDEOS}
+
+
+def score_multi(task: dict, turns) -> dict:
+    """多轮判分（纯函数，离线可测）。turns = TurnRecord 列表（who/text/trace/ledger）。"""
+    from types import SimpleNamespace
+
+    agents = [t for t in turns if t.who == "agent"]
+    blobs = [scorers.surface_blob(SimpleNamespace(answer=t.text, trace=t.trace, ledger=t.ledger))
+             for t in agents]
+    all_trace = [step for t in agents for step in t.trace]
+    final = SimpleNamespace(answer=agents[-1].text if agents else "",
+                            trace=all_trace,
+                            ledger={k: v for t in agents for k, v in (t.ledger or {}).items()})
+    ec = task["evaluation_criteria"]
+    s = dispatch_scorers(task, final)              # required_actions/output_checks 作用于整场+最终答案
+    if ec.get("jga_slots"):
+        s["jga"] = scorers.score_jga(blobs, ec["jga_slots"], titles=_titles())
+    return s
+
+
+def run_case_multi(task: dict, n: int | None = None, owner: str = "eval") -> dict:
+    from evals.session import DualControlSession
+
+    n = n or task.get("n_rollouts", 5)
+    successes = 0
+    per_dim: dict = {}
+    last_turns = None
+    for _ in range(n):
+        out = DualControlSession(task, owner=owner).run()
+        sc = score_multi(task, out["turns"])
+        if scorers.case_pass(sc, task["reward_basis"]):
+            successes += 1
+        for d, v in sc.items():
+            per_dim.setdefault(d, []).append(v)
+        last_turns = out["turns"]
+    agents = [t for t in (last_turns or []) if t.who == "agent"]
+    return {
+        "id": task["id"], "pinned": task.get("pinned", False), "dims": task.get("dims", []),
+        "n": n, "successes": successes, "passed": successes == n,
+        "pass_k": {k: scorers.passk(successes, n, k) for k in (1, 3, 5)},
+        "scores": {d: _mean(v) for d, v in per_dim.items()},
+        "answer": agents[-1].text if agents else None,
+        "tools": [st.get("tool") for t in agents for st in t.trace],
+        "kind": "multi",
+    }
+
+
 def _mean(xs):
     return sum(xs) / len(xs) if xs else 0.0
 
@@ -119,18 +184,25 @@ def run_case(task: dict, script=None, tool_results=None, n: int | None = None,
 
 def run_suite(tasks: list[dict], policies: dict | None = None, tool_results: dict | None = None,
               live: bool = False, n: int | None = None) -> list[dict]:
-    if live:                                  # Mode B：真 Gemini。多轮/dual-control 暂走别的（未接运行）
+    if live:                                  # Mode B：真 Gemini。单轮 + 脚本多轮；带用户动作的先跳过
         singles = [t for t in tasks if t.get("kind") != "multi"]
+        multis = [t for t in tasks if t.get("kind") == "multi" and not _has_user_actions(t)]
+        skipped = [t["id"] for t in tasks if t.get("kind") == "multi" and _has_user_actions(t)]
+        todo = [(t, False) for t in singles] + [(t, True) for t in multis]
         out = []
-        for i, t in enumerate(singles, 1):
+        for i, (t, is_multi) in enumerate(todo, 1):
             try:
-                r = run_case(t, live=True, n=n)
+                r = run_case_multi(t, n=n) if is_multi else run_case(t, live=True, n=n)
             except Exception as e:            # 单题崩溃不拖垮整场：记为没过 + 错误信息
                 r = {"id": t["id"], "pinned": t.get("pinned", False), "dims": t.get("dims", []),
                      "n": n or 1, "successes": 0, "passed": False,
                      "pass_k": {1: 0.0, 3: None, 5: None}, "scores": {}, "answer": f"[error] {e}"}
             out.append(r)
-            print(f"[{i}/{len(singles)}] {t['id']:<34} {'过' if r['passed'] else '没过'}", flush=True)
+            tag = "多轮" if is_multi else "单轮"
+            print(f"[{i}/{len(todo)}] ({tag}) {t['id']:<34} {'过' if r['passed'] else '没过'}", flush=True)
+        if skipped:
+            print(f"跳过 {len(skipped)} 道要改共享状态才能判分的双向控制题（上传/入库/贴图，待接真执行器）：")
+            print("  " + "、".join(skipped), flush=True)
         return out
     tool_results = tool_results or {}         # 脚本车道：只跑有 fixture 策略的题（其余留给 Mode B）
     out = []
