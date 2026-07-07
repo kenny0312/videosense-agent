@@ -20,14 +20,6 @@
 
 <br/>
 
-<details align="center">
-  <summary><sub>▶ &nbsp;Prefer the raw screen recording? &nbsp;<i>(4&nbsp;MB GIF)</i></sub></summary>
-  <br/>
-  <img src="docs/demo.gif" alt="VideoSense in action — a question becomes an answer with playable clips" width="820" />
-</details>
-
-<br/>
-
 ## 🧾 A real session, unedited
 
 Straight answers, receipts attached. Ask in plain language, get a structured reply — and every reply carries a quiet **Steps** footer, so the full reasoning session is one click away.

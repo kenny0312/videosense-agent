@@ -20,14 +20,6 @@
 
 <br/>
 
-<details align="center">
-  <summary><sub>▶ &nbsp;想看原始录屏？点开 20 秒走查 &nbsp;<i>(4&nbsp;MB GIF)</i></sub></summary>
-  <br/>
-  <img src="docs/demo.gif" alt="VideoSense 实机演示——一个问题变成一个带片段的答案" width="820" />
-</details>
-
-<br/>
-
 ## 🧾 一段真实会话，未经剪辑
 
 有一说一，证据随附。大白话提问，拿到结构化回答——每条回复都带一个安静的 **Steps** 页脚，完整的推理过程一键展开。
