@@ -14,8 +14,10 @@ def test_live_skydive_smoke():
     from evals import runner
     from evals.world import live_preflight
 
+    import evals as _evals_pkg
+
     assert live_preflight() is None, "GCP 凭证没配好"
-    t = next(x for x in runner.load_tasks(os.path.join(os.path.dirname(__file__), "tasks"))
+    t = next(x for x in runner.load_tasks(os.path.join(os.path.dirname(_evals_pkg.__file__), "tasks"))
              if x["id"] == "skydive-honesty-01")
     r = runner.run_case(t, live=True, n=1)
     assert r["answer"] is not None

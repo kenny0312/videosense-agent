@@ -1,5 +1,5 @@
 """受控大类词表 + normalize + 主类推导的离线单测(纯 Python,不碰 DB/GCP)。
-    python -m pytest pipeline/test_taxonomy.py
+    python -m pytest tests/pipeline/test_taxonomy.py
 """
 from __future__ import annotations
 

@@ -4,10 +4,11 @@
 """
 import os
 
+import evals as _evals_pkg
 from evals import report, runner
 from evals.fixtures.policies import GOOD, REGRESSED, TOOL_RESULTS
 
-TASKS_DIR = os.path.join(os.path.dirname(__file__), "tasks")
+TASKS_DIR = os.path.join(os.path.dirname(_evals_pkg.__file__), "tasks")
 
 
 def _task(tid):

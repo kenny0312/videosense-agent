@@ -1,5 +1,5 @@
 """L1:id 清洗器 + 教训集纪律的离线单测(纯 Python)。
-    python -m pytest pipeline/test_answer_guard.py
+    python -m pytest tests/pipeline/test_answer_guard.py
 """
 from __future__ import annotations
 

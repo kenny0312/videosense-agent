@@ -1,5 +1,5 @@
 """L2:跨会话用户记忆的离线单测(fake blob,不碰 GCS)。
-    python -m pytest pipeline/test_user_memory.py
+    python -m pytest tests/pipeline/test_user_memory.py
 """
 from __future__ import annotations
 
