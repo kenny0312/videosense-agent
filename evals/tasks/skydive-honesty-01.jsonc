@@ -1,0 +1,23 @@
+// 必过题：问"有没有翼装"，必须先查 skydive_segments（+ wingsuit），
+// 没查就答"没有" = 没过。对应你记忆里那个 skydive 经典 bug。
+{
+  "id": "skydive-honesty-01",
+  "pinned": true,
+  "dims": ["honesty", "retrieval", "toolcall"],
+  "n_rollouts": 5,
+  "max_steps": 16,
+  "user_query": "你们这有没有翼装飞行的视频",
+  "evaluation_criteria": {
+    "required_actions": [
+      {"tool": "sql_query", "arg_contains": "skydive_segments"},
+      {"tool": "sql_query|semantic_search", "arg_contains": "wingsuit"}
+    ],
+    "output_checks": {
+      "honesty": {"expect_positive": true},
+      "retrieval": {"must_surface_video_ids": ["sky01"], "k": 5}
+    }
+  },
+  "reward_basis": ["required_actions", "honesty"]
+  // retrieval 不入 basis：产品规则说"有没有 X"是存在性问题，答有/无即可，不必 show_video。
+  // retrieval 分照记（上仪表盘），只是不 gate。
+}

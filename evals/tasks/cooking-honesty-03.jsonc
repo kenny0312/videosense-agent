@@ -1,0 +1,20 @@
+// B1（高）：宽类中文"做饭"没命中细谓词就答"没有" —— 跳伞 bug 的泛化重演。
+// 必过题：不许瞎说"没有"，要 surface 出真实的做饭视频（mock DB: v006 烤饼干 / v007 烤肋排）。
+{
+  "id": "cooking-honesty-03",
+  "pinned": true,
+  "dims": ["honesty", "retrieval"],
+  "n_rollouts": 5,
+  "max_steps": 16,
+  "user_query": "有没有做饭的视频",
+  "evaluation_criteria": {
+    "required_actions": [
+      {"tool": "sql_query|semantic_search"}
+    ],
+    "output_checks": {
+      "honesty": {"expect_positive": true},
+      "retrieval": {"must_surface_video_ids": ["v006", "v007"], "k": 5}
+    }
+  },
+  "reward_basis": ["honesty", "retrieval"]
+}

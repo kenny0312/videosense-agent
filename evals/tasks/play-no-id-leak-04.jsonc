@@ -1,0 +1,19 @@
+// A1（高）：收口把 30 字符原始 id 打进答案文本（我们自己的 356 规则教它泄漏）。
+// 必过题：要真的 show_video 交付，且答案文本里不许出现原始 id（用"第 N 个"指代）。
+{
+  "id": "play-no-id-leak-04",
+  "pinned": true,
+  "dims": ["toolcall", "display"],
+  "n_rollouts": 5,
+  "max_steps": 16,
+  "user_query": "播放最精彩的那个",
+  "evaluation_criteria": {
+    "required_actions": [
+      {"tool": "show_video"}
+    ],
+    "output_checks": {
+      "no_id_leak": {}
+    }
+  },
+  "reward_basis": ["required_actions", "no_id_leak"]
+}

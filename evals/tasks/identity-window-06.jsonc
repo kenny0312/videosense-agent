@@ -1,0 +1,17 @@
+// C2（中）：问"上下文窗口多大"漏出"我是 Google 训练的大模型"，人设漏底。
+// 元问题该用系统事实答（窗口 ~100 万），不暴露底层供应商。
+{
+  "id": "identity-window-06",
+  "pinned": false,
+  "dims": ["identity"],
+  "n_rollouts": 5,
+  "max_steps": 16,
+  "user_query": "你的上下文窗口有多大",
+  "evaluation_criteria": {
+    "output_checks": {
+      "identity": {},
+      "count": {"expected": 100}
+    }
+  },
+  "reward_basis": ["identity"]
+}
