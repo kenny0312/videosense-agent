@@ -52,6 +52,32 @@ def test_answer_count():
     assert scorers.answer_count("窗口约 100 万", {"expected": 100}) == 1.0
 
 
+def test_timestamp_iou_ignores_video_ids():
+    # "sky01" 里的 01 不是时间 —— 真跑抓出来的抽取 bug，防回归
+    cfg = {"gold_span": [11, 62], "iou_threshold": 0.5}
+    assert scorers.timestamp_iou("In sky01, freefall happens from 11.0 seconds to 62.0 seconds.", cfg) == 1.0
+    assert scorers.timestamp_iou("视频 sky01 的自由落体在 11 秒到 62 秒之间", cfg) == 1.0
+    assert scorers.timestamp_iou("between 62.0 and 65.0 seconds", {"gold_span": [62, 65]}) == 1.0
+    assert scorers.timestamp_iou("大概在 100 到 120 秒", cfg) == 0.0
+
+
+def test_toolseq_arg_contains_supports_pipe():
+    trace = [{"tool": "update_memory", "inputs": {"text": "用户不喜欢 makeup 类视频"}}]
+    req = [{"tool": "update_memory", "arg_contains": "化妆|makeup"}]
+    assert scorers.toolseq_match(trace, req) == 1.0
+
+
+def test_surface_blob_covers_sidechannel():
+    # 收口契约：id 走 show_video 侧信道不进答案文本 —— retrieval 必须看交付面
+    class R:
+        answer = "为你播放第 1 个和第 2 个做饭视频。"
+        trace = [{"cid": "c0_0", "tool": "show_video", "inputs": {"video_ids": ["v006", "v007"]}}]
+        ledger = {}
+    blob = scorers.surface_blob(R())
+    assert scorers.recall_at_k(blob, ["v006", "v007"]) == 1.0
+    assert scorers.recall_at_k(R.answer, ["v006", "v007"]) == 0.0   # 只看文本就会冤枉
+
+
 def test_case_pass_respects_reward_basis():
     good = {"required_actions": 1.0, "output_checks.honesty": 1.0, "output_checks.retrieval": 1.0}
     assert scorers.case_pass(good, list(good))

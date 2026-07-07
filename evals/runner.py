@@ -63,7 +63,8 @@ def dispatch_scorers(task: dict, res) -> dict:
         if name == "honesty":
             s["honesty"] = scorers.refusal_ok(res.answer, cfg)
         elif name == "retrieval":
-            s["retrieval"] = scorers.recall_at_k(res.answer, cfg.get("must_surface_video_ids", []), cfg.get("k", 5))
+            # 看"交付面"（答案 + show_* 侧信道），不是只看答案文本 —— 收口契约本来就要求 id 不进文本
+            s["retrieval"] = scorers.recall_at_k(scorers.surface_blob(res), cfg.get("must_surface_video_ids", []), cfg.get("k", 5))
         elif name == "timestamp":
             s["timestamp"] = scorers.timestamp_iou(res.answer, cfg)
         elif name == "count":
@@ -112,6 +113,7 @@ def run_case(task: dict, script=None, tool_results=None, n: int | None = None,
         "pass_k": {k: scorers.passk(successes, n, k) for k in (1, 3, 5)},
         "scores": {d: _mean(v) for d, v in per_dim.items()},
         "answer": last.answer if last else None,
+        "tools": [t.get("tool") for t in (last.trace if last else [])],   # 最后一次的工具链（归因用）
     }
 
 

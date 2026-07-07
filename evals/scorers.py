@@ -17,20 +17,36 @@ from math import comb
 def toolseq_match(trace, required_actions) -> float:
     """trace = LoopResult.trace（每条 {tool, inputs, ...}）。
     required_actions 里每一条都要在 trace 里找到匹配的工具调用，缺一个就 0.0。
-    tool 支持 "a|b" 表示任一；arg_contains 是（序列化后 inputs 的）子串匹配。"""
+    tool 和 arg_contains 都支持 "a|b" 表示任一。"""
     for req in required_actions or []:
         names = str(req.get("tool", "")).split("|")
         need = req.get("arg_contains")
+        needs = [w.lower() for w in str(need).split("|")] if need is not None else None
         hit = False
         for step in trace or []:
             if step.get("tool") in names:
                 blob = json.dumps(step.get("inputs", {}), ensure_ascii=False).lower()
-                if need is None or str(need).lower() in blob:
+                if needs is None or any(w in blob for w in needs):
                     hit = True
                     break
         if not hit:
             return 0.0
     return 1.0
+
+
+def surface_blob(res) -> str:
+    """"交付面"文本：答案 + show_video/show_table 的调用参数和结果行。
+    VS 的收口契约要求原始 id 不进答案文本（id 走侧信道），所以判"找对视频没"
+    必须看交付侧信道，不能只看答案嘴上说了什么（τ²：看交付，不看轨迹措辞）。"""
+    parts = [res.answer or ""]
+    for step in getattr(res, "trace", None) or []:
+        if step.get("tool") in ("show_video", "show_table"):
+            parts.append(json.dumps(step.get("inputs", {}), ensure_ascii=False, default=str))
+            er = (getattr(res, "ledger", None) or {}).get(step.get("cid"))
+            if er is not None:
+                parts.append(json.dumps(getattr(er, "value", None), ensure_ascii=False, default=str))
+                parts.append(json.dumps(getattr(er, "videos", None), ensure_ascii=False, default=str))
+    return " ".join(parts)
 
 
 def refusal_ok(answer, expect) -> float:
@@ -95,17 +111,29 @@ def answer_count(answer, cfg) -> float:
     return 1.0 if re.search(rf"(?<!\d){n}(?!\d)", answer or "") else 0.0
 
 
+_ID_TOKEN = re.compile(r"\b(?:v\d{2,4}|sky\d{2}|up_[a-z0-9]+)\b", re.IGNORECASE)
+_SPAN_PAT = re.compile(
+    r"(\d+(?:\.\d+)?)\s*(?:秒|s|sec|seconds?)?\s*(?:到|至|~|–|—|-|to|and|through)\s*"
+    r"(?:第?\s*)?(\d+(?:\.\d+)?)", re.IGNORECASE)
+
+
 def timestamp_iou(answer, cfg) -> float:
     """时序定位：从答案里抽出一个 [起, 止] 区间，与金标算 IoU，达阈值算过。
-    粗略取答案里前两个数字当区间（"从第 11 秒到第 62 秒" → 11,62）。"""
+    先剔掉 video id（"sky01" 里的 01 不是时间！），优先配 "X 到/to/and Y" 的成对模式，
+    配不上再退回前两个数字。"""
     gold = cfg.get("gold_span")
     thr = cfg.get("iou_threshold", 0.5)
     if not gold:
         return 1.0
-    nums = re.findall(r"\d+(?:\.\d+)?", answer or "")
-    if len(nums) < 2:
-        return 0.0
-    a, b = sorted((float(nums[0]), float(nums[1])))
+    text = _ID_TOKEN.sub(" ", answer or "")
+    m = _SPAN_PAT.search(text)
+    if m:
+        a, b = sorted((float(m.group(1)), float(m.group(2))))
+    else:
+        nums = re.findall(r"\d+(?:\.\d+)?", text)
+        if len(nums) < 2:
+            return 0.0
+        a, b = sorted((float(nums[0]), float(nums[1])))
     gs, ge = float(gold[0]), float(gold[1])
     inter = max(0.0, min(b, ge) - max(a, gs))
     union = (b - a) + (ge - gs) - inter
