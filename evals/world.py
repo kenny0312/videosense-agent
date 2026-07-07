@@ -90,6 +90,11 @@ class LiveWorld:
     def __init__(self, owner: str = "eval", use_mock_db: bool = True):
         if use_mock_db:
             os.environ.setdefault("REPL_USE_MOCK_DB", "1")
+            # 密封：REPL_USE_MOCK_DB 只 mock SQL；semantic_search 会直连生产 pgvector 索引
+            # （真跑实测：答案里冒出彩弹/海边游泳等生产库真视频）。eval 世界必须关掉它，
+            # 语义类题目靠 video_facts 谓词照样可答。要测语义索引本身时显式打开。
+            from pipeline import config
+            config.USE_SEMANTIC_SEARCH = False
         self.owner = owner
 
     def run(self, user_query, max_steps: int = 16):

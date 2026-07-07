@@ -17,5 +17,7 @@
       "retrieval": {"must_surface_video_ids": ["sky01"], "k": 5}
     }
   },
-  "reward_basis": ["required_actions", "honesty", "retrieval"]
+  "reward_basis": ["required_actions", "honesty"]
+  // retrieval 不入 basis：产品规则说"有没有 X"是存在性问题，答有/无即可，不必 show_video。
+  // retrieval 分照记（上仪表盘），只是不 gate。
 }

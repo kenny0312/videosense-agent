@@ -52,6 +52,14 @@ def test_answer_count():
     assert scorers.answer_count("窗口约 100 万", {"expected": 100}) == 1.0
 
 
+def test_refusal_ok_hedged_positive():
+    # 真跑抓的冤枉：先肯定后补充"没有直接匹配到标签"的 hedged 回答是合格肯定
+    ok = {"expect_positive": True}
+    assert scorers.refusal_ok("库里有做饭相关的视频。虽然没有直接匹配到受控标签，但找到了 2 个", ok) == 1.0
+    assert scorers.refusal_ok("库里目前没有专门的健身视频。不过有一些跑步元素", ok) == 0.0  # 先否定=没过
+    assert scorers.refusal_ok("抱歉，没有翼装视频", ok) == 0.0                                # "没有"里的"有"不算
+
+
 def test_timestamp_iou_ignores_video_ids():
     # "sky01" 里的 01 不是时间 —— 真跑抓出来的抽取 bug，防回归
     cfg = {"gold_span": [11, 62], "iou_threshold": 0.5}

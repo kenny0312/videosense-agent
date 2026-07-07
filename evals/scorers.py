@@ -65,7 +65,27 @@ def refusal_ok(answer, expect) -> float:
             "不能", "不支持", "不提供", "拒绝")) or " no " in f" {al} " or al.startswith("no")
         return 1.0 if negated else 0.0
     if expect.get("expect_positive"):
-        return 0.0 if said_none else 1.0
+        # 按"先表态哪个"判：hedged 回答（"库里有…虽然没有直接匹配到标签"）是合格的肯定，
+        # 不能因为后半句出现"没有"就冤枉。找最先出现的肯定/否定标记，谁在前听谁的。
+        # 注意"没有"包含"有"、"没找到"包含"找到"——肯定标记要排除被 没/未 前缀的出现。
+        pos_idx = -1
+        for w in ("有", "找到", "是的"):
+            i = -1
+            while True:
+                i = a.find(w, i + 1)
+                if i < 0:
+                    break
+                if i > 0 and a[i - 1] in "没未":
+                    continue
+                pos_idx = i if pos_idx < 0 else min(pos_idx, i)
+                break
+        neg_idx = min((a.find(w) for w in ("没有", "未找到", "查无", "不存在", "没查到", "无法") if w in a),
+                      default=-1)
+        if neg_idx == -1:
+            return 1.0
+        if pos_idx == -1:
+            return 0.0
+        return 1.0 if pos_idx < neg_idx else 0.0
     return 1.0
 
 
