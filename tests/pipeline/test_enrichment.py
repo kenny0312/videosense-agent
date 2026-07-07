@@ -1,5 +1,5 @@
 """V1.5 富化:解析纯函数 + enrich 主流程(stub)+ /v1/enrich 端点校验的离线单测。
-    python -m pytest pipeline/test_enrichment.py
+    python -m pytest tests/pipeline/test_enrichment.py
 """
 from __future__ import annotations
 

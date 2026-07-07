@@ -1,5 +1,5 @@
 """V1 语义索引:snippet 构造 / 向量字面量 / embed 通道(stub)的离线单测。
-    python -m pytest pipeline/test_semantic.py
+    python -m pytest tests/pipeline/test_semantic.py
 """
 from __future__ import annotations
 

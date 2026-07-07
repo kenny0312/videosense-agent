@@ -2,7 +2,7 @@
 
 Offline scripted harness. No Gemini, no network, no DB. Wraps pipeline.run_loop with a
 scripted conversation (ScriptedConv) + a stubbed tool executor (make_exec), copied from
-the shape already used by pipeline/test_loop_driver.py so it stays faithful to prod.
+the shape already used by tests/pipeline/test_loop_driver.py so it stays faithful to prod.
 
 写任务用的 snapshot / state_diff 先留占位（下一步接真执行器时再填）。
 """

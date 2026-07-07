@@ -112,7 +112,7 @@
 
 ### A5.1 单一最佳接入 seam：`run_loop()`（`pipeline/loop_driver.py:133`）
 理由：**纯控制流**，无 Gemini/DB/sandbox 依赖，只需注入两样——
-- `conversation`（`send(msg)->(calls, text)`）→ 用 `ScriptedConv`（`pipeline/test_loop_driver.py:13`）脚本化
+- `conversation`（`send(msg)->(calls, text)`）→ 用 `ScriptedConv`（`tests/pipeline/test_loop_driver.py:13`）脚本化
 - `execute`（tool 执行器）→ 用 `make_exec(values=..., fail=...)`（`test_loop_driver.py:24`）stub
 
 返回 `LoopResult`：`answer / trace / ledger / terminated / steps / step_walls / llm_calls`——全可观测，<1s，无网络。已被 40+ 现有测试打磨过。
@@ -336,7 +336,7 @@ def run_suite(cases, **kw):
 - `pipeline/orchestrator.py:63` `run_query`（集成级）
 - `pipeline/node_executor.py:400` `execute_node`（工具分发）
 - `api/server.py:216` `video_vibe_query` / `:180` `_audit`（usage_audit→BigQuery）
-- `pipeline/test_loop_driver.py:13` `ScriptedConv` / `:24` `make_exec`（stub 复用）
+- `tests/pipeline/test_loop_driver.py:13` `ScriptedConv` / `:24` `make_exec`（stub 复用）
 - `pipeline/trace.py` / `pipeline/transcript_store.py`（轨迹/多轮全量）
 - `pipeline/lessons.py`（L01-L12，B2 升级基底）/ `pipeline/user_memory.py`（per-owner 隔离）
 - `docs/design/probe-findings-upgrade-plan.md`（21 轮金标种子）
