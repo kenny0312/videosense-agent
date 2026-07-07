@@ -15,6 +15,9 @@ python -m evals.runner --list
 python -m evals.validate_tasks
 python -m evals.tools
 
+# 本地仪表盘（历史/趋势/没过的题，不用 push GitHub）—— 每次跑完自动更新，浏览器 F5 即可
+python -m evals.dashboard --open
+
 # 单测（含核心断言：没查跳伞库就答否定 = 没过）
 python -m pytest evals/ -q
 

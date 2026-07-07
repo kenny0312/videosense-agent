@@ -272,7 +272,12 @@ def main(argv=None):
         for r in cur_print:
             fh.write(json.dumps(r, ensure_ascii=False, default=str) + "\n")
     print_summary(cur_print, base_print, v)
+    from evals import dashboard                                     # 归档本次运行 + 重建本地仪表盘
+    mode = "live" if args.live else ("compare" if args.compare else "scripted")
+    dashboard.save_run(cur_print, v, mode)
+    dash = dashboard.rebuild()
     print(f"\n报告已生成：{args.out}（每题明细：{results_path}）")
+    print(f"仪表盘已更新：{dash}  ← 浏览器打开这个看历史/趋势，不用 push GitHub")
     return 0
 
 

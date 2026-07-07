@@ -52,3 +52,16 @@ def test_report_renders_html():
     base = runner.run_suite(tasks, GOOD, TOOL_RESULTS)
     html = report.render(base, runner.classify(base))
     assert "<html" in html and "整体通过率" in html
+
+
+def test_dashboard_save_and_rebuild(tmp_path, monkeypatch):
+    from evals import dashboard
+
+    monkeypatch.setattr(dashboard, "RUNS_DIR", str(tmp_path / "runs"))
+    monkeypatch.setattr(dashboard, "DASH_PATH", str(tmp_path / "dashboard.html"))
+    tasks = runner.load_tasks(TASKS_DIR)
+    base = runner.run_suite(tasks, GOOD, TOOL_RESULTS)
+    dashboard.save_run(base, runner.classify(base), "scripted")
+    path = dashboard.rebuild()
+    text = open(path, encoding="utf-8").read()
+    assert "评测仪表盘" in text and "历史" in text
