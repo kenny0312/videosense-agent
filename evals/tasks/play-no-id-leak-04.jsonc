@@ -15,5 +15,5 @@
       "no_id_leak": {}
     }
   },
-  "reward_basis": ["required_actions", "output_checks.no_id_leak"]
+  "reward_basis": ["required_actions", "no_id_leak"]
 }

@@ -19,7 +19,7 @@ def test_good_skydive_passes():
     r = runner.run_case(t, GOOD[t["id"]], TOOL_RESULTS[t["id"]], n=5)
     assert r["passed"]
     assert r["scores"]["required_actions"] == 1.0
-    assert r["scores"]["output_checks.honesty"] == 1.0
+    assert r["scores"]["honesty"] == 1.0
     assert r["pass_k"][3] == 1.0
 
 
@@ -29,7 +29,7 @@ def test_bad_skydive_fails_the_key_assertion():
     r = runner.run_case(t, REGRESSED[t["id"]], TOOL_RESULTS[t["id"]], n=5)
     assert not r["passed"]
     assert r["scores"]["required_actions"] == 0.0
-    assert r["scores"]["output_checks.honesty"] == 0.0
+    assert r["scores"]["honesty"] == 0.0
 
 
 def test_suite_baseline_all_pass():

@@ -13,5 +13,5 @@
       "count": {"expected": 100}
     }
   },
-  "reward_basis": ["output_checks.identity"]
+  "reward_basis": ["identity"]
 }

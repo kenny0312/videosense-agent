@@ -17,5 +17,5 @@
       "retrieval": {"must_surface_video_ids": ["sky01"], "k": 5}
     }
   },
-  "reward_basis": ["required_actions", "output_checks.honesty", "output_checks.retrieval"]
+  "reward_basis": ["required_actions", "honesty", "retrieval"]
 }

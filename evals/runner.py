@@ -10,10 +10,10 @@
 from __future__ import annotations
 
 import argparse
-import glob
 import json
 import os
 import sys
+from collections import Counter
 
 from evals import report, scorers
 from evals.world import LiveWorld, ScriptedWorld, live_preflight
@@ -28,37 +28,55 @@ def _strip_jsonc(text: str) -> str:
 
 
 def load_tasks(path: str) -> list[dict]:
+    """加载题目：目录则递归读 *.jsonc / *.json（单对象，去整行注释）+ *.jsonl（一行一题）。"""
     if os.path.isdir(path):
-        files = sorted(glob.glob(os.path.join(path, "*.jsonc")) + glob.glob(os.path.join(path, "*.json")))
+        files = []
+        for root, _dirs, fnames in os.walk(path):
+            files += [os.path.join(root, fn) for fn in fnames
+                      if fn.endswith((".jsonc", ".json", ".jsonl"))]
     else:
         files = [path]
     tasks = []
-    for f in files:
+    for f in sorted(files):
         with open(f, encoding="utf-8") as fh:
-            tasks.append(json.loads(_strip_jsonc(fh.read())))
+            text = fh.read()
+        if f.endswith(".jsonl"):
+            for line in text.splitlines():
+                line = line.strip()
+                if line and not line.startswith("//"):
+                    tasks.append(json.loads(line))
+        else:
+            tasks.append(json.loads(_strip_jsonc(text)))
     return sorted(tasks, key=lambda t: t["id"])
 
 
 # ── 判分分发 ─────────────────────────────────────────────────────────
 def dispatch_scorers(task: dict, res) -> dict:
+    """把一道题适用的判分器都跑一遍，输出 {判分器名 -> 分}（短名，与 reward_basis 对齐）。"""
     ec = task["evaluation_criteria"]
     s: dict = {}
     if ec.get("required_actions") is not None:
         s["required_actions"] = scorers.toolseq_match(res.trace, ec["required_actions"])
+    if ec.get("no_call_expected"):
+        s["no_call"] = 1.0 if not res.trace else 0.0
     for name, cfg in ec.get("output_checks", {}).items():
-        key = f"output_checks.{name}"
         if name == "honesty":
-            s[key] = scorers.refusal_ok(res.answer, cfg)
+            s["honesty"] = scorers.refusal_ok(res.answer, cfg)
         elif name == "retrieval":
-            s[key] = scorers.recall_at_k(res.answer, cfg.get("must_surface_video_ids", []), cfg.get("k", 5))
-        elif name == "entity_match":
-            s[key] = scorers.entity_match(res.answer, cfg)
-        elif name == "no_id_leak":
-            s[key] = scorers.no_id_leak(res.answer, cfg)
-        elif name == "identity":
-            s[key] = scorers.no_provider_leak(res.answer, cfg)
+            s["retrieval"] = scorers.recall_at_k(res.answer, cfg.get("must_surface_video_ids", []), cfg.get("k", 5))
+        elif name == "timestamp":
+            s["timestamp"] = scorers.timestamp_iou(res.answer, cfg)
         elif name == "count":
-            s[key] = scorers.answer_count(res.answer, cfg)
+            s["count"] = scorers.answer_count(res.answer, cfg)
+        elif name == "entity_match":
+            s["entity_match"] = scorers.entity_match(res.answer, cfg)
+        elif name == "no_id_leak":
+            s["no_id_leak"] = scorers.no_id_leak(res.answer, cfg)
+        elif name == "identity":
+            s["identity"] = scorers.no_provider_leak(res.answer, cfg)
+        elif name == "safety":
+            s["safety"] = scorers.refusal_ok(res.answer, {"expect_refusal": cfg.get("expect_refusal", True)})
+    # state_assertions / jga_slots 需要 world/session（Mode B / dual-control 才有），单轮跳过
     return s
 
 
@@ -99,10 +117,15 @@ def run_case(task: dict, script=None, tool_results=None, n: int | None = None,
 
 def run_suite(tasks: list[dict], policies: dict | None = None, tool_results: dict | None = None,
               live: bool = False, n: int | None = None) -> list[dict]:
-    if live:
-        return [run_case(t, live=True, n=n) for t in tasks]
-    tool_results = tool_results or {}
-    return [run_case(t, policies[t["id"]], tool_results.get(t["id"], {}), n=n) for t in tasks]
+    if live:                                  # Mode B：真 Gemini。多轮/dual-control 暂走别的（未接运行）
+        return [run_case(t, live=True, n=n) for t in tasks if t.get("kind") != "multi"]
+    tool_results = tool_results or {}         # 脚本车道：只跑有 fixture 策略的题（其余留给 Mode B）
+    out = []
+    for t in tasks:
+        if policies is not None and t["id"] not in policies:
+            continue
+        out.append(run_case(t, policies[t["id"]], tool_results.get(t["id"], {}), n=n))
+    return out
 
 
 # ── 结论 ────────────────────────────────────────────────────────────
@@ -192,9 +215,19 @@ def main(argv=None):
     ap.add_argument("--compare", action="store_true", help="脚本车道：好策略(旧版) vs 回归策略(新版)")
     ap.add_argument("--live", action="store_true", help="Mode B：真 Gemini 进循环（要 GCP 凭证 + 花 token）")
     ap.add_argument("--n", type=int, default=None, help="覆盖每题跑几次（真跑先 --n 1 冒烟）")
+    ap.add_argument("--list", action="store_true", help="只列出数据集（按维度统计），不跑")
     args = ap.parse_args(argv)
 
     tasks = load_tasks(args.tasks_dir)
+
+    if args.list:
+        by_dim = Counter(d for t in tasks for d in t.get("dims", ["?"]))
+        single = sum(1 for t in tasks if t.get("kind") != "multi")
+        pinned = sum(1 for t in tasks if t.get("pinned"))
+        print(f"数据集：{len(tasks)} 道题（单轮 {single}，多轮 {len(tasks) - single}，必过题 {pinned}）")
+        for d, c in sorted(by_dim.items(), key=lambda x: -x[1]):
+            print(f"  {d:<16} {c}")
+        return 0
 
     if args.live:
         msg = live_preflight()

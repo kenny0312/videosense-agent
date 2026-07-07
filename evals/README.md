@@ -1,7 +1,8 @@
-# evals —— VS 评测系统（第一版 · 离线脚本车道）
+# evals —— VS 评测系统（τ²-video）
 
-这是 VS「先有可信评测，再谈微调」的第一块地基。设计见
-[../docs/eval-system-and-layer0-plan.md](../docs/eval-system-and-layer0-plan.md) 和
+VS「先有可信评测，再谈微调」的地基。τ²-bench 式：以**真 Gemini agent** 为被测主体，
+**62 道 grounded 题**（见 [DATASET.md](DATASET.md)），dual-control 的 world 工具面（`python -m evals.tools`）。
+设计见 [../docs/eval-system-and-layer0-plan.md](../docs/eval-system-and-layer0-plan.md) 和
 [../docs/tau2-video-eval-design.md](../docs/tau2-video-eval-design.md)。
 
 ## 怎么跑
@@ -9,6 +10,11 @@
 在项目 anaconda 环境、仓库根目录下：
 
 ```bash
+# 看数据集清单 / 校验金标能对上 mock DB / 看 world 工具面
+python -m evals.runner --list
+python -m evals.validate_tasks
+python -m evals.tools
+
 # 单测（含核心断言：没查跳伞库就答否定 = 没过）
 python -m pytest evals/ -q
 
@@ -44,12 +50,18 @@ python -m evals.runner --live --n 1     # 先 n=1 冒烟，稳了再加大 n
 
 | 文件 | 干什么 |
 |---|---|
-| `scorers.py` | 判分函数（纯函数、确定性）：`toolseq_match` / `refusal_ok` / `recall_at_k` / `passk` / `case_pass` |
-| `world.py` | `ScriptedWorld` + `ScriptedConv` / `make_exec`：把假大脑+假工具喂给真 `run_loop` |
-| `runner.py` | 跑批 + 结论 + 命令行入口 |
+| `scorers.py` | 判分函数（纯函数、确定性）：`toolseq_match` / `refusal_ok` / `recall_at_k` / `timestamp_iou` / `answer_count` / `no_id_leak` / `no_provider_leak` / `passk` |
+| `world.py` | `ScriptedWorld`（脚本车道）+ `LiveWorld`（Mode B 真 Gemini + mock DB）+ `live_preflight` |
+| `session.py` | `DualControlSession`：τ² 多轮 dual-control（真 agent + 模拟用户，已建骨架） |
+| `simulated_user.py` | 模拟用户（pinned 跨家族 Claude，persona+goal，能用 USER_TOOLS） |
+| `tools.py` | world 工具面：agent 侧（取自 node_specs）+ user 侧 5 动作 |
+| `runner.py` | 跑批 + 结论 + 命令行（`--list` / `--compare` / `--live`） |
 | `report.py` | 大白话 HTML 报告 |
-| `fixtures/policies.py` | 每题的脚本策略（假大脑）+ 固定工具结果 |
-| `tasks/*.jsonc` | 题目（评测标准，与"用什么大脑"无关） |
+| `validate_tasks.py` | 校验金标能在真 mock DB 对上 |
+| `fixtures/policies.py` | smoke 子集的脚本策略（假大脑）+ 固定工具结果 |
+| `tasks/*.jsonc` | smoke 子集（带策略，脚本车道用） |
+| `tasks/gen/*.jsonl` | 完整数据集 62 题（按维度） |
+| `DATASET.md` | 数据集清单 |
 | `test_*.py` | 单测 |
 
 ## 下一步

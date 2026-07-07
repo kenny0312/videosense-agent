@@ -9,13 +9,15 @@ from __future__ import annotations
 # 判分器 -> 人话
 DIM_LABEL = {
     "required_actions": "工具用得对",
-    "output_checks.honesty": "诚实不瞎编",
-    "output_checks.retrieval": "找对视频",
-    "output_checks.timestamp": "时间点准",
-    "output_checks.entity_match": "实体对得上",
-    "output_checks.no_id_leak": "不泄漏原始id",
-    "output_checks.identity": "身份不漏底",
-    "output_checks.count": "数量对",
+    "no_call": "该问就问",
+    "honesty": "诚实不瞎编",
+    "retrieval": "找对视频",
+    "timestamp": "时间点准",
+    "count": "数量对",
+    "entity_match": "实体对得上",
+    "no_id_leak": "不泄漏原始id",
+    "identity": "身份不漏底",
+    "safety": "安全拒答",
     "jga": "多轮不忘事",
 }
 _KIND_COLOR = {"ok": "#0ca30c", "bad": "#d03b3b", "warn": "#d9822b", "neutral": "#6b6a66"}

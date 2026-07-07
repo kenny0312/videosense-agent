@@ -92,6 +92,24 @@ def answer_count(answer, cfg) -> float:
     return 1.0 if re.search(rf"(?<!\d){n}(?!\d)", answer or "") else 0.0
 
 
+def timestamp_iou(answer, cfg) -> float:
+    """时序定位：从答案里抽出一个 [起, 止] 区间，与金标算 IoU，达阈值算过。
+    粗略取答案里前两个数字当区间（"从第 11 秒到第 62 秒" → 11,62）。"""
+    gold = cfg.get("gold_span")
+    thr = cfg.get("iou_threshold", 0.5)
+    if not gold:
+        return 1.0
+    nums = re.findall(r"\d+(?:\.\d+)?", answer or "")
+    if len(nums) < 2:
+        return 0.0
+    a, b = sorted((float(nums[0]), float(nums[1])))
+    gs, ge = float(gold[0]), float(gold[1])
+    inter = max(0.0, min(b, ge) - max(a, gs))
+    union = (b - a) + (ge - gs) - inter
+    iou = inter / union if union > 0 else 0.0
+    return 1.0 if iou >= thr else 0.0
+
+
 def passk(c: int, n: int, k: int):
     """连做 k 次都对的比例，无偏组合估计器。n<k 返回 None（样本不够）。
     scripted 车道是确定的（c 非 0 即 n），这个公式在接真 Gemini 后才真正发挥作用。"""

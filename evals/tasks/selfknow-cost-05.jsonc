@@ -13,5 +13,5 @@
       "honesty": {"expect_positive": true}
     }
   },
-  "reward_basis": ["output_checks.honesty"]
+  "reward_basis": ["honesty"]
 }
