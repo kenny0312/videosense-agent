@@ -1,0 +1,18 @@
+// 检索题：找做饭视频，要真检索并 surface 对的 video_id。
+{
+  "id": "cooking-retrieval-02",
+  "pinned": false,
+  "dims": ["retrieval", "toolcall"],
+  "n_rollouts": 5,
+  "max_steps": 16,
+  "user_query": "有没有做饭的视频",
+  "evaluation_criteria": {
+    "required_actions": [
+      {"tool": "sql_query|semantic_search"}
+    ],
+    "output_checks": {
+      "retrieval": {"must_surface_video_ids": ["v006", "v007"], "k": 5}
+    }
+  },
+  "reward_basis": ["required_actions", "output_checks.retrieval"]
+}
