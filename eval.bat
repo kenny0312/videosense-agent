@@ -1,5 +1,6 @@
 @echo off
 REM VS eval one-shot entry. Usage:
+REM   eval serve    local web console: run with buttons, auto-refresh (recommended)
 REM   eval          quick run, free, opens dashboard
 REM   eval live     real Gemini run, costs tokens, opens dashboard
 REM   eval view     open dashboard only

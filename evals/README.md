@@ -15,7 +15,10 @@ python -m evals.runner --list
 python -m evals.validate_tasks
 python -m evals.tools
 
-# 本地仪表盘（历史/趋势/没过的题，不用 push GitHub）—— 每次跑完自动更新，浏览器 F5 即可
+# 本地控制台（推荐日常入口）：浏览器里点按钮跑评测、看日志、跑完自动刷新 —— 不碰命令行不碰 GitHub
+eval serve            # 或 python -m evals serve；页面 http://127.0.0.1:8377
+
+# 本地仪表盘（历史/趋势/没过的题）—— 每次跑完自动更新，浏览器 F5 即可
 python -m evals.dashboard --open
 
 # 单测（含核心断言：没查跳伞库就答否定 = 没过）
