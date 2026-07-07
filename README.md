@@ -8,16 +8,6 @@
 
 ### Your videos hold answers. VideoSense finds them —<br/>it watches, reasons, and replies with the clip and the chart to prove it.
 
-<br/>
-
-<p align="center">
-  <img alt="146 tests passing" src="https://img.shields.io/badge/tests-146%20passing-43c88a?style=for-the-badge&labelColor=0d1016">
-  &nbsp;
-  <img alt="live on Cloud Run" src="https://img.shields.io/badge/live-Cloud%20Run-3f7bf0?style=for-the-badge&labelColor=0d1016">
-  &nbsp;
-  <img alt="eval baseline 78 percent" src="https://img.shields.io/badge/eval-78%25%20baseline-b79df2?style=for-the-badge&labelColor=0d1016">
-</p>
-
 </div>
 
 <br/>
@@ -38,51 +28,11 @@
 
 <br/>
 
-## 💬 You ask · it answers
-
-| You ask… | …you get |
-|:---|:---|
-| 🪂 &nbsp;*“How many wingsuit videos are there?”* | **“12”** — it watched & phase-tagged each one |
-| 🎬 &nbsp;*“Show me the shortest clip”* | plays it **inline** |
-| 🔎 &nbsp;*“Which clips show only freefall, no parachute?”* | a filtered list, each **playable** |
-| 📊 &nbsp;*“Plot the confidence distribution”* | a **chart** |
-| 💬 &nbsp;*“List a few more · how did you get that?”* | **remembers** the conversation & continues |
-
-<br/>
-
-## ✨ Why it feels different
-
-<table>
-<tr>
-<td width="33%" valign="top" align="center"><br/>💬<h3>Just ask</h3><sub>No SQL, no dashboards.<br/>Plain language in.</sub><br/><br/></td>
-<td width="33%" valign="top" align="center"><br/>🧠<h3>It actually watches</h3><sub>Gemini multimodal reads the<br/>video — not just metadata.</sub><br/><br/></td>
-<td width="33%" valign="top" align="center"><br/>🎬<h3>Answers you can see</h3><sub>The answer + the clip + the<br/>chart, and how it got there.</sub><br/><br/></td>
-</tr>
-</table>
-
-<br/>
-
 ## 🧾 A real session, unedited
 
 Straight answers, receipts attached. Ask in plain language, get a structured reply — and every reply carries a quiet **Steps** footer, so the full reasoning session is one click away.
 
 <img src="docs/shot-answer.png" alt="A real answer — three videos found, with a Steps footer on the reply" width="100%" />
-
-<br/>
-
-### 🔧 It shows its work — and fixes its own mistakes
-
-Expand the footer and you're watching the loop think: ten SQL probes, a syntax error, two self-repairs, a strategy change — and still the right answer. Nothing is hidden.
-
-<img src="docs/shot-trace.png" alt="The expanded trace — SQL probes, a syntax error, and two automatic repairs" width="100%" />
-
-<br/><br/>
-
-<div align="center">
-  <a href="docs/DEMO.md"><img src="docs/demo-cast.svg" alt="One question, planned into a five-step analysis and self-healed end to end — steps rewrite their own code when a library is missing, returning an OLS regression result over 481 samples." width="860" /></a>
-  <br/><br/>
-  <sub>The extreme case: one question → a five-step analysis, <b>self-healed</b> live — it rewrites its own code when <code>scipy</code> is missing. &nbsp;<a href="docs/DEMO.md"><b>See the full run →</b></a></sub>
-</div>
 
 <br/>
 
