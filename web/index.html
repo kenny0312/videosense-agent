@@ -76,6 +76,11 @@
   .answer a:hover{text-decoration:underline}
   .answer table{border-collapse:collapse;font-size:13px;margin:6px 0}
   .answer th,.answer td{border:1px solid var(--border);padding:5px 9px;text-align:left}
+  /* inline timecode chips (post-render); seek the card's player when there is one */
+  .answer .tc{font:12px/1 ui-monospace,Consolas,monospace;color:var(--accent-soft);background:#12203a;
+    padding:1px 6px;border-radius:5px;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .answer .tc.seek{cursor:pointer;transition:background .13s}
+  .answer .tc.seek:hover{background:#1a2c4d}
   .badge{font-size:11.5px;padding:3px 9px;border-radius:999px;display:inline-flex;align-items:center;gap:5px;margin-bottom:8px}
   .badge.refused{background:#3a2526;color:#e7a3a3}
   .sub{font-size:12px;color:var(--hint);font-variant-numeric:tabular-nums}
@@ -111,7 +116,7 @@
   .dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
   .tname{flex:1;color:var(--muted)}
   .tms{color:var(--hint);font-variant-numeric:tabular-nums}
-  .chart img{max-width:100%;border-radius:10px;background:#fff;border:1px solid var(--border)}
+  .chart img{max-width:100%;border-radius:10px;background:var(--surface2);border:1px solid var(--border)}
   /* video grid */
   .vgrid{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));margin:4px 0}
   .vcard{border:1px solid var(--border2);border-radius:12px;overflow:hidden;background:#0d1015;transition:border-color .13s}
@@ -286,15 +291,17 @@ function renderAssistant(card, d, ms){
     return;
   }
   if(d.status==='error'){ card.appendChild(textBlock('Something went wrong: '+(d.error||''))); return; }
-  if(d.status==='smalltalk'){ card.appendChild(answerBlock(d.answer||'')); card.appendChild(renderFooter(d,ms)); return; }
+  if(d.status==='smalltalk'){ card.appendChild(answerBlock(d.answer||'')); card.appendChild(renderFooter(d,ms)); enhanceTimecodes(card); return; }
 
   // ok
   if(d.videos && d.videos.length){ card.appendChild(renderVideos(d.videos)); }
   if(d.table && d.table.rows && d.table.rows.length){ card.appendChild(renderTable(d.table)); }
+  // 结论先行:答案文字始终渲染;有图则把图作为下方证据附上(别让图吞掉结论)
+  if(d.answer!=null && !(typeof d.answer==='string' && !d.answer.trim())){ card.appendChild(renderAnswer(d.answer)); }
   if(d.plot_url){ card.appendChild(renderChart(d.plot_url)); }
-  else { card.appendChild(renderAnswer(d.answer)); }
 
   card.appendChild(renderFooter(d, ms));   // quiet footer: steps · time (expandable), plan/sql/code
+  enhanceTimecodes(card);                  // 时间码 → 可点 chip(有视频则跳转)
 }
 
 function badge(cls,txt){const b=el('<span class="badge"></span>');b.classList.add(cls);b.textContent=txt;return b;}
@@ -316,6 +323,30 @@ function textBlock(txt){
   return p;
 }
 function answerBlock(txt){ return textBlock(txt); }
+// 收口呈现:把答案里的 mm:ss 时间码渲染成 chip;卡片里有视频时点击跳转到该时刻(纯前端增强)
+function enhanceTimecodes(card){
+  const ans=card.querySelector('.answer'); if(!ans) return;
+  const vid=card.querySelector('video');                    // 有播放器就让 chip 可点跳转
+  const RE=/\b(\d{1,2}):([0-5]\d)\b/;
+  const nodes=[]; const w=document.createTreeWalker(ans, NodeFilter.SHOW_TEXT, null);
+  for(let n=w.nextNode(); n; n=w.nextNode()){
+    const p=n.parentNode;
+    if(p && p.closest && !p.closest('code,pre,a,.tc') && RE.test(n.nodeValue)) nodes.push(n);
+  }
+  nodes.forEach(node=>{
+    const s=node.nodeValue, frag=document.createDocumentFragment(), g=/\b(\d{1,2}):([0-5]\d)\b/g;
+    let m, last=0;
+    while((m=g.exec(s))){
+      if(m.index>last) frag.appendChild(document.createTextNode(s.slice(last,m.index)));
+      const chip=el('<span class="tc"></span>'); chip.textContent=m[0];
+      if(vid){ const secs=(+m[1])*60+(+m[2]); chip.classList.add('seek'); chip.title='Jump to '+m[0];
+        chip.onclick=()=>{ try{ vid.currentTime=secs; vid.play(); vid.scrollIntoView({block:'nearest'}); }catch(e){} }; }
+      frag.appendChild(chip); last=m.index+m[0].length;
+    }
+    if(last<s.length) frag.appendChild(document.createTextNode(s.slice(last)));
+    node.parentNode.replaceChild(frag, node);
+  });
+}
 
 // ── 答案分形:表格 / 统计卡 / 标量 / 文本 ──────────────
 function renderAnswer(ans){
