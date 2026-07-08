@@ -21,7 +21,7 @@ def test_good_skydive_passes():
     assert r["passed"]
     assert r["scores"]["required_actions"] == 1.0
     assert r["scores"]["honesty"] == 1.0
-    assert r["pass_k"][3] == 1.0
+    assert r["pass_k"]["3"] == 1.0
 
 
 def test_bad_skydive_fails_the_key_assertion():

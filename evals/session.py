@@ -21,6 +21,7 @@ class TurnRecord:
     action: dict | None = None
     trace: list = field(default_factory=list)
     ledger: dict = field(default_factory=dict)     # cid -> ExecResult（交付面判分用）
+    llm_calls: int = 0                             # 这一轮调了几次大脑（算花费用）
 
 
 class DualControlSession:
@@ -70,7 +71,8 @@ class DualControlSession:
             turns.append(TurnRecord("user_sim", ut["utterance"], ut.get("action")))
             r = loop_driver.run_loop(ut["utterance"], conv, execute, max_steps=self.task.get("max_steps", 16))
             history.append({"who": "agent", "text": r.answer or ""})
-            turns.append(TurnRecord("agent", r.answer or "", trace=r.trace, ledger=r.ledger))
+            turns.append(TurnRecord("agent", r.answer or "", trace=r.trace, ledger=r.ledger,
+                                    llm_calls=r.llm_calls))
             if ut.get("done"):
                 break
         return {"turns": turns, "world_state": world_state, "history": history}
