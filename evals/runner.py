@@ -320,11 +320,10 @@ def run_suite(tasks: list[dict], policies: dict | None = None, tool_results: dic
 
 
 def split_live_tasks(tasks: list[dict]):
-    """真跑车道分拣：能跑的（单轮 + 多轮）和暂时跳过的（要世界动作的题）。"""
+    """真跑车道分拣。世界动作（上传/入库/贴图）已接进假后端，全部题都能跑。"""
     singles = [(t, False) for t in tasks if t.get("kind") != "multi"]
-    multis = [(t, True) for t in tasks if t.get("kind") == "multi" and not _has_user_actions(t)]
-    skipped = [t["id"] for t in tasks if t.get("kind") == "multi" and _has_user_actions(t)]
-    return singles + multis, skipped
+    multis = [(t, True) for t in tasks if t.get("kind") == "multi"]
+    return singles + multis, []
 
 
 # ── 结论 ────────────────────────────────────────────────────────────
