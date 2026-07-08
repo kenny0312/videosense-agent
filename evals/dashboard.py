@@ -26,6 +26,27 @@ DASH_EN_PATH = os.path.join(_HERE, "dashboard.en.html")
 
 _KIND_COLOR = {"ok": "#0ca30c", "bad": "#d03b3b", "warn": "#d9822b", "neutral": "#6b6a66"}
 
+# 把十几把细尺子归成 5 个大类，仪表盘按大类展示（治"眼花缭乱、好些都是检索"）。
+# 每个大类给一根柱状条 + 底下细项小条。
+SCORER_GROUPS = [
+    ("找对视频", "Finding videos", ["retrieval", "honesty"]),
+    ("数量·时间·实体", "Count · time · entities", ["count", "timestamp", "entity_match"]),
+    ("用对工具·交付", "Right tools · delivery", ["required_actions", "no_call", "no_forbidden"]),
+    ("多轮·记性·世界状态", "Multi-turn · memory · world", ["jga", "state_assertions"]),
+    ("安全·身份·不泄漏", "Safety · identity · no leak", ["safety", "identity", "no_id_leak"]),
+]
+
+
+def _bar(pct: int, color: str, w: str = "180px") -> str:
+    """一根横向柱状条（纯 CSS，本地文件也能显示）。"""
+    return (f'<span style="display:inline-block;width:{w};height:12px;background:#ece9e0;'
+            f'border-radius:3px;vertical-align:middle;overflow:hidden">'
+            f'<span style="display:block;width:{pct}%;height:100%;background:{color};border-radius:3px"></span></span>')
+
+
+def _bar_color(pct: int) -> str:
+    return "#0ca30c" if pct >= 80 else ("#eda100" if pct >= 60 else "#d03b3b")
+
 DIM_LABEL_EN = {
     "required_actions": "Right tools used",
     "no_call": "Declined / asked properly",
@@ -213,23 +234,40 @@ def _trend_svg(runs, lang) -> str:
             f'{"".join(dots)}</svg></div>')
 
 
-def _dim_table(latest, prev, lang) -> str:
-    rows = ""
-    for d, v in sorted(latest.get("per_dim", {}).items()):
-        label = lang["dims"].get(d, d)
-        cur = round(v * 100)
-        delta = ""
-        if prev and d in prev.get("per_dim", {}):
-            dv = round((v - prev["per_dim"][d]) * 100)
-            if dv:
-                c = "#0ca30c" if dv > 0 else "#d03b3b"
-                delta = f'<span style="color:{c}">（{"+" if dv > 0 else ""}{dv}）</span>'
-        rows += f"<tr><td>{label}</td><td style='text-align:right'>{cur}%{delta}</td></tr>"
-    if not rows:
+def _delta_span(d, per_dim, prev) -> str:
+    if not prev or d not in prev.get("per_dim", {}):
         return ""
-    h1, h2 = lang["dim_head"]
+    dv = round((per_dim.get(d, 0) - prev["per_dim"][d]) * 100)
+    if not dv:
+        return ""
+    c = "#0ca30c" if dv > 0 else "#d03b3b"
+    return f' <span style="color:{c};font-size:11px">{"+" if dv > 0 else ""}{dv}</span>'
+
+
+def _dim_table(latest, prev, lang) -> str:
+    """按 5 个大类展示：每个大类一根粗柱状条（该类细尺子的平均），底下细项小条。"""
+    per_dim = latest.get("per_dim", {})
+    if not per_dim:
+        return ""
+    en = lang is L["en"]
+    rows = ""
+    for zh_name, en_name, members in SCORER_GROUPS:
+        present = [(m, per_dim[m]) for m in members if m in per_dim]
+        if not present:
+            continue
+        gv = sum(v for _m, v in present) / len(present)
+        gpct = round(gv * 100)
+        gname = en_name if en else zh_name
+        rows += (f'<tr><td style="font-weight:600">{gname}</td>'
+                 f'<td>{_bar(gpct, _bar_color(gpct))}</td>'
+                 f'<td style="text-align:right;font-weight:600">{gpct}%</td></tr>')
+        for m, v in present:                       # 细项小条（缩进、灰一点）
+            mpct = round(v * 100)
+            rows += (f'<tr><td style="padding-left:20px;color:#6b6a66;font-size:12px">{lang["dims"].get(m, m)}</td>'
+                     f'<td>{_bar(mpct, "#b9b7af", "120px")}</td>'
+                     f'<td style="text-align:right;color:#6b6a66;font-size:12px">{mpct}%{_delta_span(m, per_dim, prev)}</td></tr>')
     return (f'<div class="sec">{lang["dim_sec"]}{lang["dim_cmp"] if prev else ""}</div>'
-            f'<table class="hm"><thead><tr><th>{h1}</th><th>{h2}</th></tr></thead><tbody>{rows}</tbody></table>')
+            f'<table class="hm" style="border:none"><tbody>{rows}</tbody></table>')
 
 
 def _flips_section(latest, prev, lang) -> str:

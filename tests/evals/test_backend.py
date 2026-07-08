@@ -43,6 +43,21 @@ def test_state_assertions_scorer():
         [{"surface": "uploads", "expect_contains": "up_missing"}], ws) == 0.0
 
 
+def test_cosine_semantic_search_ranking():
+    """内存语义检索排序：和 query 越像的排前面，低于阈值标 weak（离线，用手造向量）。"""
+    from evals.world import build_cosine_search
+
+    index = [
+        ("v006", "baking cookies", 0, 60, [1.0, 0.0, 0.0]),
+        ("v007", "grilling ribs", 0, 75, [0.0, 1.0, 0.0]),
+        ("sky01", "wingsuit flight", 0, 130, [0.0, 0.0, 1.0]),
+    ]
+    search = build_cosine_search(index, weak_threshold=0.6)
+    rows = search(json.dumps([0.9, 0.1, 0.0]), 3)     # 最像 v006
+    assert rows[0]["video_id"] == "v006" and rows[0]["relevance"] == "strong"
+    assert rows[-1]["relevance"] == "weak"            # 正交的那条=弱相关
+
+
 def test_note_image_bytes():
     from evals.world import make_note_image
 

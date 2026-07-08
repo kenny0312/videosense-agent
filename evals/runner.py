@@ -478,7 +478,12 @@ def main(argv=None):
     ap.add_argument("--live", action="store_true", help="真跑：真 Gemini 进循环（要 GCP 凭证 + 花 token）")
     ap.add_argument("--n", type=int, default=None, help="每题跑几次（真跑先 --n 1 冒烟）")
     ap.add_argument("--list", action="store_true", help="只列数据集统计，不跑")
+    ap.add_argument("--semantic", action="store_true",
+                    help="真跑时打开语义检索：用真 embed 把假片库嵌进内存索引，测你改的 semantic_search")
     args = ap.parse_args(argv)
+
+    if args.semantic:
+        os.environ["EVAL_SEMANTIC"] = "1"       # 假世界 install 时会据此建内存语义索引
 
     tasks = load_tasks(args.tasks_dir)
 

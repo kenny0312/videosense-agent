@@ -11,9 +11,34 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import os
 
 from pipeline.loop_driver import Call, ExecResult, run_loop  # noqa: F401  (Call re-exported for policies)
+
+
+def _cosine(a, b) -> float:
+    s = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+    return s / (na * nb) if na and nb else 0.0
+
+
+def build_cosine_search(index, weak_threshold: float = 0.6):
+    """内存语义检索：query 向量 vs 索引里每条文档向量算 cosine，取 top-k，标 strong/weak。
+    index = [(video_id, snippet, start, end, vector)]。返回值和真 semantic_index.search 同格式。"""
+    def search(vec_lit, k):
+        try:
+            qv = json.loads(vec_lit)
+        except Exception:
+            return []
+        scored = sorted(((_cosine(qv, e[4]), e) for e in index), key=lambda x: -x[0])[:int(k)]
+        return [{"n": i + 1, "video_id": e[0], "source": "eval", "snippet": e[1],
+                 "start_ts": e[2], "end_ts": e[3], "score": round(sc, 3),
+                 "relevance": "strong" if sc >= weak_threshold else "weak",
+                 "label": (e[1] or "")[:40]}
+                for i, (sc, e) in enumerate(scored)]
+    return search
 
 
 # ── 脚本车道（免费）──────────────────────────────────────────────────
@@ -94,9 +119,40 @@ class EvalBackend:
         user_memory.load = lambda owner: backend.world_state["memory"]
         user_memory.render_section = lambda owner: backend.world_state["memory"]
 
-        config.USE_SEMANTIC_SEARCH = False    # 语义索引连的是生产库，评测世界必须断开
         config.USE_USER_MEMORY = True         # 记偏好工具要对大脑可见（写入走上面的替身）
+        # 语义检索：默认关（它连的是生产库）。要测你自己改的 semantic_search，用 --semantic 打开——
+        # 会用你【真实的 embed 函数】把假片库(标题+活动+事实)嵌进内存索引，语义搜跑你的代码、吃假数据。
+        if os.environ.get("EVAL_SEMANTIC") == "1" and self._install_semantic():
+            config.USE_SEMANTIC_SEARCH = True
+        else:
+            config.USE_SEMANTIC_SEARCH = False
         return self
+
+    def _install_semantic(self) -> bool:
+        """给假片库建内存语义索引（真 embed），并把 semantic_index.search 换成内存 cosine 检索。
+        成功返回 True；embed 失败（没凭证/离线）返回 False → 语义保持关闭。
+        注意：这测的是你的【embed 模型 + 查询构造 + 排序阈值】，不测你那句 pgvector SQL 本身
+        （那需要一个真 pgvector 库，不在这套假世界里）。"""
+        try:
+            from pipeline import embeddings, semantic_index
+            import repl._mock_db as mock
+
+            conn = mock._get_conn()
+            docs = []   # (video_id, snippet, start, end)
+            for v in mock.VIDEOS:
+                vid, title, _gcs, dur = v[0], v[1], v[2], v[3]
+                docs.append((vid, f"{title}. activities: {', '.join(v[4])}", 0.0, float(dur)))
+            for r in conn.execute("SELECT video_id, predicate, start_ts, end_ts "
+                                  "FROM video_facts WHERE matched=1").fetchall():
+                docs.append((r[0], r[1], float(r[2] or 0), float(r[3] or 0)))
+            vecs = embeddings.embed_texts([d[1] for d in docs], task_type="RETRIEVAL_DOCUMENT")
+            if not vecs:
+                return False
+            index = [(docs[i][0], docs[i][1], docs[i][2], docs[i][3], vecs[i]) for i in range(len(docs))]
+            semantic_index.search = build_cosine_search(index, semantic_index.WEAK_THRESHOLD)
+            return True
+        except Exception:
+            return False
 
     # "看画面"回放件：假片库没有真视频，analyze_video 拦下来按事先写好的清单回答
     def wrap_execute(self, execute):
