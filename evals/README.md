@@ -17,6 +17,9 @@ python -m evals.tools
 
 # 本地控制台（推荐日常入口）：浏览器里点按钮跑评测、看日志、跑完自动刷新 —— 不碰命令行不碰 GitHub
 eval serve            # 或 python -m evals serve；页面 http://127.0.0.1:8377
+# 注意两个名字不是一回事：`evals` 是 Python 包名（所以模块命令都是 python -m evals.xxx）；
+# `eval` 是仓库根的 eval.bat —— Windows 快捷方式，等价于 python -m evals <子命令>，
+# 还顺手设好 UTF-8 和 mock DB。cmd 里在仓库根直接敲 `eval serve`；PowerShell 要写 `.\eval serve`。
 
 # 本地仪表盘（历史/趋势/没过的题）—— 每次跑完自动更新，浏览器 F5 即可
 python -m evals.dashboard --open

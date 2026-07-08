@@ -66,6 +66,7 @@ VideoSense ships with its own τ²-bench-style evaluation — **128 tasks** acro
 python -m evals serve      # local console — click to run, dashboard auto-refreshes
 # python -m evals          # scripted lane  (free, no tokens)
 # python -m evals live     # real-Gemini lane  (spends tokens)
+# Windows cmd shortcut: `eval serve` (repo-root eval.bat; PowerShell: .\eval serve)
 ```
 
 <div align="center">
