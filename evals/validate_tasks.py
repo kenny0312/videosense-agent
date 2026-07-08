@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import re
 import sys
 
 from evals.runner import load_tasks
@@ -89,7 +90,37 @@ def validate(path: str = "evals/tasks"):
             name = act.get("tool") or act.get("type")
             if act and name not in USER_TOOLS:
                 errs.append((tid, f"不认识的用户动作: {name}"))
+        errs += _lint_traps(t)
     return tasks, errs
+
+
+# 会冤枉人的两类出题陷阱（批⑤冤案复盘后加的防线）
+_MUTATING = {"upload_video", "enrich_video", "paste_image"}
+_COUNT_Q = re.compile(r"几个|多少")
+_SURFACE_Q = re.compile(r"哪几|哪些|分别|列出|都是|推荐|挑|找|放|看看|那个|这个")
+
+
+def _lint_traps(t: dict) -> list:
+    """① jga 考点不能设在"动作宣布轮"（用户上传/入库/贴图那一轮，agent 只需确认收到，
+       逼它报视频身份 = 结构性不可通过，真跑 5/5 全灭过一次）。
+    ② 纯计数题（只问"有几个"，没有任何"点名/交付"意图）不得把 retrieval 计分——
+       裸报数是完整回答（原则出自 b58886a，这条 lint 防止再漏改孪生题）。"""
+    tid = t.get("id", "?")
+    out = []
+    mut_turns = set()
+    for step in t.get("user", {}).get("script", []) or []:
+        act = step.get("action") or {}
+        if (act.get("tool") or act.get("type")) in _MUTATING:
+            mut_turns.add(int(step.get("turn", 0)))
+    for slot in t.get("evaluation_criteria", {}).get("jga_slots", []) or []:
+        if int(slot.get("turn", 1)) in mut_turns:
+            out.append((tid, "jga 考点设在动作宣布轮（该轮只需确认收到）——结构性不可通过，请移到实质回答轮"))
+    q = t.get("user_query") or " ".join(
+        s.get("utterance", "") for s in t.get("user", {}).get("script", []) or [])
+    if (_COUNT_Q.search(q) and not _SURFACE_Q.search(q)
+            and "retrieval" in (t.get("reward_basis") or [])):
+        out.append((tid, "纯计数题（只问几个）不该把 retrieval 计分——裸报数是完整回答；要点名就把题面改成'有几个？都是哪几个？'"))
+    return out
 
 
 def main():

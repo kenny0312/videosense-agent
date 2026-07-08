@@ -65,8 +65,10 @@ def _score_one_check(name: str, cfg: dict, res, aliases: dict | None):
     if name == "honesty":
         return scorers.refusal_ok(res.answer, cfg)
     if name == "retrieval":
-        # 看"交付面"（答案 + show_* 侧信道），不是只看答案文本 —— 产品规则本来就不让 id 进文本
-        return scorers.retrieval_score(scorers.surface_blob(res), cfg, aliases)
+        # 查全看"交付面"（答案 + show_* 侧信道，含结果行）；
+        # 数"甩了多少无关视频"只看 agent 主动亮出的部分（结果回显不算它甩的）
+        return scorers.retrieval_score(scorers.surface_blob(res), cfg, aliases,
+                                       own_blob=scorers.surface_blob_own(res))
     if name == "timestamp":
         return scorers.timestamp_iou(res.answer, cfg)
     if name == "count":
@@ -168,7 +170,11 @@ def score_multi(task: dict, turns, world_state: dict | None = None) -> dict:
             if v is not None:
                 s[name] = min(s.get(name, 1.0), v)                 # 同名检查每一轮都要过
     if ec.get("jga_slots"):
-        s["jga"] = scorers.score_jga(blobs, ec["jga_slots"], titles=aliases)
+        # 指代解析（video_ids）额外看工具调用参数：去查了那条视频=解析对了，
+        # 不逼 agent 在答案里念 id/标题（产品规则本来就不让 id 进答案文本）
+        resolve = [scorers.resolve_blob(o) for o in turn_objs]
+        s["jga"] = scorers.score_jga(blobs, ec["jga_slots"], titles=aliases,
+                                     resolve_blobs=resolve)
     if ec.get("state_assertions"):
         s["state_assertions"] = scorers.score_state_assertions(ec["state_assertions"], world_state or {})
     return s
@@ -207,6 +213,7 @@ def _make_record(task, n, successes, per_dim, last, first_fail, cost) -> dict:
         "grounding_note": task.get("grounding_note", ""),
         "answer": (last or {}).get("answer"),
         "tools": (last or {}).get("tools", []),
+        "turns": (last or {}).get("turns"),  # 多轮题的逐轮明细（单轮题为 None）
         "first_fail": first_fail,          # 第一次挂掉的那回：答案+工具链（最该看的样本）
         "cost": cost,
     }
@@ -282,7 +289,11 @@ def run_case_multi(task: dict, n: int | None = None, owner: str = "eval") -> dic
         ok = scorers.case_pass(sc, task["reward_basis"])
         successes += int(ok)
         snapshot = {"answer": agents[-1].text if agents else None,
-                    "tools": [x for t in agents for x in _tools_of(t.trace)]}
+                    "tools": [x for t in agents for x in _tools_of(t.trace)],
+                    # 逐轮明细：多轮题失败归因的第一现场（谁在第几轮说了什么、调了什么）
+                    "turns": [{"who": t.who, "text": (t.text or "")[:400],
+                               "tools": _tools_of(getattr(t, "trace", None) or [], limit=110)[:8]}
+                              for t in out["turns"]]}
         if not ok and first_fail is None:
             first_fail = {**snapshot, "scores": sc}
         for d, v in sc.items():

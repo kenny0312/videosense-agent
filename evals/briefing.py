@@ -67,6 +67,16 @@ def build_briefing(run: dict) -> str:
              f" 过 ｜ 环境故障（不计分）：{len(infra)} 题")
     for why in run.get("reasons", [])[:8]:
         L.append(f"- {why}")
+    # 集中度报警：失败大量堆在同一把尺子上，通常是尺子/题目模板的问题，不是 agent 忽然变笨
+    dim_fails: dict = {}
+    for r in fails:
+        for d in _fail_dims(r):
+            dim_fails[d] = dim_fails.get(d, 0) + 1
+    if fails and dim_fails:
+        top_dim, top_n = max(dim_fails.items(), key=lambda x: x[1])
+        if top_n >= 4 and top_n / len(fails) >= 0.4:
+            L.append(f"- ⚠ **失败集中报警**：{top_n}/{len(fails)} 道失败都栽在「{DIM_LABEL.get(top_dim, top_dim)}」上——"
+                     f"这种集中度通常意味着判分器或题目模板出了问题（冤案），请先重点排查评测侧，再下 agent 变差的结论。")
     L.append("")
 
     L.append("## 各方面得分")
