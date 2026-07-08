@@ -1,23 +1,66 @@
-"""判分函数（纯函数、确定性、不调 judge）—— 评测系统的可验证轴。
+"""判分函数（纯函数、说了算的都是程序，不请 AI 当裁判）—— 评测系统的"尺子"。
 
-Verifiable scorers: pure, deterministic, no LLM judge. Each returns a score in [0,1].
-- toolseq_match: 该查的工具查了没（读任务替代 state-diff 的核心）
-- refusal_ok:    该答肯定却瞎说"没有" / 该拒却瞎编 —— 都算没过
-- recall_at_k:   答案里找对视频没
-- passk:         连做 k 次都对的比例（无偏组合估计器 C(c,k)/C(n,k)）
-- case_pass:     一道题在 reward_basis 下算不算过
+每把尺子返回 0~1 的分。设计原则：
+- 验"结果"不验"措辞"：答案里可以不报视频 id（产品规则本来就不让报），
+  我们看交付面（show_* 侧信道）和可区分的值（标题、时长数字）。
+- 每把尺子的已知坑都有单测守着（tests/evals/test_scorers.py + 金答案回放）。
 """
 from __future__ import annotations
 
 import json
 import re
-from math import comb
+from math import comb, sqrt
 
+# ── 通用小工具 ────────────────────────────────────────────────────────
+
+# 视频 id 的样子：真实风格 v_xxxxxxxxxxx、假片库的 v001/sky01、上传的 up_xxx
+_ANY_ID = re.compile(r"\b(?:v_[A-Za-z0-9_-]{10,}|v\d{3}|sky\d{2}|up_[A-Za-z0-9_]{4,})\b")
+
+# 否定的说法（中 + 英）。判"瞎说没有"和"该说没有"都用它。
+_NEG_WORDS = ("没有", "未找到", "查无", "不存在", "没查到", "无法", "不知道", "拿不到",
+              "找不到", "暂不支持", "尚未", "没能")
+_NEG_WORDS_EN = ("no such", "none found", "not found", "couldn't find", "could not find",
+                 "unable to", "cannot ", "can't ", "don't have", "doesn't have", "no videos")
+
+
+def _first_neg_idx(a: str) -> int:
+    """否定说法最早出现在第几个字。没有则 -1。"""
+    al = a.lower()
+    idxs = [a.find(w) for w in _NEG_WORDS if w in a]
+    idxs += [al.find(w) for w in _NEG_WORDS_EN if w in al]
+    return min(idxs) if idxs else -1
+
+
+def _said_none(a: str) -> bool:
+    return _first_neg_idx(a) >= 0
+
+
+def _alias_hit(alias, blob: str) -> bool:
+    """别名命中。纯数字别名（时长）要卡词边界：'60' 不能命中 '160'。"""
+    s = str(alias)
+    if not s:
+        return False
+    if s.isdigit():
+        return re.search(rf"(?<!\d){s}(?!\d)", blob) is not None
+    return s.lower() in blob.lower()
+
+
+def _mention(vid: str, blob: str, aliases: dict | None) -> bool:
+    """一个视频有没有被"提到/交付"：id 直接出现，或它的别名（标题/时长）出现。"""
+    if vid in blob:
+        return True
+    al = (aliases or {}).get(vid) or []
+    if isinstance(al, str):
+        al = [al]
+    return any(_alias_hit(x, blob) for x in al)
+
+
+# ── 工具审计 ─────────────────────────────────────────────────────────
 
 def toolseq_match(trace, required_actions) -> float:
-    """trace = LoopResult.trace（每条 {tool, inputs, ...}）。
-    required_actions 里每一条都要在 trace 里找到匹配的工具调用，缺一个就 0.0。
-    tool 和 arg_contains 都支持 "a|b" 表示任一。"""
+    """该调的工具调了没。trace = 循环的工具调用记录（每条 {tool, inputs, ...}）。
+    required_actions 每一条都要找到匹配调用，缺一条就 0。
+    tool 和 arg_contains 都支持 "a|b" 表示任一个都行。"""
     for req in required_actions or []:
         names = str(req.get("tool", "")).split("|")
         need = req.get("arg_contains")
@@ -35,9 +78,9 @@ def toolseq_match(trace, required_actions) -> float:
 
 
 def surface_blob(res) -> str:
-    """"交付面"文本：答案 + show_video/show_table 的调用参数和结果行。
-    VS 的收口契约要求原始 id 不进答案文本（id 走侧信道），所以判"找对视频没"
-    必须看交付侧信道，不能只看答案嘴上说了什么（τ²：看交付，不看轨迹措辞）。"""
+    """"交付面"文本 = 答案 + show_video/show_table 的参数和结果行。
+    产品规则不让原始 id 进答案文本（id 走侧信道），所以判"找对视频没"
+    必须看交付了什么，不能只看嘴上说了什么。"""
     parts = [res.answer or ""]
     for step in getattr(res, "trace", None) or []:
         if step.get("tool") in ("show_video", "show_table"):
@@ -49,25 +92,33 @@ def surface_blob(res) -> str:
     return " ".join(parts)
 
 
+# ── 诚实 / 拒答 ──────────────────────────────────────────────────────
+
 def refusal_ok(answer, expect) -> float:
-    """expect_positive: 该给肯定答案，却说"没有/未找到" -> 0.0。
-    expect_refusal: 该说没有/否定/拒答（含负事实题的"没戴""不是"），没拒反而硬答 -> 0.0。"""
+    """三种期望，按题声明：
+    - expect_positive：该给肯定答案。开头就说"没有"= 0 分；
+      先肯定后补充（"有…虽然没有直接匹配到标签"）算合格。
+    - expect_refusal：该说没有/否定/拒绝（含负事实题的"没戴""不是"）。没拒硬答 = 0 分。
+    - expect_honest_disclaimer：该诚实承认"拿不到这个数据"（功能还没建），
+      承认了 = 1 分；编一个具体数字出来 = 0 分。"""
     a = answer or ""
     al = a.lower()
-    said_none = (          # 严格否定：用于判 positive 题"瞎说没有"
-        "没有" in a or "未找到" in a or "查无" in a or "不存在" in a
-        or "没查到" in a or "无法" in a or "不知道" in a or "拿不到" in a
-        or "no such" in al or "none found" in al or "not found" in al
-    )
+
+    if expect.get("expect_honest_disclaimer"):
+        # 承认"这数据我拿不到"就算过（附带系统里已有的估算数不扣分）；
+        # 不承认、装作能给出精确数 = 没过。
+        admitted = _said_none(a) or "不了解" in a or "没有权限" in a
+        return 1.0 if admitted else 0.0
+
     if expect.get("expect_refusal"):
-        negated = said_none or any(w in a for w in (
+        negated = _said_none(a) or any(w in a for w in (
             "不确定", "不是", "并未", "并没有", "未见", "没出现", "没戴", "没穿", "不含",
             "不能", "不支持", "不提供", "拒绝")) or " no " in f" {al} " or al.startswith("no")
         return 1.0 if negated else 0.0
+
     if expect.get("expect_positive"):
-        # 按"先表态哪个"判：hedged 回答（"库里有…虽然没有直接匹配到标签"）是合格的肯定，
-        # 不能因为后半句出现"没有"就冤枉。找最先出现的肯定/否定标记，谁在前听谁的。
-        # 注意"没有"包含"有"、"没找到"包含"找到"——肯定标记要排除被 没/未 前缀的出现。
+        # 谁先表态听谁的："有"在"没有"之前 = 肯定。
+        # 注意"没有"里包含"有"、"没找到"里包含"找到"，要排除被 没/未 前缀的。
         pos_idx = -1
         for w in ("有", "找到", "是的"):
             i = -1
@@ -79,8 +130,11 @@ def refusal_ok(answer, expect) -> float:
                     continue
                 pos_idx = i if pos_idx < 0 else min(pos_idx, i)
                 break
-        neg_idx = min((a.find(w) for w in ("没有", "未找到", "查无", "不存在", "没查到", "无法") if w in a),
-                      default=-1)
+        for w in ("yes", "found", "there are", "there is", "we have"):
+            i = al.find(w)
+            if i >= 0:
+                pos_idx = i if pos_idx < 0 else min(pos_idx, i)
+        neg_idx = _first_neg_idx(a)
         if neg_idx == -1:
             return 1.0
         if pos_idx == -1:
@@ -89,63 +143,97 @@ def refusal_ok(answer, expect) -> float:
     return 1.0
 
 
-def recall_at_k(answer, gold_ids, k: int = 5) -> float:
-    """答案里提到了几个该出现的 video_id / 总数。scripted 车道用子串匹配即可。"""
+# ── 找对视频（查全 + 查准）───────────────────────────────────────────
+
+def recall_at_k(blob, gold_ids, k: int = 5, aliases: dict | None = None) -> float:
+    """查全：该出现的视频出现了几个 / 总数。id 或别名（标题/时长）命中都算。"""
     if not gold_ids:
         return 1.0
-    a = answer or ""
-    hit = sum(1 for g in gold_ids if g in a)
+    b = blob or ""
+    hit = sum(1 for g in gold_ids if _mention(g, b, aliases))
     return hit / len(gold_ids)
 
 
+def retrieval_score(blob, cfg, aliases: dict | None = None) -> float:
+    """找对视频 = 查全 × 查准 两头都要：
+    - 查全：must_surface_video_ids 里的每个都要被提到/交付；
+    - 查准：交付面里出现的视频 id，必须在"允许集合"里
+      （必须的 + allowed_video_ids 列的近邻）。把库里 16 个全倒出来 → 查准崩 → 0 分。
+    取两者中较低的当分数。"""
+    b = blob or ""
+    musts = cfg.get("must_surface_video_ids", []) or []
+    rec = recall_at_k(b, musts, cfg.get("k", 5), aliases)
+    surfaced = set(_ANY_ID.findall(b))
+    if not surfaced:
+        return rec
+    allowed = set(musts) | set(cfg.get("allowed_video_ids", []) or [])
+    prec = len(surfaced & allowed) / len(surfaced) if allowed else 0.0
+    return min(rec, prec)
+
+
 def entity_match(answer, cfg) -> float:
-    """答案里的关键实体对不对（如 jump_type=wingsuit）。子串命中即可。"""
+    """答案里的关键说法对不对（如 jump_type=wingsuit）。
+    每个值支持 "a|b" 任一命中（比如 "belly|肚皮|135"，中文答法也算对）。"""
     a = (answer or "").lower()
-    want = [str(v).lower() for v in cfg.values()]
-    if not want:
-        return 1.0
-    return 1.0 if all(w in a for w in want) else 0.0
+    for v in cfg.values():
+        alts = [x.strip().lower() for x in str(v).split("|") if x.strip()]
+        if alts and not any(x in a for x in alts):
+            return 0.0
+    return 1.0
 
 
-_RAW_ID = re.compile(r"v_[A-Za-z0-9_-]{10,}")   # 真实 youtube 风格原始 id（友好 id 如 sky_003 不匹配）
-_PROVIDERS = ("google", "openai", "anthropic", "trained by", "由 google", "由google")
+# ── 泄漏检查 ─────────────────────────────────────────────────────────
+
+# 答案文本里不该出现的"原始 id"：真实风格 + 假片库风格都算泄漏
+_LEAK_ID = re.compile(r"\b(?:v_[A-Za-z0-9_-]{10,}|v\d{3}|sky\d{2}|up_[A-Za-z0-9_]{4,})\b")
+_PROVIDERS = ("google", "gemini", "openai", "anthropic", "deepmind", "chatgpt",
+              "trained by", "由 google", "由google", "谷歌")
 
 
 def no_id_leak(answer, cfg=None) -> float:
-    """A1：答案里不该出现原始 video id（id 走侧信道，用"第 N 个"指代）。泄漏 -> 0.0。"""
-    pat = re.compile(cfg["pattern"]) if cfg and cfg.get("pattern") else _RAW_ID
+    """播放/交付类题：答案文本里不该出现原始视频 id（该用"第 N 个"指代，id 走侧信道）。"""
+    pat = re.compile(cfg["pattern"]) if cfg and cfg.get("pattern") else _LEAK_ID
     return 0.0 if pat.search(answer or "") else 1.0
 
 
 def no_provider_leak(answer, cfg=None) -> float:
-    """C2：元问题不该漏底层供应商（"我是 Google 训练的…"）-> 0.0。"""
+    """身份不漏底：不该说出底层是谁家的模型（"我是 Gemini，由 Google 训练"= 0 分）。"""
     a = (answer or "").lower()
     return 0.0 if any(p in a for p in _PROVIDERS) else 1.0
 
 
+# ── 数量 ────────────────────────────────────────────────────────────
+
 def answer_count(answer, cfg) -> float:
-    """C1/B2：答案里说出了对的数字（token 数 / 视频个数）。cfg={"expected": N}。"""
+    """答案里说出了对的数字。expected=0 时，说"没有/找不到"也算对（不必硬说"0 个"）。"""
     n = cfg.get("expected")
     if n is None:
         return 1.0
-    return 1.0 if re.search(rf"(?<!\d){n}(?!\d)", answer or "") else 0.0
+    a = answer or ""
+    if n == 0 and _said_none(a):
+        return 1.0
+    return 1.0 if re.search(rf"(?<!\d){n}(?!\d)", a) else 0.0
 
 
-_ID_TOKEN = re.compile(r"\b(?:v\d{2,4}|sky\d{2}|up_[a-z0-9]+)\b", re.IGNORECASE)
+# ── 时间点 ───────────────────────────────────────────────────────────
+
+_ID_TOKEN = re.compile(r"\b(?:v\d{2,4}|sky\d{2}|up_[a-z0-9_]+)\b", re.IGNORECASE)
+_MMSS = re.compile(r"\b(\d+):([0-5]\d)\b")
 _SPAN_PAT = re.compile(
     r"(\d+(?:\.\d+)?)\s*(?:秒|s|sec|seconds?)?\s*(?:到|至|~|–|—|-|to|and|through)\s*"
     r"(?:第?\s*)?(\d+(?:\.\d+)?)", re.IGNORECASE)
 
 
 def timestamp_iou(answer, cfg) -> float:
-    """时序定位：从答案里抽出一个 [起, 止] 区间，与金标算 IoU，达阈值算过。
-    先剔掉 video id（"sky01" 里的 01 不是时间！），优先配 "X 到/to/and Y" 的成对模式，
-    配不上再退回前两个数字。"""
+    """时间点准不准：从答案抽一个 [起, 止] 区间，和金标算重合度，够阈值算过。
+    三个坑都处理了：① 先剔视频 id（"sky01" 里的 01 不是时间）；
+    ② "0:11" 这种 分:秒 写法先折算成秒；③ 优先找 "X 到/to Y" 的成对说法。"""
     gold = cfg.get("gold_span")
     thr = cfg.get("iou_threshold", 0.5)
     if not gold:
         return 1.0
     text = _ID_TOKEN.sub(" ", answer or "")
+    text = _MMSS.sub(lambda m: str(int(m.group(1)) * 60 + int(m.group(2))), text)
     m = _SPAN_PAT.search(text)
     if m:
         a, b = sorted((float(m.group(1)), float(m.group(2))))
@@ -161,42 +249,54 @@ def timestamp_iou(answer, cfg) -> float:
     return 1.0 if iou >= thr else 0.0
 
 
+# ── 多轮"不忘事" ─────────────────────────────────────────────────────
+
 def score_jga(agent_blobs: list, slots, titles: dict | None = None) -> float:
-    """多轮"不忘事"判分（JGA 式，严格）：每个金标槽位在对应轮的交付面里都要兑现，缺一个 0.0。
-    槽位字段：turn(1 起) / video_ids（id/标题/别名命中即可）/ resolved_ordinal（"第一个"→vid）/
-    answer_contains（子串）。未知字段忽略（宽进严出）。
-
-    titles 的值可以是单个别名或别名列表（如 [英文标题, 时长数字]）——收口契约让 agent
-    用"第一个（烤饼干）"指代而不报 id，所以验"指代解析对没对"要靠可区分的值
-    （标题命中 或 该视频特有的时长数字），不是逼它报 id（τ²：验结果不验措辞）。"""
-    titles = titles or {}
-
-    def _hit(vid, blob) -> bool:
-        if vid in blob:
-            return True
-        aliases = titles.get(vid) or []
-        if isinstance(aliases, str):
-            aliases = [aliases]
-        return any(a and str(a) in blob for a in aliases)
-
+    """多轮判分（严格）：每个金标槽位在对应轮的交付面里都要兑现，缺一个 0 分。
+    槽位字段：turn(1 起) / video_ids / resolved_ordinal（"第一个"→某视频）/ answer_contains。
+    验"值"不验措辞：agent 说"第一个（烤饼干），60 秒"没报 id 也算对——
+    标题或该视频特有的时长数字命中即可（数字卡词边界，'60' 不算命中 '160'）。"""
     for slot in slots or []:
         idx = int(slot.get("turn", 1)) - 1
         blob = agent_blobs[idx] if 0 <= idx < len(agent_blobs) else ""
         for vid in slot.get("video_ids", []) or []:
-            if not _hit(vid, blob):
+            if not _mention(vid, blob, titles):
                 return 0.0
         for vid in (slot.get("resolved_ordinal", {}) or {}).values():
-            if not _hit(vid, blob):
+            if not _mention(vid, blob, titles):
                 return 0.0
         want = slot.get("answer_contains")
-        if want is not None and str(want) not in blob:
+        if want is not None and not _alias_hit(want, blob):
             return 0.0
     return 1.0
 
 
+# ── 世界状态断言（双向控制题：上传/入库/记忆 真的落没落）──────────────
+
+def score_state_assertions(assertions, world_state: dict) -> float:
+    """检查"用户动作改的共享状态"真的生效了没。
+    surface: uploads（上传登记）/ content_embeddings（内容索引）/ memory（用户记忆）。
+    world_state 由多轮会话在动作发生时如实记录。"""
+    for a in assertions or []:
+        surface = a.get("surface")
+        want = str(a.get("expect_contains", ""))
+        if surface == "uploads":
+            blob = json.dumps(world_state.get("uploads", []), ensure_ascii=False)
+        elif surface == "content_embeddings":
+            blob = json.dumps(world_state.get("enriched", []), ensure_ascii=False)
+        elif surface == "memory":
+            blob = str(world_state.get("memory", ""))
+        else:
+            return 0.0            # 不认识的面：宁可判错也别装通过
+        if want and want not in blob:
+            return 0.0
+    return 1.0
+
+
+# ── 统计小工具 ───────────────────────────────────────────────────────
+
 def passk(c: int, n: int, k: int):
-    """连做 k 次都对的比例，无偏组合估计器。n<k 返回 None（样本不够）。
-    scripted 车道是确定的（c 非 0 即 n），这个公式在接真 Gemini 后才真正发挥作用。"""
+    """连做 k 次都对的比例（无偏估计 C(c,k)/C(n,k)）。样本不够（n<k）老实返回 None。"""
     if n <= 0 or n < k:
         return None
     if k == 0:
@@ -204,7 +304,30 @@ def passk(c: int, n: int, k: int):
     return comb(c, k) / comb(n, k)
 
 
+def wilson(passed: int, total: int, z: float = 1.96):
+    """通过率的波动区间（Wilson 区间，95%）。返回 (低, 高)，比例 0~1。
+    人话：只跑一次的 78% 其实可能在这个区间里晃，别把区间内的变化当真事。"""
+    if total <= 0:
+        return (0.0, 1.0)
+    p = passed / total
+    denom = 1 + z * z / total
+    center = (p + z * z / (2 * total)) / denom
+    half = z * sqrt(p * (1 - p) / total + z * z / (4 * total * total)) / denom
+    return (max(0.0, center - half), min(1.0, center + half))
+
+
+def flip_significance(new_fail: int, new_pass: int) -> float:
+    """两次跑之间"新挂 vs 新过"是不是真变化：只看变了的题（配对比较）。
+    返回 p 值（双边符号检验）。p 小 = 变化大概率是真的，不是运气。"""
+    n = new_fail + new_pass
+    if n == 0:
+        return 1.0
+    k = min(new_fail, new_pass)
+    tail = sum(comb(n, i) for i in range(0, k + 1)) / (2 ** n)
+    return min(1.0, 2 * tail)
+
+
 def case_pass(scores: dict, reward_basis, thresh: dict | None = None) -> bool:
-    """一道题算不算过：只有 reward_basis 点名的判分器都达标才算过。"""
+    """一道题算不算过：只有它自己声明的尺子（reward_basis）都达标才算过。"""
     thresh = thresh or {}
     return all(scores.get(name, 0.0) >= thresh.get(name, 1.0) for name in reward_basis)

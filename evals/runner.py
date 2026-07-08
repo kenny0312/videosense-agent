@@ -51,33 +51,49 @@ def load_tasks(path: str) -> list[dict]:
 
 
 # ── 判分分发 ─────────────────────────────────────────────────────────
-def dispatch_scorers(task: dict, res) -> dict:
-    """把一道题适用的判分器都跑一遍，输出 {判分器名 -> 分}（短名，与 reward_basis 对齐）。"""
+def _score_one_check(name: str, cfg: dict, res, aliases: dict | None):
+    """跑一项检查。res 只需要有 answer/trace/ledger 三样。"""
+    if name == "honesty":
+        return scorers.refusal_ok(res.answer, cfg)
+    if name == "retrieval":
+        # 看"交付面"（答案 + show_* 侧信道），不是只看答案文本 —— 产品规则本来就不让 id 进文本
+        return scorers.retrieval_score(scorers.surface_blob(res), cfg, aliases)
+    if name == "timestamp":
+        return scorers.timestamp_iou(res.answer, cfg)
+    if name == "count":
+        return scorers.answer_count(res.answer, cfg)
+    if name == "entity_match":
+        return scorers.entity_match(res.answer, cfg)
+    if name == "no_id_leak":
+        return scorers.no_id_leak(res.answer, cfg)
+    if name == "identity":
+        return scorers.no_provider_leak(res.answer, cfg)
+    if name == "safety":
+        return scorers.refusal_ok(res.answer, {"expect_refusal": cfg.get("expect_refusal", True)})
+    return None
+
+
+def dispatch_scorers(task: dict, res, aliases: dict | None = None) -> dict:
+    """把一道题适用的判分器都跑一遍，输出 {判分器名 -> 分}（短名，与 reward_basis 对齐）。
+    带 "turn" 字段的检查属于多轮某一轮，这里跳过（score_multi 负责）。"""
     ec = task["evaluation_criteria"]
+    aliases = aliases if aliases is not None else _titles()
     s: dict = {}
     if ec.get("required_actions") is not None:
         s["required_actions"] = scorers.toolseq_match(res.trace, ec["required_actions"])
     if ec.get("no_call_expected"):
         s["no_call"] = 1.0 if not res.trace else 0.0
+    if ec.get("forbidden_actions"):
+        # 用户明说别做的事（比如"别放视频"）——做了任何一条就 0 分
+        hit_any = any(scorers.toolseq_match(res.trace, [req]) == 1.0
+                      for req in ec["forbidden_actions"])
+        s["no_forbidden"] = 0.0 if hit_any else 1.0
     for name, cfg in ec.get("output_checks", {}).items():
-        if name == "honesty":
-            s["honesty"] = scorers.refusal_ok(res.answer, cfg)
-        elif name == "retrieval":
-            # 看"交付面"（答案 + show_* 侧信道），不是只看答案文本 —— 收口契约本来就要求 id 不进文本
-            s["retrieval"] = scorers.recall_at_k(scorers.surface_blob(res), cfg.get("must_surface_video_ids", []), cfg.get("k", 5))
-        elif name == "timestamp":
-            s["timestamp"] = scorers.timestamp_iou(res.answer, cfg)
-        elif name == "count":
-            s["count"] = scorers.answer_count(res.answer, cfg)
-        elif name == "entity_match":
-            s["entity_match"] = scorers.entity_match(res.answer, cfg)
-        elif name == "no_id_leak":
-            s["no_id_leak"] = scorers.no_id_leak(res.answer, cfg)
-        elif name == "identity":
-            s["identity"] = scorers.no_provider_leak(res.answer, cfg)
-        elif name == "safety":
-            s["safety"] = scorers.refusal_ok(res.answer, {"expect_refusal": cfg.get("expect_refusal", True)})
-    # state_assertions / jga_slots 需要 world/session（Mode B / dual-control 才有），单轮跳过
+        if isinstance(cfg, dict) and cfg.get("turn"):
+            continue
+        v = _score_one_check(name, cfg, res, aliases)
+        if v is not None:
+            s[name] = v
     return s
 
 
@@ -86,12 +102,12 @@ _MUTATING_ACTIONS = {"upload_video", "enrich_video", "paste_image"}
 
 
 def _has_user_actions(task: dict) -> bool:
-    """要【改共享状态】才能判分的题（计分含 state_assertions，或脚本带上传/入库/贴图动作）——
-    世界动作还没接真执行器，先跳过。say/correct 只是说话，照跑。"""
-    if "state_assertions" in (task.get("reward_basis") or []):
-        return True
-    return any((step.get("action") or {}).get("type") in _MUTATING_ACTIONS
-               for step in task.get("user", {}).get("script", []) or [])
+    """脚本里带【改共享状态】动作（上传/入库/贴图）的题。动作字段兼容 tool/type 两种写法。"""
+    for step in task.get("user", {}).get("script", []) or []:
+        act = step.get("action") or {}
+        if (act.get("tool") or act.get("type")) in _MUTATING_ACTIONS:
+            return True
+    return "state_assertions" in (task.get("reward_basis") or [])
 
 
 def _titles() -> dict:
@@ -101,21 +117,46 @@ def _titles() -> dict:
     return {v[0]: [v[1], str(int(v[3]))] for v in VIDEOS}
 
 
-def score_multi(task: dict, turns) -> dict:
-    """多轮判分（纯函数，离线可测）。turns = TurnRecord 列表（who/text/trace/ledger）。"""
+def _task_aliases(task: dict) -> dict:
+    """这道题的"视频别名表"：假片库的 标题+时长，再加上用户中途上传的视频（标题+活动词）。
+    有了它，agent 说"第一个（烤饼干）"不报 id 也能判对。"""
+    aliases = dict(_titles())
+    for step in task.get("user", {}).get("script", []) or []:
+        act = step.get("action") or {}
+        vid = act.get("video_id")
+        if vid:
+            aliases[vid] = [act.get("title", "")] + list(act.get("activities", []) or [])
+    return aliases
+
+
+def score_multi(task: dict, turns, world_state: dict | None = None) -> dict:
+    """多轮判分（纯函数，离线可测）。turns = TurnRecord 列表（who/text/trace/ledger）。
+    - 不带 turn 字段的检查：判整场工具链 + 最后一轮的交付面（收尾该做到位）。
+    - 带 turn 字段的检查：判对应那一轮（比如"第 1 轮该说没有滑冰"）。
+    - state_assertions：判用户动作改的共享状态真落了没（world_state 由会话如实记录）。"""
     from types import SimpleNamespace
 
+    aliases = _task_aliases(task)
     agents = [t for t in turns if t.who == "agent"]
-    blobs = [scorers.surface_blob(SimpleNamespace(answer=t.text, trace=t.trace, ledger=t.ledger))
-             for t in agents]
+    turn_objs = [SimpleNamespace(answer=t.text, trace=t.trace, ledger=t.ledger) for t in agents]
+    blobs = [scorers.surface_blob(o) for o in turn_objs]
     all_trace = [step for t in agents for step in t.trace]
     final = SimpleNamespace(answer=agents[-1].text if agents else "",
                             trace=all_trace,
                             ledger={k: v for t in agents for k, v in (t.ledger or {}).items()})
     ec = task["evaluation_criteria"]
-    s = dispatch_scorers(task, final)              # required_actions/output_checks 作用于整场+最终答案
+    s = dispatch_scorers(task, final, aliases=aliases)
+    for name, cfg in ec.get("output_checks", {}).items():          # 带 turn 的检查：判那一轮
+        if isinstance(cfg, dict) and cfg.get("turn"):
+            idx = int(cfg["turn"]) - 1
+            res = turn_objs[idx] if 0 <= idx < len(turn_objs) else SimpleNamespace(answer="", trace=[], ledger={})
+            v = _score_one_check(name, cfg, res, aliases)
+            if v is not None:
+                s[name] = min(s.get(name, 1.0), v)                 # 同名检查多轮都要过
     if ec.get("jga_slots"):
-        s["jga"] = scorers.score_jga(blobs, ec["jga_slots"], titles=_titles())
+        s["jga"] = scorers.score_jga(blobs, ec["jga_slots"], titles=aliases)
+    if ec.get("state_assertions"):
+        s["state_assertions"] = scorers.score_state_assertions(ec["state_assertions"], world_state or {})
     return s
 
 
@@ -128,7 +169,7 @@ def run_case_multi(task: dict, n: int | None = None, owner: str = "eval") -> dic
     last_turns = None
     for _ in range(n):
         out = DualControlSession(task, owner=owner).run()
-        sc = score_multi(task, out["turns"])
+        sc = score_multi(task, out["turns"], world_state=out.get("world_state"))
         if scorers.case_pass(sc, task["reward_basis"]):
             successes += 1
         for d, v in sc.items():
