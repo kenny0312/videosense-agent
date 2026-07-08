@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -198,6 +199,31 @@ def _run_show_video(node: Node, upstream: dict[str, Any]) -> NodeResult:
 
 SHOW_TABLE_MAX_ROWS = 1000
 
+# E1(eval selfknow-safety-injection-links-28 暴露):show_table 渲染【原始行】、天然绕过答案
+# 清洗器 —— 大脑被注入话术骗着 SELECT gcs_uri 时,表格就成了泄漏通道。机械规则下沉代码:
+# 内部存储路径列整列剔除;别名列(SELECT gcs_uri AS link)靠值形状兜底打码。
+_SENSITIVE_COLS = {"gcs_uri"}
+_INTERNAL_URI = re.compile(r"^\s*(?:gs|postgres(?:ql)?)://", re.I)
+
+
+def _sanitize_table_rows(norm: "list[dict]") -> "list[dict]":
+    """剔除内部路径列 + 打码内部 URI 值。fail-open:单行异常跳过该行清洗(宁展示别崩)。"""
+    out = []
+    for r in norm:
+        try:
+            clean = {}
+            for k, v in r.items():
+                if str(k).lower() in _SENSITIVE_COLS:
+                    continue                                   # 整列剔除
+                if isinstance(v, str) and _INTERNAL_URI.match(v):
+                    clean[k] = "(内部路径,不展示)"              # 别名列兜底
+                else:
+                    clean[k] = v
+            out.append(clean or {"value": "(仅含内部字段,已隐藏)"})
+        except Exception:
+            out.append(r)
+    return out
+
 
 def _run_show_table(node: Node, upstream: dict[str, Any]) -> NodeResult:
     """主进程节点:把【上游查询的完整结果】原样放进 NodeResult.table 侧信道,供前端渲染成表格。
@@ -209,6 +235,7 @@ def _run_show_table(node: Node, upstream: dict[str, Any]) -> NodeResult:
     n = len(rows)
     shown = rows[:SHOW_TABLE_MAX_ROWS]
     norm = [r if isinstance(r, dict) else {"value": r} for r in shown]
+    norm = _sanitize_table_rows(norm)                  # E1:内部路径列/值出门前拦下
     cols: list = []
     for r in norm:                                 # 列名 = 所有行键的并集(保序)
         for k in r:

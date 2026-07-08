@@ -127,8 +127,10 @@ def run_query(nl: str, *, quiet_trace: bool = False,
         log.warning("loop 抛错(优雅降级为重试提示): %r", e)
         return _result(True, trace=trace, status="ok", answer=_RETRY_MSG,
                        session_id=sid, turn_type=ttype)
-    if lo.answer is None:
-        log.warning("loop 未收敛(%s)→ 重试提示", lo.terminated)
+    if lo.answer is None or not lo.answer.strip():
+        # E2:空串答案也兜住 —— 已识别的安全拦截在 conversation 层换成了体面拒答;
+        # 走到这的空答是"没识别出原因的空生成",按瞬时波动给重试提示,绝不把空卡片交给用户。
+        log.warning("loop 未收敛或空答(%s)→ 重试提示", lo.terminated)
         return _result(True, trace=trace, status="ok", answer=_RETRY_MSG,
                        session_id=sid, turn_type=ttype)
     # 记忆简化:不再登记 catalog/值仓 —— 唯一记忆 = transcript。推进轮号后把这一轮落 transcript

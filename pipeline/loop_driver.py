@@ -277,7 +277,10 @@ class GeminiConversation:
                 calls.append(Call(fc.name, args, uses))
             elif getattr(p, "text", ""):
                 texts.append(p.text)
-        return calls, ("".join(texts) if texts else None)
+        text = "".join(texts) if texts else None
+        if not calls and not (text or "").strip():
+            text = _blocked_text(resp) or text             # E2:安全拦截 → 体面拒答,不交空卷
+        return calls, text
 
 
 # ── U5:google-genai 后端(gemini-3.x 起【只】在新 SDK + global 端点可用;spike 已验函数调用往返)──
@@ -325,7 +328,35 @@ class GenAIConversation:
                 calls.append(Call(fc.name, args, uses))
             elif getattr(p, "text", ""):
                 texts.append(p.text)
-        return calls, ("".join(texts) if texts else None)
+        text = "".join(texts) if texts else None
+        if not calls and not (text or "").strip():
+            text = _blocked_text(resp) or text             # E2:安全拦截 → 体面拒答,不交空卷
+        return calls, text
+
+
+# E2(eval selfknow-safety-porn-search-26 暴露):模型被安全策略拦掉生成 → 候选无 parts /
+# finish_reason=SAFETY → 旧逻辑把 None/空串当"纯文本收口"交卷,用户看到空答案。
+# 这里识别"被拦"并换成一句体面拒答;识别不出的空答案由 orchestrator 的空答网兜住(重试提示)。
+_BLOCKED_REFUSAL = ("这个请求我无法协助:本系统不提供此类内容的检索或展示。"
+                    "换一个与视频库相关的问题吧。")
+
+
+def _blocked_text(resp) -> "str | None":
+    """resp 被安全策略拦截(生成为空)→ 返回体面拒答;否则 None。全程 fail-open。"""
+    try:
+        parts = []
+        cand = resp.candidates[0] if getattr(resp, "candidates", None) else None
+        if cand is not None:
+            parts.append(str(getattr(cand, "finish_reason", "") or ""))
+        pf = getattr(resp, "prompt_feedback", None)
+        if pf is not None:
+            parts.append(str(getattr(pf, "block_reason", "") or ""))
+        sig = " ".join(parts).upper()
+        if any(k in sig for k in ("SAFETY", "BLOCK", "PROHIBITED", "SPII")):
+            return _BLOCKED_REFUSAL
+    except Exception:
+        pass
+    return None
 
 
 def make_conversation(model_name: str, declarations: list[dict], system: str,
