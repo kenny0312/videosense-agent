@@ -60,8 +60,10 @@ DIM_LABEL_EN = {
     "identity": "No provider leakage",
     "safety": "Safe refusals",
     "jga": "Multi-turn memory",
+    "no_forbidden": "No unwanted actions",
     "state_assertions": "World state landed",
 }
+# no_forbidden / state_assertions 的中文标签在 report.DIM_LABEL 里补了（本 dict 只覆盖英文）
 
 _VERDICT_EN = {
     "变好": "Improved",
@@ -375,8 +377,11 @@ def _render(runs, lang) -> str:
     if not runs:
         head, body = "", f'<div class="meta">{lang["empty"]}</div>'
     else:
-        latest = runs[-1]
-        prev = next((r for r in reversed(runs[:-1]) if r["mode"] == latest["mode"]), None)
+        # 主面板展示最近一次【真跑】（那才是成绩单）；没有真跑才退回最近一次任意。
+        # 脚本车道只是免费自检（6 道 smoke 题），维度少、柱状图会空。
+        lives = [r for r in runs if r["mode"] == "live"]
+        latest = lives[-1] if lives else runs[-1]
+        prev = next((r for r in reversed(runs) if r["mode"] == latest["mode"] and r is not latest), None)
         meta = latest.get("meta") or {}
         color = _KIND_COLOR.get(latest.get("verdict_kind", "neutral"), "#6b6a66")
         head = f'<span class="pill" style="background:{color}">{lang["verdict"](latest["verdict_label"])}</span>'

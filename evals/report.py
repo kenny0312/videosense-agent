@@ -10,6 +10,8 @@ from __future__ import annotations
 DIM_LABEL = {
     "required_actions": "工具用得对",
     "no_call": "该问就问",
+    "no_forbidden": "没做不该做的",
+    "state_assertions": "世界状态对了",
     "honesty": "诚实不瞎编",
     "retrieval": "找对视频",
     "timestamp": "时间点准",
