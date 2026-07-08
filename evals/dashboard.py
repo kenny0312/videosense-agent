@@ -102,6 +102,8 @@ L = {
         "pin": "必过",
         "cost": "本次花费：调大脑 {llm} 次 · 看画面 {an} 次 · 总耗时 {min} 分钟",
         "foot": "跑完自动更新，浏览器 F5 即可 —— 不用 push GitHub。",
+        "dl_btn": "⬇ 下载分析简报（给大模型看）",
+        "dl_hint": "一个 .md 文件，扔给 Claude 等大模型，让它分析哪里出了问题、怎么修",
         "verdict": lambda s: s,
     },
     "en": {
@@ -131,6 +133,8 @@ L = {
         "pin": "must-pass",
         "cost": "This run: {llm} brain calls · {an} video looks · {min} min total",
         "foot": "Auto-updates after each run; just refresh — no GitHub push needed.",
+        "dl_btn": "⬇ Download analysis briefing (for LLMs)",
+        "dl_hint": "A single .md — hand it to Claude or any LLM to diagnose what went wrong and how to fix it",
         "verdict": lambda s: _VERDICT_EN.get(s, s),
     },
 }
@@ -373,6 +377,29 @@ table.drill{border-collapse:collapse;width:100%;font-size:12px;margin-top:8px}
 """
 
 
+def _download_button(latest, lang) -> str:
+    """结论后面的"下载给大模型分析的简报"按钮。把简报内容嵌成 JS 字符串，点一下用 Blob 下载 .md。
+    本地文件双击打开也能用（不依赖服务器）。"""
+    from evals.briefing import build_briefing
+
+    md = build_briefing(latest)
+    # 嵌成 JS 字符串；"</" 要转义，不然正文里万一出现 </script> 会把页面脚本截断
+    payload = json.dumps(md).replace("</", "<\\/")
+    fname = f"vs-eval-briefing-{latest.get('ts', 'latest')}.md"
+    btn = lang["dl_btn"]
+    hint = lang["dl_hint"]
+    return (
+        f'<div style="margin:12px 0 4px">'
+        f'<button onclick="__dl()" style="font-size:13px;padding:7px 14px;border-radius:8px;'
+        f'border:1px solid #c9c6bd;background:#faf9f6;cursor:pointer">{btn}</button>'
+        f'<span class="meta" style="margin-left:8px">{hint}</span></div>'
+        f'<script>const __BRIEF={payload};function __dl(){{'
+        f'const b=new Blob([__BRIEF],{{type:"text/markdown;charset=utf-8"}});'
+        f'const a=document.createElement("a");a.href=URL.createObjectURL(b);'
+        f'a.download="{fname}";a.click();}}</script>'
+    )
+
+
 def _render(runs, lang) -> str:
     if not runs:
         head, body = "", f'<div class="meta">{lang["empty"]}</div>'
@@ -411,6 +438,7 @@ def _render(runs, lang) -> str:
                      if cost.get("llm_calls") else "")
         reasons = "".join(f"<li>{_esc(x)}</li>" for x in latest.get("reasons", []))
         reasons_html = f'<ul class="meta" style="margin:4px 0 0">{reasons}</ul>' if reasons else ""
+        reasons_html += _download_button(latest, lang)
         body = (f'<div class="meta">{meta_line}</div>{reasons_html}{cards}{cost_line}{skip_line}'
                 + _trend_svg(runs, lang) + _dim_table(latest, prev, lang)
                 + _flips_section(latest, prev, lang) + _fail_cards(latest, lang)

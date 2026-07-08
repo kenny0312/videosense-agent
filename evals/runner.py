@@ -540,8 +540,12 @@ def main(argv=None):
     print_summary(cur_print, base_print, v)
     dashboard.save_run(cur_print, v, mode, meta=meta)
     dash = dashboard.rebuild()
+    # 顺手落一份"给大模型看的分析简报"（仪表盘上也有下载按钮，内容一样）
+    from evals.briefing import write_briefing
+    brief = write_briefing(dashboard.load_runs()[-1])
     print(f"\n报告已生成：{args.out}（每题明细：{results_path}）")
     print(f"仪表盘已更新：{dash}  ← 浏览器打开看历史/趋势/失败下钻，不用 push GitHub")
+    print(f"分析简报：{brief}  ← 扔给 Claude 等大模型，让它分析哪里出了问题")
     return 0
 
 
