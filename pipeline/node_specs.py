@@ -216,8 +216,13 @@ SPECS: dict[str, NodeSpec] = {
         codegen_hint=(
             "用**纯 Python 生成 SVG 字符串**(沙箱没装 matplotlib,不要 import 它)。"
             "读取上游每行的 inputs['x'] / inputs['y'] 两个数值列,线性映射到 640x420 画布"
-            "(留出 50px 边距);inputs['kind']=='scatter' 画 <circle>,'line' 画 <polyline>;"
+            "(留出 50px 边距);inputs['kind']=='scatter' 画 <circle> r=3.5,'line' 画 <polyline>;"
             "再画 x/y 坐标轴线和标题 inputs['title']。"
+            "【暗色主题——必须遵守,让图融进深色 UI,绝不要白底/黑字/黑线】:"
+            "SVG 根标签写 style=\"background-color:#0d1015\";标题文字 fill=\"#e8ebef\";"
+            "坐标轴线 stroke=\"#2c313a\" stroke-width=\"1\";刻度与轴标签文字 fill=\"#69727e\";"
+            "数据标记用 accent 蓝——scatter 的 <circle> fill=\"#6ea2ff\" opacity=\"0.85\","
+            "line 的 <polyline> fill=\"none\" stroke=\"#6ea2ff\" stroke-width=\"2\"。"
             "print(json.dumps({'svg': svg_string, 'n_points': len(rows)}))。"
             "不要写文件系统、不要 import matplotlib。"
         ),
