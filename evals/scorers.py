@@ -155,20 +155,22 @@ def recall_at_k(blob, gold_ids, k: int = 5, aliases: dict | None = None) -> floa
 
 
 def retrieval_score(blob, cfg, aliases: dict | None = None) -> float:
-    """找对视频 = 查全 × 查准 两头都要：
-    - 查全：must_surface_video_ids 里的每个都要被提到/交付；
-    - 查准：交付面里出现的视频 id，必须在"允许集合"里
-      （必须的 + allowed_video_ids 列的近邻）。把库里 16 个全倒出来 → 查准崩 → 0 分。
-    取两者中较低的当分数。"""
+    """找对视频：先要"查全"（该出现的都出现），再防"整库倒出来"。
+    - 查全没满：直接返回查全分（这是主信号——没找齐就是没找齐）。
+    - 查全满了：只惩罚"把一大堆无关视频也甩出来"，顺口多提一两个合理的近邻不扣分。
+      多出来的无关视频 ≤ 必须集合大小+1，算满分；再多才按比例扣（整库16个 → 明显扣）。"""
     b = blob or ""
     musts = cfg.get("must_surface_video_ids", []) or []
     rec = recall_at_k(b, musts, cfg.get("k", 5), aliases)
-    surfaced = set(_ANY_ID.findall(b))
-    if not surfaced:
+    if rec < 1.0:
         return rec
+    surfaced = set(_ANY_ID.findall(b))
     allowed = set(musts) | set(cfg.get("allowed_video_ids", []) or [])
-    prec = len(surfaced & allowed) / len(surfaced) if allowed else 0.0
-    return min(rec, prec)
+    extra = len(surfaced - allowed)
+    tol = len(musts) + 1
+    if extra <= tol:
+        return 1.0
+    return max(0.0, 1.0 - (extra - tol) / max(len(surfaced), 1))
 
 
 def entity_match(answer, cfg) -> float:
@@ -252,18 +254,22 @@ def timestamp_iou(answer, cfg) -> float:
 # ── 多轮"不忘事" ─────────────────────────────────────────────────────
 
 def score_jga(agent_blobs: list, slots, titles: dict | None = None) -> float:
-    """多轮判分（严格）：每个金标槽位在对应轮的交付面里都要兑现，缺一个 0 分。
-    槽位字段：turn(1 起) / video_ids / resolved_ordinal（"第一个"→某视频）/ answer_contains。
-    验"值"不验措辞：agent 说"第一个（烤饼干），60 秒"没报 id 也算对——
-    标题或该视频特有的时长数字命中即可（数字卡词边界，'60' 不算命中 '160'）。"""
+    """多轮"不忘事"判分。缺一条 0 分。三类检查各有分寸：
+    - video_ids / resolved_ordinal（"这个视频/第一个" 指的是哪条）：看【整场累积】——
+      只要这条视频在前面某轮已经摆到台面上、后面没串到别的视频，就算"记住了"。
+      因为正常对话里 agent 答后续问题不会每轮重报视频名（那不是忘事）。
+    - answer_contains（该轮该答出的关键数字/事实）：严格按【那一轮】判，'60' 不命中 '160'。
+    验"值"不验措辞：标题或该视频特有的时长数字命中即可，不逼报原始 id。"""
+    cum = ""
     for slot in slots or []:
         idx = int(slot.get("turn", 1)) - 1
         blob = agent_blobs[idx] if 0 <= idx < len(agent_blobs) else ""
+        cum = (cum + " " + blob).strip()
         for vid in slot.get("video_ids", []) or []:
-            if not _mention(vid, blob, titles):
+            if not _mention(vid, cum, titles):
                 return 0.0
         for vid in (slot.get("resolved_ordinal", {}) or {}).values():
-            if not _mention(vid, blob, titles):
+            if not _mention(vid, cum, titles):
                 return 0.0
         want = slot.get("answer_contains")
         if want is not None and not _alias_hit(want, blob):

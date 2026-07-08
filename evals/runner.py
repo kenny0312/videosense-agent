@@ -91,7 +91,12 @@ def dispatch_scorers(task: dict, res, aliases: dict | None = None) -> dict:
     if ec.get("required_actions") is not None:
         s["required_actions"] = scorers.toolseq_match(res.trace, ec["required_actions"])
     if ec.get("no_call_expected"):
-        s["no_call"] = 1.0 if not res.trace else 0.0
+        # "别去干那件不该干的事"：只读地瞥一眼库（sql/语义/看画面）不算，
+        # 真去交付/联网/写东西（show_*/web_search/python/plot/记忆/子agent）才算越界。
+        overreach = {"show_video", "show_table", "web_search", "plot", "python",
+                     "spawn_agents", "update_memory"}
+        did = any(st.get("tool") in overreach for st in res.trace or [])
+        s["no_call"] = 0.0 if did else 1.0
     if ec.get("forbidden_actions"):
         # 用户明说别做的事（比如"别放视频"）——做了任何一条就 0 分
         hit_any = any(scorers.toolseq_match(res.trace, [req]) == 1.0

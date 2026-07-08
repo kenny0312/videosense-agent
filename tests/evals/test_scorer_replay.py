@@ -108,6 +108,25 @@ def test_jga_duration_alias_word_boundary():
     assert scorers.score_jga(["时长 60 秒"], [{"turn": 1, "resolved_ordinal": {"第一个": "v006"}}], titles) == 1.0
 
 
+def test_retrieval_tolerates_one_neighbor():
+    """真跑教训：找齐了要的视频、顺口多提一个近邻，不该判挂；整库倒出来才挂。"""
+    cfg = {"must_surface_video_ids": ["v001", "v003"], "k": 5}
+    assert scorers.retrieval_score("找到 v001、v003，另外 v002 也沾点边", cfg) == 1.0   # 多一个=容忍
+    dump = " ".join(f"v{i:03d}" for i in range(1, 13)) + " sky01 sky02 sky03 sky04"
+    assert scorers.retrieval_score(dump, cfg) < 1.0                                      # 整库倒出=挂
+
+
+def test_jga_cumulative_memory():
+    """真跑教训：视频在前一轮已确立，后一轮答对后续问题没重报视频名，不算忘事。"""
+    titles = {"v004": ["Makeup Tutorial Mascara", "21"]}
+    blobs = ["有化妆视频：Makeup Tutorial Mascara（v004）", "涂睫毛膏在 1 到 20 秒之间"]
+    slots = [{"turn": 1, "video_ids": ["v004"]}, {"turn": 2, "resolved_ordinal": {"里面": "v004"}}]
+    assert scorers.score_jga(blobs, slots, titles) == 1.0
+    # 但关键数字答错，仍然要挂（answer_contains 严格按轮）
+    slots2 = [{"turn": 1, "video_ids": ["v004"]}, {"turn": 2, "answer_contains": "20"}]
+    assert scorers.score_jga(["有 v004", "涂睫毛膏在 5 到 9 秒"], slots2, titles) == 0.0
+
+
 def test_wilson_and_flip():
     lo, hi = scorers.wilson(75, 96)
     assert 0.68 < lo < 0.70 and 0.84 < hi < 0.86          # 78% 其实在 ~[69%,85%] 里晃
