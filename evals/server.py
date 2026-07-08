@@ -102,7 +102,8 @@ class _Handler(BaseHTTPRequestHandler):
                        "application/json; charset=utf-8")
             return
         dashboard.rebuild()
-        with open(dashboard.DASH_PATH, encoding="utf-8") as fh:
+        path = dashboard.DASH_EN_PATH if "dashboard.en" in self.path else dashboard.DASH_PATH
+        with open(path, encoding="utf-8") as fh:
             html = fh.read()
         self._send(200, html.replace("<body>", "<body>" + _BAR, 1))
 

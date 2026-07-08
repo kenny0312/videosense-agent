@@ -36,7 +36,11 @@ set GCP_PROJECT=<你的项目>
 set GENAI_LOCATION=global
 set REPL_USE_MOCK_DB=1
 python -m evals.runner --live --n 1     # 先 n=1 冒烟，稳了再加大 n
+# --live 现在跑 单轮 96 + 多轮 23（脚本用户，同一会话跨轮，多轮不忘事按槽位判）
+# 剩 9 道要"用户改共享状态"（上传/入库/贴图）才能判的题自动跳过并列出（待接真执行器）
 ```
+
+仪表盘为双语：`dashboard.html`（中文）/ `dashboard.en.html`（英文），页内右上角可互切。
 
 用浏览器打开 `evals/report.html` 看大白话报告（整体通过率 / 各方面变化 / 每题×各方面）。
 

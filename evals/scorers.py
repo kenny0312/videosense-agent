@@ -161,6 +161,39 @@ def timestamp_iou(answer, cfg) -> float:
     return 1.0 if iou >= thr else 0.0
 
 
+def score_jga(agent_blobs: list, slots, titles: dict | None = None) -> float:
+    """多轮"不忘事"判分（JGA 式，严格）：每个金标槽位在对应轮的交付面里都要兑现，缺一个 0.0。
+    槽位字段：turn(1 起) / video_ids（id/标题/别名命中即可）/ resolved_ordinal（"第一个"→vid）/
+    answer_contains（子串）。未知字段忽略（宽进严出）。
+
+    titles 的值可以是单个别名或别名列表（如 [英文标题, 时长数字]）——收口契约让 agent
+    用"第一个（烤饼干）"指代而不报 id，所以验"指代解析对没对"要靠可区分的值
+    （标题命中 或 该视频特有的时长数字），不是逼它报 id（τ²：验结果不验措辞）。"""
+    titles = titles or {}
+
+    def _hit(vid, blob) -> bool:
+        if vid in blob:
+            return True
+        aliases = titles.get(vid) or []
+        if isinstance(aliases, str):
+            aliases = [aliases]
+        return any(a and str(a) in blob for a in aliases)
+
+    for slot in slots or []:
+        idx = int(slot.get("turn", 1)) - 1
+        blob = agent_blobs[idx] if 0 <= idx < len(agent_blobs) else ""
+        for vid in slot.get("video_ids", []) or []:
+            if not _hit(vid, blob):
+                return 0.0
+        for vid in (slot.get("resolved_ordinal", {}) or {}).values():
+            if not _hit(vid, blob):
+                return 0.0
+        want = slot.get("answer_contains")
+        if want is not None and str(want) not in blob:
+            return 0.0
+    return 1.0
+
+
 def passk(c: int, n: int, k: int):
     """连做 k 次都对的比例，无偏组合估计器。n<k 返回 None（样本不够）。
     scripted 车道是确定的（c 非 0 即 n），这个公式在接真 Gemini 后才真正发挥作用。"""

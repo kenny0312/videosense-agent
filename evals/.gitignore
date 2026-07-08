@@ -1,5 +1,5 @@
 report*.html
 *.results.jsonl
-dashboard.html
+dashboard*.html
 runs/
 __pycache__/
