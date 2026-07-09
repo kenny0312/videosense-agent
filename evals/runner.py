@@ -37,12 +37,15 @@ def _strip_jsonc(text: str) -> str:
 
 
 def load_tasks(path: str) -> list[dict]:
-    """加载题目：目录则递归读 *.jsonc / *.json（单对象）+ *.jsonl（一行一题）。"""
+    """加载题目：目录则递归读 *.jsonc / *.json（单对象）+ *.jsonl（一行一题）。
+    GD-0 防脚枪：文件名以 candidates 开头的一律跳过 —— 那是挖题脚本的【半成品】
+    （金标还是 TODO），人工补完金标挪正式文件后才算题。"""
     if os.path.isdir(path):
         files = []
         for root, _dirs, fnames in os.walk(path):
             files += [os.path.join(root, fn) for fn in fnames
-                      if fn.endswith((".jsonc", ".json", ".jsonl"))]
+                      if fn.endswith((".jsonc", ".json", ".jsonl"))
+                      and not fn.startswith("candidates")]
     else:
         files = [path]
     tasks = []
@@ -57,6 +60,25 @@ def load_tasks(path: str) -> list[dict]:
         else:
             tasks.append(json.loads(_strip_jsonc(text)))
     return sorted(tasks, key=lambda t: t["id"])
+
+
+def filter_tasks(tasks: list[dict], ids: "str | list[str] | None") -> list[dict]:
+    """GD-0 子集选择（GEPA 候选评估只重跑受影响题）。ids = 逗号分隔串或列表;
+    支持前缀通配 'retrieval-*'。没匹配到的 id 报错(防手滑静默跑空)。"""
+    if not ids:
+        return tasks
+    want = [s.strip() for s in (ids.split(",") if isinstance(ids, str) else ids) if s.strip()]
+    out, matched = [], set()
+    for t in tasks:
+        for w in want:
+            if t["id"] == w or (w.endswith("*") and t["id"].startswith(w[:-1])):
+                out.append(t)
+                matched.add(w)
+                break
+    missing = [w for w in want if w not in matched]
+    if missing:
+        raise SystemExit(f"--ids 没匹配到任何题：{', '.join(missing)}")
+    return out
 
 
 # ── 判分分发 ─────────────────────────────────────────────────────────
@@ -179,12 +201,24 @@ def _mean(xs):
     return sum(xs) / len(xs) if xs else 0.0
 
 
-def _tools_of(trace, limit: int = 160) -> list:
-    """工具链落盘：带参数（截断），失败归因的第一现场。"""
+def _tools_of(trace, ledger=None, limit: int = 160, out_limit: int = 240) -> list:
+    """工具链落盘：工具名+参数（截断）+【每步成败与世界返回了什么】（GD-0：反思器要能看到
+    "SQL 明明返回了 v009 但 agent 没用"这类事实，只有名字和参数不够）。fail-open：没 ledger 就略。"""
+    led = ledger or {}
     out = []
     for st in trace or []:
         args = json.dumps(st.get("inputs", {}), ensure_ascii=False, default=str)
-        out.append({"tool": st.get("tool"), "args": args[:limit]})
+        row = {"tool": st.get("tool"), "args": args[:limit], "ok": st.get("ok")}
+        er = led.get(st.get("cid"))
+        if er is not None:
+            try:
+                row["out"] = (json.dumps(getattr(er, "preview", None), ensure_ascii=False,
+                                         default=str)[:out_limit]
+                              if getattr(er, "ok", False)
+                              else str(getattr(er, "stderr", ""))[:out_limit])
+            except Exception:
+                pass
+        out.append(row)
     return out
 
 
@@ -221,7 +255,7 @@ def _infra_record(task, n, err) -> dict:
         "pass_k": {"1": 0.0, "3": None, "5": None}, "scores": {},
         "question": task.get("user_query", ""), "expect": {}, "grounding_note": "",
         "answer": f"[环境故障] {err}", "tools": [], "first_fail": None,
-        "cost": {"llm_calls": 0, "analyze_calls": 0, "wall_ms": 0},
+        "cost": {"llm_calls": 0, "analyze_calls": 0, "wall_ms": 0, "tokens": 0, "cost_usd": 0.0},
     }
 
 
@@ -239,12 +273,17 @@ def run_case(task: dict, script=None, tool_results=None, n: int | None = None,
     per_dim: dict = {}
     last = None
     first_fail = None
-    cost = {"llm_calls": 0, "analyze_calls": 0, "wall_ms": 0}
+    cost = {"llm_calls": 0, "analyze_calls": 0, "wall_ms": 0, "tokens": 0, "cost_usd": 0.0}
     steps = task.get("max_steps", 16)
     for _ in range(n):
         t0 = time.perf_counter()
         if live:                                # Mode B：真 Gemini
+            from pipeline import usage as _usage
+            _usage.reset_usage()                # GD-0：按 rollout 记 token/$（GEPA 预算控制用）
             res = LiveWorld(owner=owner).run(task["user_query"], max_steps=steps)
+            _u = _usage.summarize()
+            cost["tokens"] += _u.get("tokens_total", 0) or 0
+            cost["cost_usd"] = round(cost["cost_usd"] + (_u.get("cost_usd", 0) or 0), 6)
         else:                                   # Mode A：脚本车道
             res = ScriptedWorld(script, tool_results or {}).run(task["user_query"], max_steps=steps)
         cost["wall_ms"] += round((time.perf_counter() - t0) * 1000)
@@ -253,11 +292,12 @@ def run_case(task: dict, script=None, tool_results=None, n: int | None = None,
         sc = dispatch_scorers(task, res)
         ok = scorers.case_pass(sc, task["reward_basis"])
         successes += int(ok)
+        led = getattr(res, "ledger", None)
         if not ok and first_fail is None:
-            first_fail = {"answer": res.answer, "tools": _tools_of(res.trace), "scores": sc}
+            first_fail = {"answer": res.answer, "tools": _tools_of(res.trace, led), "scores": sc}
         for d, v in sc.items():
             per_dim.setdefault(d, []).append(v)
-        last = {"answer": res.answer, "tools": _tools_of(res.trace)}
+        last = {"answer": res.answer, "tools": _tools_of(res.trace, led)}
     return _make_record(task, n, successes, per_dim, last, first_fail, cost)
 
 
@@ -269,10 +309,15 @@ def run_case_multi(task: dict, n: int | None = None, owner: str = "eval") -> dic
     per_dim: dict = {}
     last = None
     first_fail = None
-    cost = {"llm_calls": 0, "analyze_calls": 0, "wall_ms": 0}
+    cost = {"llm_calls": 0, "analyze_calls": 0, "wall_ms": 0, "tokens": 0, "cost_usd": 0.0}
     for _ in range(n):
         t0 = time.perf_counter()
+        from pipeline import usage as _usage
+        _usage.reset_usage()                     # GD-0：按 rollout 记 token/$
         out = DualControlSession(task, owner=owner).run()
+        _u = _usage.summarize()
+        cost["tokens"] += _u.get("tokens_total", 0) or 0
+        cost["cost_usd"] = round(cost["cost_usd"] + (_u.get("cost_usd", 0) or 0), 6)
         cost["wall_ms"] += round((time.perf_counter() - t0) * 1000)
         agents = [t for t in out["turns"] if t.who == "agent"]
         cost["llm_calls"] += sum(getattr(t, "llm_calls", 0) for t in agents)
@@ -282,7 +327,8 @@ def run_case_multi(task: dict, n: int | None = None, owner: str = "eval") -> dic
         ok = scorers.case_pass(sc, task["reward_basis"])
         successes += int(ok)
         snapshot = {"answer": agents[-1].text if agents else None,
-                    "tools": [x for t in agents for x in _tools_of(t.trace)]}
+                    "tools": [x for t in agents
+                              for x in _tools_of(t.trace, getattr(t, "ledger", None))]}
         if not ok and first_fail is None:
             first_fail = {**snapshot, "scores": sc}
         for d, v in sc.items():
@@ -478,14 +524,18 @@ def main(argv=None):
     ap.add_argument("--live", action="store_true", help="真跑：真 Gemini 进循环（要 GCP 凭证 + 花 token）")
     ap.add_argument("--n", type=int, default=None, help="每题跑几次（真跑先 --n 1 冒烟）")
     ap.add_argument("--list", action="store_true", help="只列数据集统计，不跑")
-    ap.add_argument("--semantic", action="store_true",
-                    help="真跑时打开语义检索：用真 embed 把假片库嵌进内存索引，测你改的 semantic_search")
+    ap.add_argument("--ids", default=None,
+                    help="GD-0：只跑这些题（逗号分隔 id，支持前缀通配 retrieval-*）——GEPA 候选评估用")
+    # GD-0 政策：语义检索【默认开】对齐生产（生产 USE_SEMANTIC_SEARCH 默认 1;之前 eval 默认关
+    # → L11 等语义教训在 eval 里是死段,优化的和上线的不是同一个 prompt）。embed 失败自动回退关。
+    ap.add_argument("--semantic", action=argparse.BooleanOptionalAction, default=True,
+                    help="真跑时打开语义检索（默认开,对齐生产;--no-semantic 关）")
     args = ap.parse_args(argv)
 
     if args.semantic:
         os.environ["EVAL_SEMANTIC"] = "1"       # 假世界 install 时会据此建内存语义索引
 
-    tasks = load_tasks(args.tasks_dir)
+    tasks = filter_tasks(load_tasks(args.tasks_dir), args.ids)
 
     if args.list:
         by_dim = Counter(d for t in tasks for d in t.get("dims", ["?"]))
@@ -538,6 +588,11 @@ def main(argv=None):
         for r in cur_print:
             fh.write(json.dumps(r, ensure_ascii=False, default=str) + "\n")
     print_summary(cur_print, base_print, v)
+    if args.ids:
+        # GD-0：子集跑（GEPA 候选评估/手工复测）不进仪表盘历史 —— 不然基线被局部样本污染
+        print(f"\n报告已生成：{args.out}（每题明细：{results_path}）")
+        print("（--ids 子集跑：不写入仪表盘/简报，基线不受影响）")
+        return 0
     dashboard.save_run(cur_print, v, mode, meta=meta)
     dash = dashboard.rebuild()
     # 顺手落一份"给大模型看的分析简报"（仪表盘上也有下载按钮，内容一样）

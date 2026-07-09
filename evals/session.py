@@ -57,9 +57,12 @@ class DualControlSession:
         user = SimulatedUser(u.get("persona", ""), u.get("goal", ""), script=u.get("script"))
 
         schema = mcp_client.get_schema()
+        # GD-0:runtime_facts 对齐生产(见 world.py 同处说明);多轮以首条 utterance 定语言指令。
+        first_utt = (u.get("script") or [{}])[0].get("utterance", "")
+        rt = loop_driver.runtime_facts_line(None, nl=first_utt or None)
         conv = loop_driver.make_conversation(          # 同一个对话跨轮 → 多轮记性是真的
             config.LOOP_MODEL, loop_driver.loop_function_declarations(),
-            loop_driver._loop_system(schema, None, None),
+            loop_driver._loop_system(schema, None, rt),
             image=self._first_image())
         execute = backend.wrap_execute(
             loop_driver._make_executor(SandboxClient(), Trace(), schema, None, owner=self.owner))

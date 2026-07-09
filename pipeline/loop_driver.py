@@ -537,12 +537,27 @@ _DATA_FACTS = (
 )
 
 # 拼装(模块级一次,字节稳定 —— L3 context caching 的前提)
-_LOOP_SYSTEM = (
-    _CONSTITUTION
-    + "\n# 经验教训(每条都有来历;部分有代码兜底,但你第一时间做对,答案才自然)\n"
-    + lessons.render()
-    + "\n\n# 关键数据说明\n" + _DATA_FACTS
-)
+def _build_loop_system() -> str:
+    """拼静态前缀(宪法+教训+数据事实)。生产路径只在 import 时调一次 → byte-stable,
+    L3 缓存前提不变;GD-0 抽成函数是给 refresh_loop_system 用的(GEPA 候选评估)。"""
+    return (
+        _CONSTITUTION
+        + "\n# 经验教训(每条都有来历;部分有代码兜底,但你第一时间做对,答案才自然)\n"
+        + lessons.render()
+        + "\n\n# 关键数据说明\n" + _DATA_FACTS
+    )
+
+
+_LOOP_SYSTEM = _build_loop_system()
+
+
+def refresh_loop_system() -> None:
+    """GD-0(GEPA 候选评估用):同进程内改了 lessons.LESSONS / 声明后,重拼静态前缀。
+    生产【绝不调用】—— _LOOP_SYSTEM 在 import 时冻结才有 byte-stable 缓存;本函数只给
+    评测/进化循环在两次候选评估之间刷新 prompt(免开新进程)。需配合 importlib.reload(lessons)
+    或直接改 lessons.LESSONS 后调用。"""
+    global _LOOP_SYSTEM
+    _LOOP_SYSTEM = _build_loop_system()
 
 
 def _detect_lang(nl: "str | None") -> str:

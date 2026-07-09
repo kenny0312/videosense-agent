@@ -241,10 +241,14 @@ class LiveWorld:
         from sandbox.client import SandboxClient
 
         schema = mcp_client.get_schema()
+        # GD-0:runtime_facts 对齐生产 —— orchestrator 每请求都注入「运行时状态」(模型档/语言指令等,
+        # orchestrator.py 的 runtime_facts_line 调用),eval 此前传 None → 评测的 prompt 比生产少一节,
+        # 语言指令等段在 eval 里成了死代码。usage_cum 传 None(单题无会话累计),与生产新会话首轮一致。
+        rt = loop_driver.runtime_facts_line(None, nl=user_query)
         conv = loop_driver.make_conversation(
             config.LOOP_MODEL,
             loop_driver.loop_function_declarations(),
-            loop_driver._loop_system(schema, None, None),
+            loop_driver._loop_system(schema, None, rt),
         )
         execute = loop_driver._make_executor(SandboxClient(), Trace(), schema, None, owner=self.owner)
         return run_loop(user_query, conv, self.backend.wrap_execute(execute), max_steps=max_steps)
