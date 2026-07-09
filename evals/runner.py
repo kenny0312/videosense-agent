@@ -3,7 +3,7 @@
 命令行：
     python -m evals.runner                 # 脚本车道（免费）：验证评测机器本身
     python -m evals.runner --compare       # 脚本车道演示"变差·打回"
-    python -m evals.runner --live --n 1    # 真跑（真 Gemini，花 token）
+    python -m evals.runner --live           # 真跑（真 Gemini，花 token；默认每题 3 次）
     python -m evals.runner --list          # 只看数据集统计
 
 几个口径（人话）：
@@ -87,8 +87,10 @@ def _score_one_check(name: str, cfg: dict, res, aliases: dict | None):
     if name == "honesty":
         return scorers.refusal_ok(res.answer, cfg)
     if name == "retrieval":
-        # 看"交付面"（答案 + show_* 侧信道），不是只看答案文本 —— 产品规则本来就不让 id 进文本
-        return scorers.retrieval_score(scorers.surface_blob(res), cfg, aliases)
+        # 查全看"交付面"（答案 + show_* 侧信道，含结果行）；
+        # 数"甩了多少无关视频"只看 agent 主动亮出的部分（结果回显不算它甩的）
+        return scorers.retrieval_score(scorers.surface_blob(res), cfg, aliases,
+                                       own_blob=scorers.surface_blob_own(res))
     if name == "timestamp":
         return scorers.timestamp_iou(res.answer, cfg)
     if name == "count":
@@ -190,7 +192,11 @@ def score_multi(task: dict, turns, world_state: dict | None = None) -> dict:
             if v is not None:
                 s[name] = min(s.get(name, 1.0), v)                 # 同名检查每一轮都要过
     if ec.get("jga_slots"):
-        s["jga"] = scorers.score_jga(blobs, ec["jga_slots"], titles=aliases)
+        # 指代解析（video_ids）额外看工具调用参数：去查了那条视频=解析对了，
+        # 不逼 agent 在答案里念 id/标题（产品规则本来就不让 id 进答案文本）
+        resolve = [scorers.resolve_blob(o) for o in turn_objs]
+        s["jga"] = scorers.score_jga(blobs, ec["jga_slots"], titles=aliases,
+                                     resolve_blobs=resolve)
     if ec.get("state_assertions"):
         s["state_assertions"] = scorers.score_state_assertions(ec["state_assertions"], world_state or {})
     return s
@@ -241,6 +247,7 @@ def _make_record(task, n, successes, per_dim, last, first_fail, cost) -> dict:
         "grounding_note": task.get("grounding_note", ""),
         "answer": (last or {}).get("answer"),
         "tools": (last or {}).get("tools", []),
+        "turns": (last or {}).get("turns"),  # 多轮题的逐轮明细（单轮题为 None）
         "first_fail": first_fail,          # 第一次挂掉的那回：答案+工具链（最该看的样本）
         "cost": cost,
     }
@@ -268,7 +275,7 @@ def _is_infra_error(e: Exception) -> bool:
 
 def run_case(task: dict, script=None, tool_results=None, n: int | None = None,
              live: bool = False, owner: str = "eval") -> dict:
-    n = n or task.get("n_rollouts", 5)
+    n = n or task.get("n_rollouts", 3)
     successes = 0
     per_dim: dict = {}
     last = None
@@ -304,7 +311,7 @@ def run_case(task: dict, script=None, tool_results=None, n: int | None = None,
 def run_case_multi(task: dict, n: int | None = None, owner: str = "eval") -> dict:
     from evals.session import DualControlSession
 
-    n = n or task.get("n_rollouts", 5)
+    n = n or task.get("n_rollouts", 3)
     successes = 0
     per_dim: dict = {}
     last = None
@@ -328,7 +335,12 @@ def run_case_multi(task: dict, n: int | None = None, owner: str = "eval") -> dic
         successes += int(ok)
         snapshot = {"answer": agents[-1].text if agents else None,
                     "tools": [x for t in agents
-                              for x in _tools_of(t.trace, getattr(t, "ledger", None))]}
+                              for x in _tools_of(t.trace, getattr(t, "ledger", None))],
+                    # 逐轮明细：多轮题失败归因的第一现场（谁在第几轮说了什么、调了什么）
+                    "turns": [{"who": t.who, "text": (t.text or "")[:400],
+                               "tools": _tools_of(getattr(t, "trace", None) or [],
+                                                  getattr(t, "ledger", None), limit=110)[:8]}
+                              for t in out["turns"]]}
         if not ok and first_fail is None:
             first_fail = {**snapshot, "scores": sc}
         for d, v in sc.items():
@@ -338,20 +350,30 @@ def run_case_multi(task: dict, n: int | None = None, owner: str = "eval") -> dic
     return rec
 
 
+def n_for(task: dict, n: int | None) -> int:
+    """一道题该跑几次：显式 --n 全体照办（冒烟用）；
+    默认档：普通题 3 次、必过题 5 次（红线要建立在更多证据上）。"""
+    if n:
+        return n
+    return 5 if task.get("pinned") else 3
+
+
 def run_suite(tasks: list[dict], policies: dict | None = None, tool_results: dict | None = None,
               live: bool = False, n: int | None = None) -> list[dict]:
     if live:                                  # Mode B：真 Gemini。单轮 + 多轮；带世界动作的看接没接
         todo, skipped = split_live_tasks(tasks)
         out = []
         for i, (t, is_multi) in enumerate(todo, 1):
+            tn = n_for(t, n)
             try:
-                r = run_case_multi(t, n=n) if is_multi else run_case(t, live=True, n=n)
+                r = run_case_multi(t, n=tn) if is_multi else run_case(t, live=True, n=tn)
             except Exception as e:            # 单题崩溃不拖垮整场
                 if _is_infra_error(e):
-                    r = _infra_record(t, n, e)
+                    r = _infra_record(t, tn, e)
                 else:
-                    r = _infra_record(t, n, e)
-                    r["status"] = "crash"     # 代码崩溃：算没过（和环境故障分开记）
+                    r = _infra_record(t, tn, e)
+                    r["status"] = "crash"     # 代码崩溃：计分且算没过（必过题崩=失守）
+                    r["answer"] = f"[代码崩溃] {e}"
             out.append(r)
             tag = "多轮" if is_multi else "单轮"
             mark = {"ok": "过" if r["passed"] else "没过", "infra_error": "环境故障",
@@ -366,7 +388,7 @@ def run_suite(tasks: list[dict], policies: dict | None = None, tool_results: dic
     for t in tasks:
         if policies is not None and t["id"] not in policies:
             continue
-        out.append(run_case(t, policies[t["id"]], tool_results.get(t["id"], {}), n=n))
+        out.append(run_case(t, policies[t["id"]], tool_results.get(t["id"], {}), n=n_for(t, n)))
     return out
 
 
@@ -379,8 +401,9 @@ def split_live_tasks(tasks: list[dict]):
 
 # ── 结论 ────────────────────────────────────────────────────────────
 def _scored(results):
-    """真正计分的题（环境故障/崩溃不算）。"""
-    return [r for r in results if r.get("status", "ok") == "ok"]
+    """真正计分的题。环境故障（沙箱没起/断网）不算——那是机器的锅；
+    但【代码崩溃】算没过——必过题崩了同样是失守，不能从门禁里漏掉。"""
+    return [r for r in results if r.get("status", "ok") != "infra_error"]
 
 
 def _all_dims(results):
@@ -395,6 +418,19 @@ def _all_dims(results):
 def _dim_mean(results, dim):
     vals = [r["scores"][dim] for r in results if dim in r["scores"]]
     return _mean(vals) if vals else None
+
+
+def baseline_drop_reason(prev: dict | None, n_label, scorer_fp: str) -> str | None:
+    """上一次跑还能不能当对比基线。尺子变了硬比会把"尺子的变化"错算成"agent 的变化"
+    （历史教训：修判分器带来的 +6 个百分点，差点被当成 agent 变好）。"""
+    if not prev:
+        return None
+    pm = prev.get("meta") or {}
+    if str(pm.get("n")) != str(n_label):
+        return f"每题次数档位不同（上次 {pm.get('n')}，这次 {n_label}）"
+    if pm.get("scorer_fp") and pm.get("scorer_fp") != scorer_fp:
+        return "判分器或题库动过（尺子指纹不同）"
+    return None
 
 
 def classify(cur: list[dict], base: list[dict] | None = None) -> dict:
@@ -522,7 +558,9 @@ def main(argv=None):
     ap.add_argument("--out", default="evals/report.html")
     ap.add_argument("--compare", action="store_true", help="脚本车道：好策略(旧版) vs 回归策略(新版)")
     ap.add_argument("--live", action="store_true", help="真跑：真 Gemini 进循环（要 GCP 凭证 + 花 token）")
-    ap.add_argument("--n", type=int, default=None, help="每题跑几次（真跑先 --n 1 冒烟）")
+    ap.add_argument("--n", type=int, default=None,
+                    help="每题跑几次。默认档：普通题 3 次、必过题 5 次（全过才算过，压掉单次运气）；"
+                         "显式给 --n 则全体照办（省钱冒烟用 --n 1）")
     ap.add_argument("--list", action="store_true", help="只列数据集统计，不跑")
     ap.add_argument("--ids", default=None,
                     help="GD-0：只跑这些题（逗号分隔 id，支持前缀通配 retrieval-*）——GEPA 候选评估用")
@@ -566,12 +604,18 @@ def main(argv=None):
         if msg:
             print(msg)
             return 2
+        n_label = args.n or "普通3·必过5"
+        _todo, skipped = split_live_tasks(tasks)
+        meta = run_meta("live", n_label, args.tasks_dir, skipped)
         cur = run_suite(tasks, live=True, n=args.n)
         prev = dashboard.latest_run("live")            # 上一次真跑当对比基准
+        drop_why = baseline_drop_reason(prev, n_label, meta.get("scorer_fp"))
+        if drop_why:
+            prev = None
         base_results = prev.get("results") if prev else None
         v = classify(cur, base_results)
-        _todo, skipped = split_live_tasks(tasks)
-        meta = run_meta("live", args.n or "按题", args.tasks_dir, skipped)
+        if drop_why:
+            v["reasons"].insert(0, f"没和上次比：{drop_why}——尺子不同的分数不可跨比，本次重新建基线")
         html = report.render(cur, v, baseline=base_results, title="评测报告 · 真跑（真 Gemini）",
                              meta=meta)
         cur_print, base_print, mode = cur, base_results, "live"
@@ -579,7 +623,7 @@ def main(argv=None):
         from evals.fixtures.policies import GOOD, REGRESSED, TOOL_RESULTS
 
         base = run_suite(tasks, GOOD, TOOL_RESULTS, n=args.n)
-        meta = run_meta("scripted", args.n or 5, args.tasks_dir)
+        meta = run_meta("scripted", args.n or "普通3·必过5", args.tasks_dir)
         if args.compare:
             cur = run_suite(tasks, REGRESSED, TOOL_RESULTS, n=args.n)
             v = classify(cur, base)
@@ -598,6 +642,14 @@ def main(argv=None):
     with open(results_path, "w", encoding="utf-8") as fh:
         for r in cur_print:
             fh.write(json.dumps(r, ensure_ascii=False, default=str) + "\n")
+    if args.live:
+        # AI 裁判（对过表才有的参考分，永远不碰门禁）：配了 key 就顺手判一遍
+        from evals import judge as judge_mod
+        if judge_mod.available():
+            judge_mod.judge_results(results_path)
+            js = judge_mod.sidecar_summary(results_path)
+            if js:
+                meta["judge"] = js
     print_summary(cur_print, base_print, v)
     if args.ids or args.split:
         # GD-0/1：子集跑（GEPA 候选评估/按堂跑/手工复测）不进仪表盘历史 —— 基线不被局部样本污染

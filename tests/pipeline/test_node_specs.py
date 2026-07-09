@@ -44,7 +44,8 @@ def test_required_inputs_helper():
 
 def test_spot_check_key_schemas():
     assert ns.SPECS["sql_query"].parameters["required"] == ["sql"]
-    assert ns.SPECS["plot"].parameters["properties"]["kind"]["enum"] == ["scatter", "line"]
+    assert ns.SPECS["plot"].parameters["properties"]["kind"]["enum"] == ["bar", "line", "scatter"]
+    assert "show_stat" in ns.SPECS                       # P2:KPI 数字卡工具
     assert "load_artifact" not in ns.SPECS              # 记忆简化:值复用工具已下线
 
 
@@ -58,4 +59,4 @@ def test_existing_helpers_unchanged():
     # 加 parameters 不应破坏既有用途
     assert ns.needs_sandbox("sql_query") is False
     assert ns.needs_sandbox("plot") is True             # 沙箱类保留 plot/python
-    assert "纯 Python" in ns.codegen_hint("plot")
+    assert "chart_spec" in ns.codegen_hint("plot")      # P1:plot 现在吐 chart_spec(前端 ECharts 渲染)

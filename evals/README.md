@@ -24,6 +24,11 @@ eval serve            # 或 python -m evals serve；页面 http://127.0.0.1:8377
 # 本地仪表盘（历史/趋势/没过的题）—— 每次跑完自动更新，浏览器 F5 即可
 python -m evals.dashboard --open
 
+# AI 裁判"对表"（裁判上岗前的资格考试；只有第①步要 ANTHROPIC_API_KEY）
+python -m evals.calibrate_judge collect   # ① 裁判把历史真跑答案判一遍（26 条样本）
+python -m evals.calibrate_judge label     # ② 你逐条标"做到/没做到"（~10 分钟，可中断续标）
+python -m evals.calibrate_judge score     # ③ 一致率 + Cohen's κ + 上岗结论（κ≥0.7 才有资格以"参考分"进报告）
+
 # 单测（含核心断言：没查跳伞库就答否定 = 没过）
 python -m pytest evals/ -q
 
@@ -38,7 +43,8 @@ python -m evals.runner --compare
 set GCP_PROJECT=<你的项目>
 set GENAI_LOCATION=global
 set REPL_USE_MOCK_DB=1
-python -m evals.runner --live --n 1     # 先 n=1 冒烟，稳了再加大 n
+python -m evals.runner --live           # 默认档：普通题 3 次、必过题 5 次（全过才算过，压掉单次运气）
+# python -m evals.runner --live --n 1   # 显式 --n 全体照办（省钱冒烟）；n 档不同的两次跑不可互比（尺子不同）
 # --live 现在跑 单轮 96 + 多轮 23（脚本用户，同一会话跨轮，多轮不忘事按槽位判）
 # 剩 9 道要"用户改共享状态"（上传/入库/贴图）才能判的题自动跳过并列出（待接真执行器）
 ```

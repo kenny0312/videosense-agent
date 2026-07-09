@@ -223,6 +223,7 @@ def live_preflight():
             "  set GCP_PROJECT=<你的项目>\n"
             "  set GENAI_LOCATION=global\n"
             "  set GOOGLE_APPLICATION_CREDENTIALS=<service-account.json>   (或配好 gcloud ADC)\n"
+            "  set REPL_USE_MOCK_DB=1                                      (评测跑假库，不碰生产数据)\n"
             "然后： python -m evals.runner --live --n 1     # 先每题 1 次冒烟（会花 token）"
         )
     return None
