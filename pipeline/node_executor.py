@@ -44,6 +44,7 @@ class NodeResult:
     artifact: dict = field(default_factory=dict)   # 如 plot 的 png_base64
     videos: list = field(default_factory=list)     # show_video 的侧信道:可播放视频描述符
     table: dict = field(default_factory=dict)      # show_table 的侧信道:{columns, rows, n} 原样出表格
+    stat: dict = field(default_factory=dict)       # show_stat 的侧信道:{items:[{label,value,unit}], caption}
     cache_hit: bool = False                        # M4.2:analyze_video 命中缓存(供度量)
 
 
@@ -121,12 +122,13 @@ def _collect_items(node: Node, upstream: dict[str, Any]) -> list[dict]:
     items: list[dict] = []
     seen: set[str] = set()
 
-    def add(vid: Any, start=None, end=None, label=None) -> None:
+    def add(vid: Any, start=None, end=None, label=None, score=None) -> None:
         vid = "" if vid is None else str(vid)
         if not vid or not _VIDEO_ID_RE.match(vid) or vid in seen:
             return
         seen.add(vid)
-        items.append({"video_id": vid, "start_ts": start, "end_ts": end, "label": label})
+        items.append({"video_id": vid, "start_ts": start, "end_ts": end,
+                      "label": label, "score": score})   # score: 上游有则带上(前端出置信度 chip)
 
     for val in upstream.values():                 # 只取第一个上游
         if isinstance(val, list):
@@ -134,7 +136,8 @@ def _collect_items(node: Node, upstream: dict[str, Any]) -> list[dict]:
                 if isinstance(r, dict):
                     add(r.get("video_id") or r.get("id"),
                         r.get("start_ts"), r.get("end_ts"),
-                        r.get("label") or r.get("predicate") or r.get("title"))
+                        r.get("label") or r.get("predicate") or r.get("title"),
+                        r.get("score") if r.get("score") is not None else r.get("relevance"))
         break
     if not items:
         for v in (node.inputs.get("video_ids") or []):
@@ -176,6 +179,7 @@ def _run_show_video(node: Node, upstream: dict[str, Any]) -> NodeResult:
             ts = it["start_ts"]
             lbl = it.get("label") or (f"{ts:.0f}s" if isinstance(ts, (int, float)) else str(ts))
             marks.append({"ts": ts, "label": lbl})
+        sc = it.get("score")
         videos.append({
             "video_id":     it["video_id"],
             "title":        m.get("title") or it["video_id"],
@@ -186,6 +190,7 @@ def _run_show_video(node: Node, upstream: dict[str, Any]) -> NodeResult:
             "end_ts":       it.get("end_ts"),
             "duration_sec": m.get("duration_sec"),
             "marks":        marks,
+            "score":        float(sc) if isinstance(sc, (int, float)) else None,   # 置信度 chip / 段着色
         })
 
     n, n_play = len(videos), sum(1 for v in videos if v["playable"])
@@ -252,6 +257,21 @@ def _run_show_table(node: Node, upstream: dict[str, Any]) -> NodeResult:
              if id_col else [])
     return NodeResult(node.id, node.tool, ok=True, attempts=1, table=table,
                       value={"note": f"📋 已为你列出 {n} 条{note}", "items": items})
+
+
+def _run_show_stat(node: Node, upstream: dict[str, Any]) -> NodeResult:
+    """主进程节点:把上游【一行指标】的每个「列: 值」放进 NodeResult.stat 侧信道,前端渲染成 KPI 数字卡。
+    取上游首个行集的第一行(通常是 COUNT/AVG 一行);最多 6 个数字,防刷屏。"""
+    rows = next((v for v in upstream.values() if isinstance(v, list)), None)
+    if not rows or not isinstance(rows[0], dict):
+        return NodeResult(node.id, node.tool, ok=True, attempts=1,
+                          value={"shown": 0, "note": "没有可展示的指标(上游结果不是一行数据)"})
+    row = rows[0]
+    items = [{"label": str(k), "value": v} for k, v in list(row.items())[:6] if v is not None]
+    caption = str(node.inputs.get("caption") or "")
+    stat = {"items": items, "caption": caption}
+    return NodeResult(node.id, node.tool, ok=True, attempts=1, stat=stat,
+                      value={"note": f"📊 已为你展示 {len(items)} 个指标", "items": []})
 
 
 def _analyze_inputs(node: Node, upstream: dict[str, Any]):
@@ -367,7 +387,7 @@ def _run_sandbox_node(node: Node, upstream: dict[str, Any],
             step.ok(stdout_chars=len(last.stdout), elapsed_s=f"{last.elapsed_seconds:.2f}")
             artifact = {}
             if isinstance(value, dict):
-                for key in ("svg", "png_base64"):
+                for key in ("svg", "png_base64", "chart_spec"):   # chart_spec: 前端 ECharts 渲染
                     if key in value:
                         artifact[key] = value.pop(key)
             return NodeResult(node.id, node.tool, ok=True, value=value,
@@ -514,6 +534,8 @@ def execute_node(node: Node, upstream: dict[str, Any],
                 res = _run_show_video(node, upstream)
             elif node.tool == "show_table":
                 res = _run_show_table(node, upstream)
+            elif node.tool == "show_stat":
+                res = _run_show_stat(node, upstream)
             elif node.tool == "analyze_video":
                 res = _run_analyze_video(node, upstream)
             elif node.tool == "web_search":

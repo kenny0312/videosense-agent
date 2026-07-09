@@ -226,10 +226,11 @@ def video_vibe_query(req: VibeQueryRequest, request: Request):
     result["session_id"] = sid                      # 回传,客户端下一轮带上即可续聊
     usage = result.pop("usage", {}) or {}           # token/成本:内部审计用,不回传给前端
 
-    # 图表产物:沙箱产出的图像(svg/png)→ 存本地 → 返回浏览器可打开的 http URL
+    # 图表产物:优先 chart_spec(前端 ECharts 交互渲染);svg/png 保留作兜底 → 存本地拿 http URL
     plot_url = None
     plot = result.pop("plot", {}) or {}
-    if plot:
+    result["chart_spec"] = plot.get("chart_spec")           # 前端有则用 ECharts 渲染
+    if plot.get("svg") or plot.get("png_base64"):
         fname = artifacts.save_local(plot, name=uuid.uuid4().hex[:12])
         if fname:
             plot_url = str(request.base_url).rstrip("/") + f"/plots/{fname}"
@@ -351,7 +352,8 @@ def video_vibe_query_stream(req: VibeQueryRequest, request: Request):
             result["session_id"] = sid
             usage = result.get("usage", {}) or {}        # get(非 pop):留在 result 里给前端 context 监控
             plot = result.pop("plot", {}) or {}
-            if plot:
+            result["chart_spec"] = plot.get("chart_spec")     # 前端 ECharts 渲染
+            if plot.get("svg") or plot.get("png_base64"):
                 fname = artifacts.save_local(plot, name=uuid.uuid4().hex[:12])
                 result["plot_url"] = (str(request.base_url).rstrip("/") + f"/plots/{fname}") if fname else None
             q.put({"type": "result", "result": result})

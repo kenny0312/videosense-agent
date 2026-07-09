@@ -8,16 +8,21 @@ $ROOT   = $PSScriptRoot
 
 Set-Location $ROOT
 
-# ── 自动加载 neon.env(若存在)→ ALLOYDB_* 指向 Neon ──────────────
-$script:NeonLoaded = $false
-$NeonEnv = Join-Path $ROOT "neon.env"
-if (Test-Path $NeonEnv) {
-    Get-Content $NeonEnv | ForEach-Object {
-        if ($_ -match '^([A-Z_]+)=(.+)$') { Set-Item "env:$($matches[1])" $matches[2] }
+# ── 自动加载 .env(密钥统一放这;neon.env 是老名字,兜底再认一段时间)──
+foreach ($name in @(".env", "neon.env")) {
+    $f = Join-Path $ROOT $name
+    if (Test-Path $f) {
+        Get-Content $f | ForEach-Object {
+            if ($_ -match '^([A-Z_]+)=(.+)$') {
+                $v = $matches[2].Trim().Trim('"').Trim("'")
+                if (-not (Test-Path "env:$($matches[1])")) { Set-Item "env:$($matches[1])" $v }
+            }
+        }
+        Write-Host "  已加载 $name" -ForegroundColor DarkGray
     }
-    $script:NeonLoaded = $true
-    Write-Host "  已加载 neon.env → 默认连 Neon" -ForegroundColor DarkGray
 }
+# 配了数据库地址 → 默认连 Neon(真DB)
+$script:NeonLoaded = [bool]$env:ALLOYDB_HOST
 
 # ── helpers ───────────────────────────────────────────────────
 function Ensure-Gcp {

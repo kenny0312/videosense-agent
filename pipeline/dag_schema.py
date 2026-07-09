@@ -26,13 +26,13 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 #   数据科学类(Code Generator 生成 Python,进沙箱执行 + 自愈)
 #       plot             纯 Python 生成 SVG 出图(产物存回 GCS/本地)
 #       python           通用逃生舱:任意 NL 描述的分析
-DATA_TOOLS = {"sql_query", "show_video", "show_table", "analyze_video",
+DATA_TOOLS = {"sql_query", "show_video", "show_table", "show_stat", "analyze_video",
               "web_search", "update_memory", "semantic_search", "spawn_agents"}
 SANDBOX_TOOLS = {"plot", "python"}
 ALL_TOOLS = DATA_TOOLS | SANDBOX_TOOLS
 
 ToolName = Literal[
-    "sql_query", "show_video", "show_table", "analyze_video",
+    "sql_query", "show_video", "show_table", "show_stat", "analyze_video",
     "web_search", "update_memory", "semantic_search", "spawn_agents",
     "plot", "python",
 ]
