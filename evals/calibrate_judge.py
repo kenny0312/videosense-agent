@@ -95,19 +95,23 @@ def collect() -> int:
     from evals import judge
 
     if not judge.available():
-        print("没配 ANTHROPIC_API_KEY —— 裁判没法跑。set ANTHROPIC_API_KEY=... 后重试。")
+        print("没配裁判 key —— 在仓库根 .env（gitignored）里加一行：\n"
+              "  OPENAI_API_KEY=sk-...   （或 ANTHROPIC_API_KEY=...）\n后重试。")
         return 1
+    print(f"裁判：{judge.judge_model()}（对表结果只对这个模型有效——换裁判要重新对表）")
     old = {it["key"]: it for it in _load()}
     items = _gather_items()
     print(f"样本：{len(items)} 条（题 × 真实答案 × 判据，已去重）")
     for it in items:
         prev = old.get(it["key"]) or {}
         it["human"] = prev.get("human")                 # 人工标注永远不丢
-        if prev.get("judge") is not None:
-            it["judge"] = prev["judge"]                 # 判过的不重判(省钱+稳定)
+        if prev.get("judge") is not None and prev.get("judge_model") == judge.judge_model():
+            it["judge"] = prev["judge"]                 # 同一裁判判过的不重判(省钱+稳定)
+            it["judge_model"] = prev["judge_model"]
             continue
         v = judge.judge_one(it["question"], it["answer"], [it["assertion"]])
         it["judge"] = bool(v["verdicts"][0]) if v["verdicts"] else None
+        it["judge_model"] = v.get("judge_model", "")
         print(f"  [{it['id']}] 裁判：{'做到' if it['judge'] else '没做到'}")
     _save(items)
     n_j = sum(1 for it in items if it["judge"] is not None)

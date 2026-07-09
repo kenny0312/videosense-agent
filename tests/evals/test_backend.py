@@ -84,7 +84,8 @@ def test_judge_skips_without_key(monkeypatch, tmp_path):
     from evals import judge
 
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    assert judge.available() is False
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    assert not judge.available()
     p = tmp_path / "r.results.jsonl"
     p.write_text(json.dumps({"id": "x", "answer": "a",
                              "expect": {"nl_assertions": ["要有理由"]}}) + "\n", encoding="utf-8")
