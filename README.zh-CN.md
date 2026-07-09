@@ -8,6 +8,8 @@
 
 它看你的视频、对看到的内容推理，并用可播放的片段和图表来证明它的回答。
 
+### [▶ 在线体验 — **videosense.work**](https://videosense.work)
+
 <sub>[English](README.md) · **简体中文**</sub>
 
 </div>
