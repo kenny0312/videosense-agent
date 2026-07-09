@@ -148,8 +148,7 @@ def main(argv=None) -> int:
     st = state.RunState.load(args.resume) if args.resume else state.RunState(state.new_run_id())
     rng = random.Random(st.run_id)                  # 抽样可复现
     led = gates.Ledger(args.budget_usd, args.reserve_usd)
-    led.spent = st.spent_usd
-    led.rollouts = getattr(st, "rollouts", 0)   # 跨进程恢复分母,单题实测价不虚高
+    led.spent = st.spent_usd                    # 旧账进总账;单价只看本进程增量
     print(f"运行 {st.run_id}:train {len(by['train'])} / val {len(by['val'])} / "
           f"sealed {len(by['sealed'])};预算 ${args.budget_usd}(预留 ${args.reserve_usd})")
     if args.dry:
@@ -263,16 +262,25 @@ def main(argv=None) -> int:
                     key=lambda c: _mean(_virtual(c)), reverse=True)
     verdict = {"champion": "gen0", "adopted": False,
                "why": "没有子代超过 gen0 —— 诚实的空结论(§4.5 纪律6)"}
+    reexams = 0
     for champ in ranked:
+        if reexams >= 3:
+            break                                   # 重考封顶:一轮最多给 3 位候选掏重考钱
         verdict["champion"] = champ
+        # 显著性预筛:合并证据或首考证据,谁硬用谁 —— 显著性不随均分单调,
+        # 不显著只淘汰本人,不终止提名赛(c1 幽灵挡道、c2 没轮上的实跑教训)
         sig0 = gates.sign_test(_virtual(champ), g0_virtual)
         if not sig0["significant"]:
-            verdict["why"] = f"榜首 {champ} 对 gen0 不显著(p={sig0['p']})—— 视为平局不采纳"
-            break                                   # 按虚拟分降序,后面的更弱,停
+            sig0 = gates.sign_test(st.matrix.get(champ, {}), st.matrix.get("gen0", {}))
+        if not sig0["significant"]:
+            st.journal("nominee_skip", cid=champ, p=sig0["p"])
+            verdict["why"] = f"候选 {champ} 对 gen0 不显著(p={sig0['p']})—— 视为平局不采纳"
+            continue
         if led.spent + len(val_ids) * args.reexam_n * led.unit() > args.budget_usd:
             verdict["why"] = "预算不足以跑重考 —— 本轮结论无效,如实报告"
             break
         # 对称重考:双方都用全新 rollouts(gen0@re 已付过的题按题粒度复用)
+        reexams += 1
         try:
             space.apply(st.candidates[champ]["overrides"])
             stopped = _eval_batch(st, led, champ + "@re", by["val"], args.reexam_n,

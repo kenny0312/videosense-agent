@@ -48,16 +48,18 @@ class Ledger:
     def __init__(self, budget_usd: float, reserve_usd: float):
         self.budget = budget_usd
         self.reserve = reserve_usd
-        self.spent = 0.0
-        self.rollouts = 0
+        self.spent = 0.0            # 总账(含 --resume 继承的旧账)
+        self.spent_local = 0.0      # 本进程增量(单价分子;继承旧账会虚高 3-7 倍,两轮实跑都栽过)
+        self.rollouts = 0           # 本进程 rollout 数(单价分母)
 
     def add(self, cost: float, rollouts: int = 0) -> None:
         self.spent = round(self.spent + (cost or 0.0), 4)
+        self.spent_local = round(self.spent_local + (cost or 0.0), 4)
         self.rollouts += rollouts
 
     def unit(self) -> float:
         if self.rollouts >= 50:
-            return max(self.spent / self.rollouts, 0.005)   # 实测均价(不低于地板)
+            return max(self.spent_local / self.rollouts, 0.005)   # 进程内实测均价
         return self.FALLBACK_UNIT
 
     def evolution_open(self) -> bool:
