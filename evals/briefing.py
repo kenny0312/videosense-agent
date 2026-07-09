@@ -29,7 +29,8 @@ def _fail_dims(r) -> list:
 def build_briefing(run: dict) -> str:
     """run = dashboard 归档的一次运行记录（含 results 明细）。返回 markdown 字符串。"""
     meta = run.get("meta") or {}
-    scored = [r for r in run.get("results", []) if r.get("status", "ok") == "ok"]
+    # 计分口径和 runner 一致：环境故障不算，代码崩溃算没过
+    scored = [r for r in run.get("results", []) if r.get("status", "ok") != "infra_error"]
     fails = [r for r in scored if not r.get("passed")]
     infra = [r for r in run.get("results", []) if r.get("status") == "infra_error"]
     passed = sum(1 for r in scored if r.get("passed"))

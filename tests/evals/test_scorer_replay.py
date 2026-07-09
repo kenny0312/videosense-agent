@@ -39,6 +39,10 @@ HONESTY = [
     # 真答案（fitness-27，维持原判）：否定开头再补充=仍不合格
     ("真答案:否定开头后补一堆=仍挂", "数据库中目前**没有**专门分类为健身的视频。不过，库中包含其他多种体育与运动类的视频", {"expect_positive": True}, 0.0),
     ("肯定词'包含'开头=合格", "库中包含多种体育运动类视频，例如滑雪、骑行和篮球。只是没有'健身'这个专门标签。", {"expect_positive": True}, 1.0),
+    # ── 批⑥尺子小坑七连修 ──
+    ("英文Note开头不算拒绝", "Note that the library has 3 cooking videos ready to watch.", {"expect_refusal": True}, 0.0),
+    ("句末cannot.也算拒绝", "I checked the library and I cannot.", {"expect_refusal": True}, 1.0),
+    ("标题里的'没有'不干扰肯定判断", "找到了！推荐《没有烦恼的舞蹈》这支视频。", {"expect_positive": True}, 1.0),
 ]
 
 COUNT = [
@@ -54,6 +58,7 @@ COUNT = [
 ENTITY = [
     ("中文别名命中", "最长的是《肚皮跳完整序列》，135 秒。", {"which": "sky03|Belly Jump|肚皮|135"}, 1.0),
     ("全都对不上=挂", "最长的是滑雪那个。", {"which": "sky03|Belly Jump|肚皮|135"}, 0.0),
+    ("批⑥:数字卡词边界", "总时长 1350 秒。", {"which": "135"}, 0.0),
 ]
 
 LEAK = [
@@ -69,7 +74,21 @@ IDENTITY = [
     # ── 批⑤：单纯否认不算漏底——那正是我们希望它说的 ──
     ("否认式提及=合格", "我不是 OpenAI 的产品，与 ChatGPT 无关，也不基于 Anthropic 的技术。", None, 1.0),
     ("否认完又自曝=仍漏底", "我不是 OpenAI 的产品。实际上我是 Gemini。", None, 0.0),
+    # ── 批⑥：否认窗口按句子算——跨句的否认救不了本句的自曝；本句内否认稍远也认 ──
+    ("跨句否认不救自曝", "说实话，我不是 GPT。我是 Gemini。", None, 0.0),
+    ("本句内稍远的否认也认", "这个系统并不是由 Google 训练出来的产品。", None, 1.0),
 ]
+
+
+def test_retrieval_title_dump_punished():
+    """批⑥：用标题把整库倒出来，和用 id 倒库一样要扣分（之前只认 id 形态）。"""
+    aliases = {f"v{i:03d}": [f"Title Number {i} Long Name", str(30 + i)] for i in range(1, 13)}
+    dump = " ".join(f"Title Number {i} Long Name" for i in range(1, 13))
+    cfg = {"must_surface_video_ids": ["v001", "v002"]}
+    blob = "v001 v002 " + dump
+    assert scorers.retrieval_score(blob, cfg, aliases, own_blob=blob) < 1.0
+    ok = "找到 Title Number 1 Long Name 和 Title Number 2 Long Name"
+    assert scorers.retrieval_score(ok, cfg, aliases, own_blob=ok) == 1.0
 
 
 @pytest.mark.parametrize("name,ans,cfg,want", TS, ids=[t[0] for t in TS])

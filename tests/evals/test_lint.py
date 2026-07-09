@@ -16,6 +16,15 @@ def test_lint_catches_jga_slot_on_action_turn():
     assert not _lint_traps(bad)
 
 
+def test_lint_catches_table_task_with_count_proxy():
+    """批⑥：列清单/表格题拿 count 当完整性代理必须报错（必过题 23 栽过）。"""
+    bad = {"id": "x", "reward_basis": ["required_actions", "count"],
+           "user_query": "把库里所有视频列个清单表格给我，带标题和时长", "evaluation_criteria": {}}
+    assert any("代理" in msg for _, msg in _lint_traps(bad))
+    ok = dict(bad, reward_basis=["required_actions", "retrieval"])
+    assert not _lint_traps(ok)
+
+
 def test_lint_catches_pure_count_with_retrieval():
     """纯计数题（只问几个）把 retrieval 计分 = 冤枉裸报数的完整回答，必须报错。"""
     bad = {"id": "x", "reward_basis": ["count", "retrieval"],

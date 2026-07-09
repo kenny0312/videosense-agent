@@ -325,7 +325,8 @@ def run_suite(tasks: list[dict], policies: dict | None = None, tool_results: dic
                     r = _infra_record(t, tn, e)
                 else:
                     r = _infra_record(t, tn, e)
-                    r["status"] = "crash"     # 代码崩溃：算没过（和环境故障分开记）
+                    r["status"] = "crash"     # 代码崩溃：计分且算没过（必过题崩=失守）
+                    r["answer"] = f"[代码崩溃] {e}"
             out.append(r)
             tag = "多轮" if is_multi else "单轮"
             mark = {"ok": "过" if r["passed"] else "没过", "infra_error": "环境故障",
@@ -353,8 +354,9 @@ def split_live_tasks(tasks: list[dict]):
 
 # ── 结论 ────────────────────────────────────────────────────────────
 def _scored(results):
-    """真正计分的题（环境故障/崩溃不算）。"""
-    return [r for r in results if r.get("status", "ok") == "ok"]
+    """真正计分的题。环境故障（沙箱没起/断网）不算——那是机器的锅；
+    但【代码崩溃】算没过——必过题崩了同样是失守，不能从门禁里漏掉。"""
+    return [r for r in results if r.get("status", "ok") != "infra_error"]
 
 
 def _all_dims(results):
@@ -369,6 +371,19 @@ def _all_dims(results):
 def _dim_mean(results, dim):
     vals = [r["scores"][dim] for r in results if dim in r["scores"]]
     return _mean(vals) if vals else None
+
+
+def baseline_drop_reason(prev: dict | None, n_label, scorer_fp: str) -> str | None:
+    """上一次跑还能不能当对比基线。尺子变了硬比会把"尺子的变化"错算成"agent 的变化"
+    （历史教训：修判分器带来的 +6 个百分点，差点被当成 agent 变好）。"""
+    if not prev:
+        return None
+    pm = prev.get("meta") or {}
+    if str(pm.get("n")) != str(n_label):
+        return f"每题次数档位不同（上次 {pm.get('n')}，这次 {n_label}）"
+    if pm.get("scorer_fp") and pm.get("scorer_fp") != scorer_fp:
+        return "判分器或题库动过（尺子指纹不同）"
+    return None
 
 
 def classify(cur: list[dict], base: list[dict] | None = None) -> dict:
@@ -528,14 +543,17 @@ def main(argv=None):
             print(msg)
             return 2
         n_label = args.n or "普通3·必过5"
-        cur = run_suite(tasks, live=True, n=args.n)
-        prev = dashboard.latest_run("live")            # 上一次真跑当对比基准
-        if prev and str((prev.get("meta") or {}).get("n")) != str(n_label):
-            prev = None      # 每题次数不同=尺子不同，不能互当基线，重新建
-        base_results = prev.get("results") if prev else None
-        v = classify(cur, base_results)
         _todo, skipped = split_live_tasks(tasks)
         meta = run_meta("live", n_label, args.tasks_dir, skipped)
+        cur = run_suite(tasks, live=True, n=args.n)
+        prev = dashboard.latest_run("live")            # 上一次真跑当对比基准
+        drop_why = baseline_drop_reason(prev, n_label, meta.get("scorer_fp"))
+        if drop_why:
+            prev = None
+        base_results = prev.get("results") if prev else None
+        v = classify(cur, base_results)
+        if drop_why:
+            v["reasons"].insert(0, f"没和上次比：{drop_why}——尺子不同的分数不可跨比，本次重新建基线")
         html = report.render(cur, v, baseline=base_results, title="评测报告 · 真跑（真 Gemini）",
                              meta=meta)
         cur_print, base_print, mode = cur, base_results, "live"

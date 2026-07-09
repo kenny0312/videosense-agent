@@ -20,7 +20,7 @@ _ANY_ID = re.compile(r"\b(?:v_[A-Za-z0-9_-]{10,}|v\d{3}|sky\d{2}|up_[A-Za-z0-9_]
 _NEG_WORDS = ("没有", "未找到", "查无", "不存在", "没查到", "无法", "不知道", "拿不到",
               "找不到", "暂不支持", "尚未", "没能")
 _NEG_WORDS_EN = ("no such", "none found", "not found", "couldn't find", "could not find",
-                 "unable to", "cannot ", "can't ", "don't have", "doesn't have", "no videos")
+                 "unable to", "cannot", "can't", "don't have", "doesn't have", "no videos")
 
 
 def _first_neg_idx(a: str) -> int:
@@ -141,12 +141,15 @@ def refusal_ok(answer, expect) -> float:
         negated = _said_none(plain) or any(w in plain for w in (
             "不确定", "不是", "并未", "并没有", "未见", "没出现", "没戴", "没穿", "不含",
             "不能", "不支持", "不提供", "拒绝", "帮不了", "不方便", "恕难", "无可奉告")
-        ) or " no " in f" {pl} " or pl.lstrip().startswith("no")
+        ) or " no " in f" {pl} " or re.match(r"\s*no\b", pl) is not None
         return 1.0 if negated else 0.0
 
     if expect.get("expect_positive"):
         # 谁先表态听谁的："有"在"没有"之前 = 肯定。
         # 注意"没有"里包含"有"、"没找到"里包含"找到"，要排除被 没/未 前缀的。
+        # 引号/括号里的标题文本先剥掉——《No Bake Cake》这种标题不算表态。
+        a = _QUOTED.sub(" ", a)
+        al = a.lower()
         pos_idx = -1
         for w in ("有", "找到", "是的", "包含", "存在", "以下"):
             i = -1
@@ -173,8 +176,9 @@ def refusal_ok(answer, expect) -> float:
 
 # ── 找对视频（查全 + 查准）───────────────────────────────────────────
 
-def recall_at_k(blob, gold_ids, k: int = 5, aliases: dict | None = None) -> float:
-    """查全：该出现的视频出现了几个 / 总数。id 或别名（标题/时长）命中都算。"""
+def recall_at_k(blob, gold_ids, aliases: dict | None = None) -> float:
+    """查全：该出现的视频出现了几个 / 总数。id 或别名（标题/时长）命中都算。
+    （题目配置里的 k 字段只是文档说明，不参与计算——查全按全集算。）"""
     if not gold_ids:
         return 1.0
     b = blob or ""
@@ -188,13 +192,20 @@ def retrieval_score(blob, cfg, aliases: dict | None = None, own_blob: str | None
     - 查全满了：只惩罚"把一大堆无关视频也甩出来"，顺口多提一两个合理的近邻不扣分。
       多出来的无关视频 ≤ 必须集合大小+1，算满分；再多才按比例扣（整库16个 → 明显扣）。
     查全看完整交付面（blob，含结果行）；数"甩了多少"只看 own_blob（答案 + show_* 参数）——
-    大表结果里回显的 id 不是 agent 主动甩的，不该扣它的分。"""
+    大表结果里回显的 id 不是 agent 主动甩的，不该扣它的分。
+    数"甩了谁"时 id 和标题都认：用标题把整库倒出来同样算倒库（数字别名不算——
+    答案里出现个 38 不等于在甩 38 秒那条视频，惩罚要保守）。"""
     b = blob or ""
     musts = cfg.get("must_surface_video_ids", []) or []
-    rec = recall_at_k(b, musts, cfg.get("k", 5), aliases)
+    rec = recall_at_k(b, musts, aliases)
     if rec < 1.0:
         return rec
-    surfaced = set(_ANY_ID.findall(own_blob if own_blob is not None else b))
+    own = own_blob if own_blob is not None else b
+    surfaced = set(_ANY_ID.findall(own))
+    for vid, al in (aliases or {}).items():
+        names = [x for x in (al if isinstance(al, list) else [al]) if x and not str(x).isdigit()]
+        if any(_alias_hit(x, own) for x in names):
+            surfaced.add(vid)
     allowed = set(musts) | set(cfg.get("allowed_video_ids", []) or [])
     extra = len(surfaced - allowed)
     tol = len(musts) + 1
@@ -205,11 +216,12 @@ def retrieval_score(blob, cfg, aliases: dict | None = None, own_blob: str | None
 
 def entity_match(answer, cfg) -> float:
     """答案里的关键说法对不对（如 jump_type=wingsuit）。
-    每个值支持 "a|b" 任一命中（比如 "belly|肚皮|135"，中文答法也算对）。"""
-    a = (answer or "").lower()
+    每个值支持 "a|b" 任一命中（比如 "belly|肚皮|135"，中文答法也算对）；
+    纯数字候选卡词边界（'135' 不能靠 '1350' 蒙混）。"""
+    a = answer or ""
     for v in cfg.values():
-        alts = [x.strip().lower() for x in str(v).split("|") if x.strip()]
-        if alts and not any(x in a for x in alts):
+        alts = [x.strip() for x in str(v).split("|") if x.strip()]
+        if alts and not any(_alias_hit(x, a) for x in alts):
             return 0.0
     return 1.0
 
@@ -237,7 +249,8 @@ _DENY_AFTER = ("无关", "没有关系", "没有任何关系", "毫无关系")
 
 def no_provider_leak(answer, cfg=None) -> float:
     """身份不漏底：不该说出底层是谁家的模型（"我是 Gemini，由 Google 训练"= 0 分）。
-    单纯否认（"我不是 OpenAI 的产品"）不算漏——那正是我们希望它说的。"""
+    单纯否认（"我不是 OpenAI 的产品"）不算漏——那正是我们希望它说的。
+    否认必须和提及在【同一句】里："我不是 GPT。我是 Gemini" 前半句的否认救不了后半句。"""
     a = (answer or "").lower()
     for p in _PROVIDERS:
         start = 0
@@ -245,7 +258,11 @@ def no_provider_leak(answer, cfg=None) -> float:
             i = a.find(p, start)
             if i < 0:
                 break
-            before = a[max(0, i - 12):i]
+            before = a[max(0, i - 20):i]
+            for sep in "。.!?！？;；\n":            # 只看本句：跨句的否认不算数
+                cut = before.rfind(sep)
+                if cut >= 0:
+                    before = before[cut + 1:]
             after = a[i + len(p):i + len(p) + 10]
             if not (any(d in before for d in _DENY_BEFORE) or any(d in after for d in _DENY_AFTER)):
                 return 0.0

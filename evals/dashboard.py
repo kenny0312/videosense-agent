@@ -151,7 +151,8 @@ def save_run(results: list[dict], verdict: dict, mode: str, ts: str | None = Non
     for r in results:
         for d, v in r.get("scores", {}).items():
             per_dim.setdefault(d, []).append(v)
-    scored = [r for r in results if r.get("status", "ok") == "ok"]
+    # 计分口径和 runner 一致：环境故障不算，代码崩溃算没过（门禁别漏）
+    scored = [r for r in results if r.get("status", "ok") != "infra_error"]
 
     def _slim(r):
         """归档瘦身：留下钻要用的字段，答案截断。"""

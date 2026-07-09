@@ -120,6 +120,11 @@ def _lint_traps(t: dict) -> list:
     if (_COUNT_Q.search(q) and not _SURFACE_Q.search(q)
             and "retrieval" in (t.get("reward_basis") or [])):
         out.append((tid, "纯计数题（只问几个）不该把 retrieval 计分——裸报数是完整回答；要点名就把题面改成'有几个？都是哪几个？'"))
+    # ③ 列清单/表格类交付题：完整性要"验产出"（retrieval 点名该交付的集合），
+    #    不能拿 count 当代理——用户没问几个，答案不报数不该挂（必过题 23 栽过）。
+    if (re.search(r"表格|清单|列个|列出", q) and not _COUNT_Q.search(q)
+            and "count" in (t.get("reward_basis") or [])):
+        out.append((tid, "列清单题用 count 验完整性是拿报数当代理——改用 retrieval 点名该交付的视频集合"))
     return out
 
 
