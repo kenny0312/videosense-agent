@@ -63,5 +63,7 @@ def test_worldb_tasks_all_tagged_world_b():
     for t in load_tasks("evals/tasks"):
         if t["id"].startswith("worldb-"):
             assert t.get("world") == "B", t["id"]
+        elif t["id"].startswith("gen-"):
+            assert t.get("world") in ("A", "B", "C", "D"), t["id"]   # GD-2b 生成题四世界都有
         else:
             assert t.get("world", "A") == "A", t["id"]

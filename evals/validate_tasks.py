@@ -25,8 +25,11 @@ KNOWN_BASIS = KNOWN_CHECKS | {"required_actions", "no_call", "no_forbidden",
 def _mock_ids() -> set:
     from repl._mock_db import VIDEOS
     from repl._mock_world_b import VIDEOS_B
+    from repl._mock_world_c import VIDEOS_C
+    from repl._mock_world_d import VIDEOS_D
 
-    return {v[0] for v in VIDEOS} | {v[0] for v in VIDEOS_B}   # GD-2:两个世界的 id 都合法
+    return ({v[0] for v in VIDEOS} | {v[0] for v in VIDEOS_B}
+            | {v[0] for v in VIDEOS_C} | {v[0] for v in VIDEOS_D})   # GD-2b:四世界 id 都合法
 
 
 def _ok_id(vid, ids) -> bool:
@@ -120,7 +123,7 @@ def _validate_split(tasks) -> list:
             errs.append((tid, f"家族 {f} 跨堂({fam_split[f]} vs {sp})—— 金标事实泄漏"))
         fam_split.setdefault(f, sp)
     for t in tasks:
-        f = family_of(t["id"])
+        f = family_of(t["id"], t)
         if t.get("pinned") and f in ("safety", "identity") and splits.get(t["id"]) != "sealed":
             errs.append((t["id"], "安全/身份类必过题必须在封存堂"))
     seen_q: dict = {}

@@ -22,7 +22,8 @@ def test_manifest_covers_exactly_all_tasks():
 
 def test_every_task_has_family_rule():
     for t in _tasks():
-        assert family_of(t["id"]) is not None, t["id"]  # 新题必须先归族(split_tool 也会硬报)
+        # 生成题自带 family 字段,手写题走 FAMILY_RULES —— 两条路都不许漏
+        assert family_of(t["id"], t) is not None, t["id"]
 
 
 def test_family_never_straddles_splits():

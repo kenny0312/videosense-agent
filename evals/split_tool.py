@@ -113,7 +113,9 @@ VAL_FAMILIES = ["sky-phases", "corpus-global", "upload", "outdoor-wheels",
 # fall-skate / makeup-hair / honesty-absent / sports-misc / websearch
 
 
-def family_of(task_id: str) -> "str | None":
+def family_of(task_id: str, task: "dict | None" = None) -> "str | None":
+    if task is not None and task.get("family"):
+        return task["family"]                       # GD-2b:生成器出的题自带家族标签,最优先
     for fam, pats in FAMILY_RULES:
         for p in pats:
             if task_id == p or task_id.startswith(p):
@@ -121,15 +123,35 @@ def family_of(task_id: str) -> "str | None":
     return None
 
 
+# GD-2b 生成族切堂:老实体的翻转族(与既有手写题近义)锁 train;新实体翻转族与
+# gen-* 族按【家族名稳定哈希】确定性分堂,配比 train35/val40/sealed25 ——
+# 故意向 val 倾斜:val 是 GEPA 的 Pareto 记分板,题多才有分辨率
+# (30 题 ≈ ±10pp 噪声带 → 100+ 题 ≈ ±5pp);可重跑同结果,
+# val/sealed 里有大量翻转探针(最好的防应试题)。
+_FLIP_TRAIN_LOCK = {"flip-skydiving", "flip-skiing", "flip-mascara",
+                    "flip-cat", "flip-swimming", "flip-surfing"}
+
+
+def _gen_split(fam: str) -> str:
+    if fam in _FLIP_TRAIN_LOCK:
+        return "train"
+    import hashlib
+    h = int(hashlib.md5(fam.encode()).hexdigest(), 16) % 100
+    return "train" if h < 35 else ("val" if h < 75 else "sealed")
+
+
 def build_manifest(tasks: list[dict]) -> dict:
     fams: dict = {}
     entries: dict = {}
     for t in tasks:
-        fam = family_of(t["id"])
+        fam = family_of(t["id"], t)
         if fam is None:
             raise SystemExit(f"题 {t['id']} 不匹配任何家族规则 —— 在 FAMILY_RULES 里归族后重跑")
-        split = ("sealed" if fam in SEALED_FAMILIES
-                 else "val" if fam in VAL_FAMILIES else "train")
+        if t.get("family"):                          # 生成族走确定性哈希分堂
+            split = _gen_split(fam)
+        else:
+            split = ("sealed" if fam in SEALED_FAMILIES
+                     else "val" if fam in VAL_FAMILIES else "train")
         entries[t["id"]] = {"family": fam, "split": split}
         fams.setdefault(fam, []).append(t["id"])
     return {

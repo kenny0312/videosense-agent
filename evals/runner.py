@@ -153,8 +153,11 @@ def _titles() -> dict:
     GD-2:两个世界的都装上(id 前缀不冲突 v*/sky*/b*,合一张表安全 —— 判分按题内金标 id 查)。"""
     from repl._mock_db import VIDEOS
     from repl._mock_world_b import VIDEOS_B
+    from repl._mock_world_c import VIDEOS_C
+    from repl._mock_world_d import VIDEOS_D
 
-    return {v[0]: [v[1], str(int(v[3]))] for v in list(VIDEOS) + list(VIDEOS_B)}
+    return {v[0]: [v[1], str(int(v[3]))]
+            for v in list(VIDEOS) + list(VIDEOS_B) + list(VIDEOS_C) + list(VIDEOS_D)}
 
 
 def _task_aliases(task: dict) -> dict:

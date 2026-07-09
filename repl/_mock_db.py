@@ -237,9 +237,16 @@ def _active_seeds():
     默认世界 A(原 16 视频,金标冻结不动)。EvalBackend 每场重灌(mock._conn=None)时按
     env 切换 —— 两个世界永不同场。"""
     import os as _os
-    if _os.environ.get("MOCK_WORLD", "A").upper() == "B":
+    w = _os.environ.get("MOCK_WORLD", "A").upper()
+    if w == "B":
         from repl._mock_world_b import VIDEOS_B, FACTS_B
         return VIDEOS_B, FACTS_B, []
+    if w == "C":
+        from repl._mock_world_c import VIDEOS_C, FACTS_C
+        return VIDEOS_C, FACTS_C, []
+    if w == "D":
+        from repl._mock_world_d import VIDEOS_D, FACTS_D
+        return VIDEOS_D, FACTS_D, []
     return VIDEOS, FACTS, SKYDIVE_SEED
 
 
