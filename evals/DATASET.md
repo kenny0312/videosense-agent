@@ -7,20 +7,22 @@
     python -m evals.validate_tasks       # 校验所有金标能在 mock DB 对上
     python -m evals.tools                # 看 world 的工具面
 
-## 规模：128 道题（单轮 96 · 多轮 32 · 必过题 42），两批生成
+## 规模：145 道题（47 道必过），含看画面回放/展示收口/安全注入
 
 | 维度 | 题数 | 考什么 |
 |---|---|---|
-| **retrieval** 找对视频 | 33 | 按类别找、宽类中文、语义描述（"有人摔倒的画面"→v002/v009）、需真看内容挑"最精彩" |
-| **honesty** 诚实不瞎编 | 30 | 库里没有的必须说没有；宽类有的绝不能瞎说没有；**负事实**（v009 没戴头盔 matched=0）不能顺着用户附和 |
-| **count** 数量对 | 28 | 计数/去重/聚合；v003 DISTINCT 陷阱；最长 sky03=135s、最短 v012=18s |
-| **coherence** 多轮不忘事 | 24 | 指代/省略/纠正/约束累积/goal-shift（JGA 槽位判分） |
-| **timestamp** 时间点准 | 21 | 时序定位，gold_span 取真实跳伞阶段/谓词区间，IoU 判 |
-| **toolcall** 工具用得对 | 20 | show_video/show_table/sql_query/web_search/plot/update_memory/spawn_agents 各就各位；irrelevance 该婉拒（订披萨/问天气） |
-| **dualcontrol** 双向控制 | 14 | 用户上传/enrich/贴图/纠正 → 改共享状态，agent 要跟上 |
-| **selfknow / identity / safety** | 8/5/5 | 花费自知、身份不漏底、安全拒答（色情/删库/提示注入） |
+| **honesty** 诚实不瞎编 | 35 | 库里没有的必须说没有；宽类有的绝不能瞎说没有；**负事实**（v009 没戴头盔 matched=0）不能顺着用户附和 |
+| **count** 数量对 | 33 | 计数/去重/聚合；v003 DISTINCT 陷阱；最长 sky03=135s、最短 v012=18s |
+| **retrieval** 找对视频 | 33 | 按类别找、宽类中文、语义描述（"有人摔倒的画面"→v002/v009） |
+| **toolcall** 工具用得对 | 25 | show_video/show_table/sql/web_search/plot/记忆各就各位；无关请求婉拒；该问就问 |
+| **coherence** 多轮不忘事 | 24 | 指代/省略/纠正/约束累积（JGA 槽位判分） |
+| **timestamp** 时间点准 | 22 | 时序定位，gold_span 取真实跳伞阶段/谓词区间，IoU 判 |
+| **dualcontrol** 双向控制 | 14 | 用户上传/入库/贴图/纠正 → 改共享状态，agent 要跟上（世界动作已真接线） |
+| **safety** 安全 | 9 | 提示注入/删库/色情等策略性拒答 |
+| **vision** 看画面 | 8 | 只能"看"才知道的（颜色/人数）；假片库无真视频，analyze_video 按事实清单回放 |
+| **selfknow / display / identity** | 8/6/5 | 花费自知、展示收口（该播/该列表/别多放）、身份不漏底 |
 
-（维度题数之和 > 128，因为一题可属多个维度。第二批文件为 `tasks/gen/*-b2.jsonl`。）
+（维度题数之和 > 145，因为一题可属多个维度。）
 
 ## world 的工具面（dual-control）
 
@@ -68,6 +70,6 @@
 ## 文件
 
 - `tasks/*.jsonc`：smoke 子集（带 fixture 策略，脚本车道用）
-- `tasks/gen/*.jsonl`：按维度组织的完整数据集（62 题）
+- `tasks/gen/*.jsonl`：按维度组织的完整数据集（145 题）
 - `validate_tasks.py`：金标 grounding 校验
 - `tools.py` / `simulated_user.py` / `session.py`：world 工具面 / 模拟用户 / 多轮 dual-control

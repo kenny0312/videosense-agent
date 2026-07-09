@@ -1,17 +1,18 @@
-"""DualControlSession —— τ² 式多轮 dual-control：真 Gemini agent + 模拟用户，两边都能动共享状态。
+"""多轮会话（真跑）：真 Gemini 当大脑 + 脚本用户，两边都能动共享的假世界。
 
-多轮靠复用同一个 GenAIConversation 实现（chat 持续 = 多轮记忆）。每轮：
-  用户轮（模拟用户 → utterance + 可选 USER_TOOL action）→ 施加用户动作到 world → agent 轮（真 Gemini）→ 收集
-直到用户 done 或到 max_turns。产出每轮 trace/answer，供 JGA / state-diff 判分。
+每轮流程：用户轮（说话 + 可选动作：上传/入库/贴图）→ 动作真的落进假世界 →
+agent 轮（同一个对话跨轮，记性是真的）→ 记录答案/工具链。
+判分要用的账本（world_state：uploads/enriched/memory）由 EvalBackend 如实记录。
 
-需要 GCP 凭证（agent）+（自由模式）ANTHROPIC_API_KEY（用户）。默认不跑 —— 先建系统。
-upload/enrich 对 mock DB 的真正写入标了 TODO，接真执行器时补。
+贴图说明：图在第 1 轮随首条消息送给大脑（走和线上一样的入口）；
+图的内容是我们生成的说明图 —— 测"图送没送到、大脑接没接住"，不测真实视觉识别。
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
 from evals.simulated_user import SimulatedUser
+from evals.world import EvalBackend, make_note_image
 
 
 @dataclass
@@ -21,56 +22,74 @@ class TurnRecord:
     action: dict | None = None
     trace: list = field(default_factory=list)
     ledger: dict = field(default_factory=dict)     # cid -> ExecResult（交付面判分用）
+    llm_calls: int = 0                             # 这一轮调了几次大脑（算花费用）
+
+
+def _action_name(action) -> str | None:
+    """动作名兼容 tool / type 两种写法。"""
+    if not action:
+        return None
+    return action.get("tool") or action.get("type")
 
 
 class DualControlSession:
-    def __init__(self, task: dict, owner: str = "eval", max_turns: int = 8, use_mock_db: bool = True):
+    def __init__(self, task: dict, owner: str = "eval", max_turns: int = 8):
         self.task = task
         self.owner = owner
         self.max_turns = max_turns
-        self.use_mock_db = use_mock_db
 
-    def _apply_user_action(self, action, world_state: dict):
-        """把用户侧动作施加到共享状态。"""
-        if not action:
-            return
-        kind = action.get("type")
-        if kind == "upload_video":
-            world_state.setdefault("uploads", []).append(action.get("video_id"))
-        elif kind == "enrich_video":
-            world_state.setdefault("enriched", []).append(action.get("video_id"))
-            # TODO: 真正往 content_embeddings / mock DB 插一行（接真执行器后补）
-        # paste_image / correct 在 utterance / 首消息里体现
+    def _first_image(self):
+        """第 1 轮如果有贴图动作，造一张说明图随首条消息送入。"""
+        script = self.task.get("user", {}).get("script", []) or []
+        if script and _action_name(script[0].get("action")) == "paste_image":
+            ref = (script[0]["action"].get("ref") or "screenshot").replace("_", " ")
+            return make_note_image(f"[user pasted image] {ref}")
+        return None
 
     def run(self):
-        import os
-
         from pipeline import config, loop_driver, mcp_client
         from pipeline.trace import Trace
         from sandbox.client import SandboxClient
 
-        if self.use_mock_db:
-            os.environ.setdefault("REPL_USE_MOCK_DB", "1")
-            config.USE_SEMANTIC_SEARCH = False     # 密封，同 LiveWorld：semantic 会直连生产索引
+        backend = EvalBackend(self.owner).install()
 
         u = self.task["user"]
         user = SimulatedUser(u.get("persona", ""), u.get("goal", ""), script=u.get("script"))
 
         schema = mcp_client.get_schema()
-        conv = loop_driver.make_conversation(          # 单个 conv 跨轮复用 → 多轮记忆
+        conv = loop_driver.make_conversation(          # 同一个对话跨轮 → 多轮记性是真的
             config.LOOP_MODEL, loop_driver.loop_function_declarations(),
-            loop_driver._loop_system(schema, None, None))
-        execute = loop_driver._make_executor(SandboxClient(), Trace(), schema, None, owner=self.owner)
+            loop_driver._loop_system(schema, None, None),
+            image=self._first_image())
+        execute = backend.wrap_execute(
+            loop_driver._make_executor(SandboxClient(), Trace(), schema, None, owner=self.owner))
 
-        world_state, history, turns = {}, [], []
-        for _ in range(self.max_turns):
+        history, turns = [], []
+        for turn_no in range(1, self.max_turns + 1):
             ut = user.next_turn(history)
-            self._apply_user_action(ut.get("action"), world_state)
+            self._apply_action(ut.get("action"), backend, turn=turn_no)
             history.append({"who": "user_sim", "text": ut["utterance"]})
             turns.append(TurnRecord("user_sim", ut["utterance"], ut.get("action")))
-            r = loop_driver.run_loop(ut["utterance"], conv, execute, max_steps=self.task.get("max_steps", 16))
+            r = loop_driver.run_loop(ut["utterance"], conv, execute,
+                                     max_steps=self.task.get("max_steps", 16))
             history.append({"who": "agent", "text": r.answer or ""})
-            turns.append(TurnRecord("agent", r.answer or "", trace=r.trace, ledger=r.ledger))
+            turns.append(TurnRecord("agent", r.answer or "", trace=r.trace, ledger=r.ledger,
+                                    llm_calls=r.llm_calls))
             if ut.get("done"):
                 break
-        return {"turns": turns, "world_state": world_state, "history": history}
+        return {"turns": turns, "world_state": backend.world_state, "history": history}
+
+    def _apply_action(self, action, backend: EvalBackend, turn: int = 1):
+        """用户动作落进假世界（说话/纠正不用落；贴图在会话开头已处理）。"""
+        name = _action_name(action)
+        if name == "upload_video":
+            backend.upload(action.get("video_id", "up_new"),
+                           title=action.get("title", ""),
+                           activities=action.get("activities"),
+                           duration=float(action.get("duration_sec", 30)))
+        elif name == "enrich_video":
+            backend.enrich(action.get("video_id", ""))
+        elif name == "paste_image" and turn > 1:
+            # 目前只支持首轮贴图（随首条消息送入）；放在后面轮会被静默丢掉——
+            # 出这种题等于测了个寂寞，直接炸出来让出题人改题
+            raise ValueError(f"paste_image 只能放在第 1 轮（现在在第 {turn} 轮）——图不会真的送给 agent")

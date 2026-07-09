@@ -10,6 +10,8 @@ from __future__ import annotations
 DIM_LABEL = {
     "required_actions": "工具用得对",
     "no_call": "该问就问",
+    "no_forbidden": "没做不该做的",
+    "state_assertions": "世界状态对了",
     "honesty": "诚实不瞎编",
     "retrieval": "找对视频",
     "timestamp": "时间点准",
@@ -145,7 +147,16 @@ table.hm{border-collapse:collapse;width:100%;font-size:13px}
 """
 
 
-def render(results, verdict, baseline=None, title="评测报告") -> str:
+def _meta_line(meta) -> str:
+    """报告头上如实写清这场怎么跑的（别再硬编码一句和实际对不上的话）。"""
+    if not meta:
+        return "单次报告"
+    return (f"模型 {meta.get('model', '?')} · 代码 {meta.get('commit', '?')}"
+            f"{'（有未提交改动）' if meta.get('dirty') else ''} · 每题 {meta.get('n', '?')} 次"
+            f" · 尺子指纹 {meta.get('scorer_fp', '?')}")
+
+
+def render(results, verdict, baseline=None, title="评测报告", meta=None) -> str:
     color = _KIND_COLOR.get(verdict["kind"], "#6b6a66")
     reasons = "".join(f"<li>{r}</li>" for r in verdict["reasons"])
     reasons_html = f'<ul class="meta" style="margin-top:-8px">{reasons}</ul>' if reasons else ""
@@ -159,6 +170,6 @@ def render(results, verdict, baseline=None, title="评测报告") -> str:
         f"<title>{title}</title><style>{_CSS}</style></head><body>"
         f'<div class="head"><div class="title">{title}</div>'
         f'<span class="pill" style="background:{color}">{verdict["label"]}</span></div>'
-        f'<div class="meta">脚本车道（不调 Gemini · 不联网）· 每题跑 5 次</div>'
+        f'<div class="meta">{_meta_line(meta)}</div>'
         f"{reasons_html}{body}</body></html>"
     )

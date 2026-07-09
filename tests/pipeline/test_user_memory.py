@@ -14,6 +14,19 @@ import pytest
 
 from pipeline import user_memory as um
 
+# GD-0 测试隔离修复:evals 的 EvalBackend.install() 会全局替换 um.update/load/render_section
+# 且不恢复 —— tests/ 全量跑时 evals 在前(字母序),本文件 7 例全被污染。
+# 方案:【收集期】(所有测试运行之前、污染发生之前)快照真函数,fixture 每例恢复。
+# 不用 importlib.reload —— 那会重建模块级状态、绕开本文件的 _fake_gcs 假桩打到真 GCS。
+_PRISTINE = {n: getattr(um, n) for n in ("update", "load", "render_section")}
+
+
+@pytest.fixture(autouse=True)
+def _fresh_user_memory():
+    for n, fn in _PRISTINE.items():
+        setattr(um, n, fn)
+    yield
+
 
 class _FakeBlob:
     store: dict[str, str] = {}

@@ -13,7 +13,7 @@
     # 大文件 / 4K → 先转 720p(+faststart,网页流畅播放),需本机 ffmpeg
     python -m ingestion.upload_local ./my_skydive_clips --transcode
 
-环境变量(neon.env 已含):GCS_BUCKET · GCP_PROJECT · ALLOYDB_*(指向 Neon)。
+环境变量(.env 已含):GCS_BUCKET · GCP_PROJECT · ALLOYDB_*(指向 Neon)。
 video_id 取自文件名(净化为 [A-Za-z0-9_-]);所以文件名起成稳定、有意义的名字。
 跳伞/翼装都归到同一个 collection(videos/skydive/)—— wingsuit 是子类型,靠
 perception.skydive_extract 抽出的 is_wingsuit / jump_type 区分,不另开目录。
