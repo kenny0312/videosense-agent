@@ -52,7 +52,8 @@ def task_feedback(r: dict) -> str:
 def build_briefing(run: dict) -> str:
     """run = dashboard 归档的一次运行记录（含 results 明细）。返回 markdown 字符串。"""
     meta = run.get("meta") or {}
-    scored = [r for r in run.get("results", []) if r.get("status", "ok") == "ok"]
+    # 计分口径和 runner 一致：环境故障不算，代码崩溃算没过
+    scored = [r for r in run.get("results", []) if r.get("status", "ok") != "infra_error"]
     fails = [r for r in scored if not r.get("passed")]
     infra = [r for r in run.get("results", []) if r.get("status") == "infra_error"]
     passed = sum(1 for r in scored if r.get("passed"))
@@ -88,8 +89,22 @@ def build_briefing(run: dict) -> str:
              f" ｜ 结论：{run.get('verdict_label', '?')}")
     L.append(f"- 必过题：{run.get('pinned_total', 0) - run.get('pinned_failed', 0)}/{run.get('pinned_total', 0)}"
              f" 过 ｜ 环境故障（不计分）：{len(infra)} 题")
+    j = meta.get("judge") or {}
+    if j:
+        L.append(f"- AI 裁判参考分（**不进门禁**，对表 {j.get('cert', '?')}）：开放式判据做到 "
+                 f"{j.get('ok', 0)}/{j.get('total', 0)}（裁判 {j.get('model', '?')}）")
     for why in run.get("reasons", [])[:8]:
         L.append(f"- {why}")
+    # 集中度报警：失败大量堆在同一把尺子上，通常是尺子/题目模板的问题，不是 agent 忽然变笨
+    dim_fails: dict = {}
+    for r in fails:
+        for d in _fail_dims(r):
+            dim_fails[d] = dim_fails.get(d, 0) + 1
+    if fails and dim_fails:
+        top_dim, top_n = max(dim_fails.items(), key=lambda x: x[1])
+        if top_n >= 4 and top_n / len(fails) >= 0.4:
+            L.append(f"- ⚠ **失败集中报警**：{top_n}/{len(fails)} 道失败都栽在「{DIM_LABEL.get(top_dim, top_dim)}」上——"
+                     f"这种集中度通常意味着判分器或题目模板出了问题（冤案），请先重点排查评测侧，再下 agent 变差的结论。")
     L.append("")
 
     L.append("## 各方面得分")

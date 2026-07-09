@@ -11,7 +11,7 @@
      rationale 带溯源:'category: derived from predicates: …')。
   3. 报告:每类视频数、没有任何大类行的视频清单(谓词对不上词表 → 人工/下次补)。
 
-连接同 perception 其它脚本(neon.env 的 ALLOYDB_*)。
+连接同 perception 其它脚本(.env 的 ALLOYDB_*)。
 """
 from __future__ import annotations
 

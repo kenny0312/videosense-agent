@@ -10,7 +10,7 @@
   坏视频崩掉整批。表不存在会自动建(CREATE IF NOT EXISTS)。
 
 运行:
-    # neon.env 里配好 ALLOYDB_* / GCP_PROJECT / GCP_REGION;ADC 已登录
+    # .env 里配好 ALLOYDB_* / GCP_PROJECT / GCP_REGION;ADC 已登录
     python -m perception.skydive_extract
     PERCEPTION_MAX_VIDEOS=20 python -m perception.skydive_extract   # 限量
 

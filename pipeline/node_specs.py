@@ -80,6 +80,20 @@ SPECS: dict[str, NodeSpec] = {
                          "description": "可选:给这张表加个简短标题(如「全部视频分类」);省略用默认。"}},
         ),                                          # 数据本身来自上游句柄 data_result_id(loop 自动加)
     ),
+    "show_stat": NodeSpec(
+        tool="show_stat",
+        needs_sandbox=False,
+        planner_desc=(
+            "把【1~4 个关键数字】渲染成【大号 KPI 数字卡】给用户看(如「视频总数 200」「平均置信度 0.82」)。"
+            "【用途:回答里有【拿得出手的头条数字/汇总指标】时用它,让数字一眼可见,而不是埋在句子里】:"
+            "先 sql_query 算出这些数(如 COUNT/AVG 一行),再调本工具,data_result_id = 那次 sql_query 的 result_id —— "
+            "它把那一行的每个「列名: 值」渲染成一张数字卡。只是普通一句话回答、或明细很多行时,别用它(那用文字/ show_table)。"
+        ),
+        parameters=_obj(
+            {"caption": {"type": "string",
+                         "description": "可选:给这组数字卡加个简短标题;省略用默认。"}},
+        ),                                          # 数据本身来自上游句柄 data_result_id(loop 自动加)
+    ),
     "analyze_video": NodeSpec(
         tool="analyze_video",
         needs_sandbox=False,
@@ -216,24 +230,34 @@ SPECS: dict[str, NodeSpec] = {
         tool="plot",
         needs_sandbox=True,
         planner_desc=(
-            "出图(Stage 10)。依赖一个上游节点。inputs.kind = 'scatter'|'line',"
+            "出图(Stage 10)。依赖一个上游节点。inputs.kind = 'bar'|'line'|'scatter',"
             "inputs.x / inputs.y = 列名,inputs.title = 标题。"
-            "返回 {svg} —— 主进程拿到后写回 GCS/本地。"
+            "返回 {chart_spec} —— 前端用 ECharts 渲染成【交互式】图表(hover/缩放/暗色主题,不再是静态图片)。"
         ),
         codegen_hint=(
-            "用**纯 Python 生成 SVG 字符串**(沙箱没装 matplotlib,不要 import 它)。"
-            "读取上游每行的 inputs['x'] / inputs['y'] 两个数值列,线性映射到 640x420 画布"
-            "(留出 50px 边距);inputs['kind']=='scatter' 画 <circle>,'line' 画 <polyline>;"
-            "再画 x/y 坐标轴线和标题 inputs['title']。"
-            "print(json.dumps({'svg': svg_string, 'n_points': len(rows)}))。"
-            "不要写文件系统、不要 import matplotlib。"
+            "**不要画图、不要生成 SVG、不要 import matplotlib**。你只需读上游数据、组装一个"
+            "【图表 spec(JSON)】,前端负责渲染和全部样式。"
+            "读取上游每行的 inputs['x'] / inputs['y'] 两列(x 可为标签或数值,y 为数值),"
+            "组装成:spec = {"
+            "'chart_type': inputs['kind'],            # 'bar' | 'line' | 'scatter'\n"
+            "  'title': inputs.get('title',''),"
+            "  'x': [每行的 x 值...],"
+            "  'y': [每行的 y 值...],               # 与 x 等长\n"
+            "  'x_name': inputs['x'], 'y_name': inputs['y'], 'unit': ''"
+            "}。数值转成 float/int,别混入 None(缺失就跳过该行)。"
+            "【可选·让图能点】:若给了 inputs.get('link_field')(某列名,值为 video_id),"
+            "则再带 spec['links']=[每行该列的 video_id 字符串...](与 x 等长)——前端会让对应柱子/点可点击跳到该视频。"
+            "print(json.dumps({'chart_spec': spec, 'n_points': len(spec['x'])}))。"
+            "不要写文件系统。"
         ),
         parameters=_obj(
             {
-                "kind": {"type": "string", "enum": ["scatter", "line"], "description": "图类型"},
+                "kind": {"type": "string", "enum": ["bar", "line", "scatter"], "description": "图类型"},
                 "x": {"type": "string", "description": "x 轴列名"},
                 "y": {"type": "string", "description": "y 轴列名"},
                 "title": {"type": "string", "description": "图标题(用英文)"},
+                "link_field": {"type": "string",
+                               "description": "可选:某列名,值为 video_id——填了则每个柱子/点可点击跳到对应视频。"},
             },
             ["kind", "x", "y"],
         ),
