@@ -8,6 +8,8 @@
 
 It watches your videos, reasons about what it sees, and answers with the clip and the chart to prove it.
 
+### [▶ Try it live — **videosense.work**](https://videosense.work)
+
 <sub>**English** · [简体中文](README.zh-CN.md)</sub>
 
 </div>
