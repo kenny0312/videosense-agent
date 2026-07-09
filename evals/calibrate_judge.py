@@ -101,6 +101,15 @@ def _gather_items() -> list:
             tid, ans = r.get("id"), r.get("answer") or ""
             if tid not in tasks or not ans.strip():
                 continue
+            # 多轮题：判据往往覆盖每一轮（"turn1 该诚实、turn2 该答对"），
+            # 只给最后一轮答案裁判和人都没法公平判——必须喂完整对话。
+            # 老记录没存逐轮明细的，宁可不要（证据不全的样本会制造假分歧）。
+            agent_turns = [t for t in (r.get("turns") or []) if t.get("who") == "agent"]
+            if r.get("kind") == "multi" or (tid in tasks and "/" in tasks[tid][0]):
+                if not agent_turns:
+                    continue
+                ans = "\n".join(f"【第{i}轮回答】{t.get('text', '')}"
+                                for i, t in enumerate(agent_turns, 1))
             digest = hashlib.sha1(ans.encode("utf-8")).hexdigest()[:10]
             if (tid, digest) in seen:
                 continue
