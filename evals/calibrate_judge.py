@@ -30,7 +30,7 @@ _FULL_RESULT_FILES = ("report_live.results.jsonl", "report_live2.results.jsonl")
 
 
 def _nl_tasks() -> dict:
-    """带 nl_assertions 的题：id -> (question, assertions)。"""
+    """带 nl_assertions 的题：id -> (question, assertions, grounding_note)。"""
     out = {}
     for f in glob.glob(os.path.join(_HERE, "tasks", "gen", "*.jsonl")):
         for line in open(f, encoding="utf-8"):
@@ -42,8 +42,43 @@ def _nl_tasks() -> dict:
             if asserts:
                 q = t.get("user_query") or " / ".join(
                     s.get("utterance", "") for s in t.get("user", {}).get("script", []) or [])
-                out[t["id"]] = (q, asserts)
+                out[t["id"]] = (q, asserts, t.get("grounding_note", ""))
     return out
+
+
+_VID_RE = __import__("re").compile(r"\b(?:v\d{3}|sky\d{2}|up_[A-Za-z0-9_]{4,})\b")
+
+
+def _video_card(vid: str) -> str:
+    """一个视频在假世界里的档案：标题/时长/类别 + 逐条画面事实。
+    评测没有真视频文件——金标就是照这份档案定的，人工标注也照它判。"""
+    from repl._mock_db import FACTS, VIDEOS
+
+    for v in VIDEOS:
+        if v[0] == vid:
+            lines = [f"  {vid}《{v[1]}》 时长 {int(v[3])} 秒 ｜ 类别: {', '.join(v[4])}"]
+            for f in FACTS:
+                if f[0] == vid:
+                    if f[2]:
+                        lines.append(f"    · 画面里有[{f[1]}]：{f[4]}（{int(f[5])}~{int(f[6])} 秒）")
+                    else:
+                        lines.append(f"    · 画面里【没有】[{f[1]}]：{f[4]}")
+            return "\n".join(lines)
+    return f"  {vid}（假片库查无此片——多半是题里用户上传的新视频）"
+
+
+def _world_context(it: dict, tasks: dict) -> str:
+    """标注一条样本需要的"世界真相"：金标依据 + 被提到的视频的档案。"""
+    note = (tasks.get(it["id"]) or ("", [], ""))[2]
+    text = " ".join([it["assertion"], note, it["question"], it["answer"]])
+    vids = sorted(set(_VID_RE.findall(text)))
+    parts = []
+    if note:
+        parts.append(f"金标依据：{note}")
+    if vids:
+        parts.append("假世界档案（对错以此为准，评测没有真视频文件）：")
+        parts += [_video_card(v) for v in vids]
+    return "\n".join(parts)
 
 
 def _gather_items() -> list:
@@ -70,7 +105,7 @@ def _gather_items() -> list:
             if (tid, digest) in seen:
                 continue
             seen.add((tid, digest))
-            q, asserts = tasks[tid]
+            q, asserts, _note = tasks[tid]
             for i, a in enumerate(asserts):
                 items.append({"key": f"{tid}#{digest}#{i}", "id": tid, "source": name,
                               "question": q, "answer": ans, "assertion": a,
@@ -127,12 +162,16 @@ def label() -> int:
         print("还没有样本 —— 先跑 collect。")
         return 1
     todo = [it for it in items if it["human"] is None]
+    tasks = _nl_tasks()
     print(f"待标 {len(todo)} 条（已标 {len(items) - len(todo)}）。"
           "y=做到 n=没做到 s=跳过 q=退出（随时退，标一条存一条）\n")
     for it in todo:
         print("─" * 60)
         print(f"题目：{it['question']}")
         print(f"答案：{it['answer'][:600]}")
+        ctx = _world_context(it, tasks)
+        if ctx:
+            print(ctx)
         print(f"判据：{it['assertion']}")
         while True:
             c = input("这条判据做到了吗? [y/n/s/q] ").strip().lower()
