@@ -25,8 +25,12 @@ def _cosine(a, b) -> float:
 
 
 def build_cosine_search(index, weak_threshold: float = 0.6):
-    """内存语义检索：query 向量 vs 索引里每条文档向量算 cosine，取 top-k，标 strong/weak。
-    index = [(video_id, snippet, start, end, vector)]。返回值和真 semantic_index.search 同格式。"""
+    """内存语义检索：query 向量 vs 索引里每条文档向量算 cosine，取 top-k。
+    index = [(video_id, snippet, start, end, vector)]。返回值与真 semantic_index.search
+    同格式,relevance 三档口径也与真实现对齐(D3:strong/borderline/weak)——
+    评测世界的语义判定必须和生产同一套,否则调的是两个系统。"""
+    from pipeline import semantic_index as _si
+
     def search(vec_lit, k):
         try:
             qv = json.loads(vec_lit)
@@ -35,7 +39,8 @@ def build_cosine_search(index, weak_threshold: float = 0.6):
         scored = sorted(((_cosine(qv, e[4]), e) for e in index), key=lambda x: -x[0])[:int(k)]
         return [{"n": i + 1, "video_id": e[0], "source": "eval", "snippet": e[1],
                  "start_ts": e[2], "end_ts": e[3], "score": round(sc, 3),
-                 "relevance": "strong" if sc >= weak_threshold else "weak",
+                 "relevance": ("strong" if sc >= _si.T_HI
+                               else "borderline" if sc >= _si.T_LO else "weak"),
                  "label": (e[1] or "")[:40]}
                 for i, (sc, e) in enumerate(scored)]
     return search

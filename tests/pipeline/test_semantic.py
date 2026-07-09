@@ -171,3 +171,63 @@ def test_resign_rejects_bad_ids(monkeypatch):
     signed = r.json()["signed"]
     assert signed["good_id-1"] and signed["good_id-1"].startswith("https://")   # 合法 id 照签
     assert signed["bad' OR '1'='1"] is None and signed["x; DROP TABLE"] is None  # 注入 id 直接 None
+
+
+# ── D3:双阈三档 + 跨语言桥 ─────────────────────────────────
+def test_semantic_relevance_three_tiers(monkeypatch):
+    """≥T_HI strong / T_LO..T_HI borderline / <T_LO weak(拟合阈:正p10=0.729,负max=0.733)。"""
+    from pipeline import semantic_index as si
+    monkeypatch.setattr(si, "_execute", lambda sql, p: [
+        ("v1", "fact", "s1", None, None, 0.80),
+        ("v2", "fact", "s2", None, None, 0.72),
+        ("v3", "fact", "s3", None, None, 0.55)])
+    rows = si.search("[0]", 3)
+    assert [r["relevance"] for r in rows] == ["strong", "borderline", "weak"]
+
+
+def test_run_semantic_search_borderline_envelope(monkeypatch):
+    """只有 borderline → 信封(不给行列表),note 要求先核对 video_facts 再下结论。"""
+    from pipeline import config, embeddings as e, semantic_index as si
+    from pipeline import node_executor as ne
+    from pipeline.dag_schema import Node
+    monkeypatch.setattr(config, "USE_SEMANTIC_SEARCH", True)
+    monkeypatch.setattr(e, "embed_query", lambda q: [0.0] * 768)
+    monkeypatch.setattr(si, "search", lambda lit, k: [
+        {"n": 1, "video_id": "v9", "source": "fact", "snippet": "baby care",
+         "start_ts": None, "end_ts": None, "score": 0.71, "relevance": "borderline", "label": "x"}])
+    r = ne._run_semantic_search(Node(id="s", tool="semantic_search", inputs={"query": "gadget"}))
+    assert isinstance(r.value, dict) and r.value["no_strong_match"] and r.value["borderline"]
+    assert "核对" in r.value["note"] and r.value["closest"][0]["video_id"] == "v9"
+
+
+def test_bridge_merges_zh_and_en_paths(monkeypatch):
+    """中文查询:原文命中弱、英译命中强 → 合并后返回强命中行(跨语言桥,D3 病例『打台球』)。"""
+    from pipeline import config, embeddings as e, semantic_index as si
+    from pipeline import node_executor as ne
+    from pipeline.dag_schema import Node
+    monkeypatch.setattr(config, "USE_SEMANTIC_SEARCH", True)
+    monkeypatch.setattr(ne, "_translate_query_en", lambda q: "playing pool")
+    monkeypatch.setattr(e, "embed_query", lambda q: [0.1] * 768)
+    calls = []
+
+    def fake_search(lit, k):
+        calls.append(1)
+        if len(calls) == 1:                              # 原文路:躲避球,borderline
+            return [{"n": 1, "video_id": "dodge", "source": "fact", "snippet": "dodgeball",
+                     "start_ts": None, "end_ts": None, "score": 0.72, "relevance": "borderline", "label": "d"}]
+        return [{"n": 1, "video_id": "pool", "source": "fact", "snippet": "playing pool",
+                 "start_ts": None, "end_ts": None, "score": 0.75, "relevance": "strong", "label": "p"}]
+    monkeypatch.setattr(si, "search", fake_search)
+    r = ne._run_semantic_search(Node(id="s", tool="semantic_search", inputs={"query": "打台球"}))
+    assert len(calls) == 2                               # 双路都查了
+    assert isinstance(r.value, list) and r.value[0]["video_id"] == "pool"
+
+
+def test_bridge_failopen_translate_error(monkeypatch):
+    """翻译失败 → 单路照常(fail-open);非中文查询根本不触发翻译。"""
+    from pipeline import node_executor as ne
+    from pipeline import genai_client
+    monkeypatch.setattr(genai_client, "get_client",
+                        lambda: (_ for _ in ()).throw(RuntimeError("down")))
+    assert ne._translate_query_en("打台球") is None       # 挂了 → None,不外溢
+    assert ne._translate_query_en("playing pool") is None  # 纯英文 → 不翻
