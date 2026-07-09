@@ -34,6 +34,7 @@ UPSTREAM_HANDLES: dict[str, list[str]] = {
     "python":      ["data_result_id"],
     "show_video":  ["data_result_id"],   # 可选(也可直接给 video_ids)
     "show_table":  ["data_result_id"],   # 必填:要展示的查询结果
+    "show_stat":   ["data_result_id"],   # 必填:算好的一行指标(渲染成 KPI 卡)
 }
 _OPTIONAL_HANDLE = {"show_video", "python"}   # 句柄非必填:python 逃生舱可带上游、也可独立写代码
 ANALYZE_PREVIEW_CELL = 1200               # #2:analyze_video 结果给大预览(答案含完整理由,默认 80 会砍掉)
@@ -114,6 +115,7 @@ class ExecResult:
     artifact: dict = field(default_factory=dict)
     videos: list = field(default_factory=list)
     table: dict = field(default_factory=dict)
+    stat: dict = field(default_factory=dict)   # show_stat 侧信道:{items:[{label,value,unit}], caption}
     ms: float = 0.0                          # M4.2:本工具墙钟耗时(ms)
     cache_hit: bool = False                  # M4.2:analyze_video 是否命中缓存
 
@@ -439,7 +441,7 @@ def _make_executor(sandbox, trace, schema, session_id, owner: str = "anon") -> C
             pv, n = _preview(nr.value)
         return ExecResult(ok=nr.ok, value=nr.value, preview=pv, n=n, stderr=nr.stderr,
                           code=nr.code, artifact=nr.artifact, videos=nr.videos, table=nr.table,
-                          cache_hit=nr.cache_hit)
+                          stat=nr.stat, cache_hit=nr.cache_hit)
 
     def execute(cid, name, inputs, upstream, uses) -> ExecResult:
         t0 = time.perf_counter()                          # M4.2:per-tool 墙钟
@@ -524,6 +526,9 @@ _CONSTITUTION = (
     "- 【多条结果用带内容标签的编号列表】:`1. **第 1 个,橙色跳伞服出舱那个** · 1:46 — 一句内容`,"
     "别堆成一坨;每条给「第 N 个 + 一句可辨识特征(+ 时段)」。\n"
     "- 【关键数字加粗】:总数/计数/占比等关键数字用 **加粗**(如「共 **14** 个」),让人一眼看到。\n"
+    "- 【头条指标上 KPI 卡】:回答带 1~4 个【拿得出手的汇总数字】(总数、平均分、占比等)时,"
+    "先 sql_query 把它们算成一行,再 show_stat(data_result_id=那步)渲染成大号数字卡 —— 比埋在句子里更醒目。"
+    "只是普通叙述、或明细很多行时别用(那用文字 / show_table)。\n"
     "- 简洁克制:不加与问题无关的寒暄、免责、emoji 堆砌;markdown 用朴素的标题/列表/加粗即可。\n"
 )
 

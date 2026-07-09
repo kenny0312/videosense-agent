@@ -76,6 +76,11 @@
   .answer a:hover{text-decoration:underline}
   .answer table{border-collapse:collapse;font-size:13px;margin:6px 0}
   .answer th,.answer td{border:1px solid var(--border);padding:5px 9px;text-align:left}
+  /* inline timecode chips (post-render); seek the card's player when there is one */
+  .answer .tc{font:12px/1 ui-monospace,Consolas,monospace;color:var(--accent-soft);background:#12203a;
+    padding:1px 6px;border-radius:5px;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .answer .tc.seek{cursor:pointer;transition:background .13s}
+  .answer .tc.seek:hover{background:#1a2c4d}
   .badge{font-size:11.5px;padding:3px 9px;border-radius:999px;display:inline-flex;align-items:center;gap:5px;margin-bottom:8px}
   .badge.refused{background:#3a2526;color:#e7a3a3}
   .sub{font-size:12px;color:var(--hint);font-variant-numeric:tabular-nums}
@@ -111,7 +116,16 @@
   .dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
   .tname{flex:1;color:var(--muted)}
   .tms{color:var(--hint);font-variant-numeric:tabular-nums}
-  .chart img{max-width:100%;border-radius:10px;background:#fff;border:1px solid var(--border)}
+  .chart img{max-width:100%;border-radius:10px;background:var(--surface2);border:1px solid var(--border)}
+  /* P1: interactive ECharts panel + load skeleton */
+  .chartpanel{border:1px solid var(--border);border-radius:12px;background:#0d1015;padding:8px 8px 4px;margin:4px 0}
+  .chartpanel .echart{width:100%;height:300px}
+  .chartpanel .cbar{display:flex;justify-content:flex-end;gap:12px;padding:2px 4px 2px}
+  .chart-skel{height:300px;border-radius:9px;border:1px solid var(--border);
+    background:linear-gradient(90deg,var(--surface) 25%,var(--surface2) 50%,var(--surface) 75%);
+    background-size:200% 100%;animation:cshimmer 1.3s linear infinite}
+  @keyframes cshimmer{to{background-position:-200% 0}}
+  @media(prefers-reduced-motion:reduce){.chart-skel{animation:none}}
   /* video grid */
   .vgrid{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));margin:4px 0}
   .vcard{border:1px solid var(--border2);border-radius:12px;overflow:hidden;background:#0d1015;transition:border-color .13s}
@@ -120,6 +134,10 @@
   .vcard .vnum{font-size:10.5px;color:var(--accent-soft);background:var(--accent-dim);padding:1px 7px;border-radius:999px;flex-shrink:0;font-variant-numeric:tabular-nums}
   .vcard video{width:100%;max-height:360px;background:#000;display:block}
   .vcard .vna{padding:14px 11px;color:var(--hint);font-size:12.5px;display:flex;align-items:center;gap:7px}
+  /* P3c: match-confidence chip on the video card header */
+  .confchip{font-size:10px;font-weight:600;padding:1px 7px;border-radius:999px;flex-shrink:0;
+    font-variant-numeric:tabular-nums;letter-spacing:.02em;text-transform:uppercase}
+  .confchip.high{color:#8fd6a8;background:#16311f} .confchip.med{color:#9dbfff;background:#16233f} .confchip.low{color:#98a2ae;background:#20242b}
   /* table */
   .tbl{margin:6px 0;border:1px solid var(--border2);border-radius:12px;overflow:hidden;background:#0d1015}
   .tbl .tbar{display:flex;align-items:center;justify-content:space-between;padding:9px 13px;font-size:12px;color:var(--muted);border-bottom:1px solid var(--border)}
@@ -286,15 +304,19 @@ function renderAssistant(card, d, ms){
     return;
   }
   if(d.status==='error'){ card.appendChild(textBlock('Something went wrong: '+(d.error||''))); return; }
-  if(d.status==='smalltalk'){ card.appendChild(answerBlock(d.answer||'')); card.appendChild(renderFooter(d,ms)); return; }
+  if(d.status==='smalltalk'){ card.appendChild(answerBlock(d.answer||'')); card.appendChild(renderFooter(d,ms)); enhanceTimecodes(card); return; }
 
   // ok
   if(d.videos && d.videos.length){ card.appendChild(renderVideos(d.videos)); }
   if(d.table && d.table.rows && d.table.rows.length){ card.appendChild(renderTable(d.table)); }
-  if(d.plot_url){ card.appendChild(renderChart(d.plot_url)); }
-  else { card.appendChild(renderAnswer(d.answer)); }
+  if(d.stat && d.stat.items && d.stat.items.length){ card.appendChild(renderStatCards(d.stat)); }   // P2:KPI 数字卡(头条指标)
+  // 结论先行:答案文字始终渲染;有图则把图作为下方证据附上(别让图吞掉结论)
+  if(d.answer!=null && !(typeof d.answer==='string' && !d.answer.trim())){ card.appendChild(renderAnswer(d.answer)); }
+  if(d.chart_spec){ card.appendChild(renderChartSpec(d.chart_spec)); }   // P1: 交互式 ECharts(spec 驱动)
+  else if(d.plot_url){ card.appendChild(renderChart(d.plot_url)); }      // 兜底:旧静态 svg/png
 
   card.appendChild(renderFooter(d, ms));   // quiet footer: steps · time (expandable), plan/sql/code
+  enhanceTimecodes(card);                  // 时间码 → 可点 chip(有视频则跳转)
 }
 
 function badge(cls,txt){const b=el('<span class="badge"></span>');b.classList.add(cls);b.textContent=txt;return b;}
@@ -316,6 +338,30 @@ function textBlock(txt){
   return p;
 }
 function answerBlock(txt){ return textBlock(txt); }
+// 收口呈现:把答案里的 mm:ss 时间码渲染成 chip;卡片里有视频时点击跳转到该时刻(纯前端增强)
+function enhanceTimecodes(card){
+  const ans=card.querySelector('.answer'); if(!ans) return;
+  const vid=card.querySelector('video');                    // 有播放器就让 chip 可点跳转
+  const RE=/\b(\d{1,2}):([0-5]\d)\b/;
+  const nodes=[]; const w=document.createTreeWalker(ans, NodeFilter.SHOW_TEXT, null);
+  for(let n=w.nextNode(); n; n=w.nextNode()){
+    const p=n.parentNode;
+    if(p && p.closest && !p.closest('code,pre,a,.tc') && RE.test(n.nodeValue)) nodes.push(n);
+  }
+  nodes.forEach(node=>{
+    const s=node.nodeValue, frag=document.createDocumentFragment(), g=/\b(\d{1,2}):([0-5]\d)\b/g;
+    let m, last=0;
+    while((m=g.exec(s))){
+      if(m.index>last) frag.appendChild(document.createTextNode(s.slice(last,m.index)));
+      const chip=el('<span class="tc"></span>'); chip.textContent=m[0];
+      if(vid){ const secs=(+m[1])*60+(+m[2]); chip.classList.add('seek'); chip.title='Jump to '+m[0];
+        chip.onclick=()=>{ try{ vid.currentTime=secs; vid.play(); vid.scrollIntoView({block:'nearest'}); }catch(e){} }; }
+      frag.appendChild(chip); last=m.index+m[0].length;
+    }
+    if(last<s.length) frag.appendChild(document.createTextNode(s.slice(last)));
+    node.parentNode.replaceChild(frag, node);
+  });
+}
 
 // ── 答案分形:表格 / 统计卡 / 标量 / 文本 ──────────────
 function renderAnswer(ans){
@@ -342,6 +388,25 @@ function renderStats(obj){
   return w;
 }
 function fmt(v){ if(typeof v==='number'){ return Number.isInteger(v)?v:(+v.toFixed(4)+'').replace(/\.?0+$/,''); } return String(v); }
+// P2: show_stat 侧信道 → KPI 数字卡(复用 .stats/.stat/.k/.v,零新样式)
+function renderStatCards(st){
+  const w=el('<div class="stats"></div>');
+  (st.items||[]).forEach(it=>{
+    const s=el('<div class="stat"></div>');
+    s.appendChild(Object.assign(el('<div class="k"></div>'),{textContent:String(it.label)}));
+    const v=el('<div class="v"></div>'); v.textContent=fmt(it.value)+(it.unit?(' '+it.unit):''); s.appendChild(v);
+    w.appendChild(s);
+  });
+  return w;
+}
+// P3a: 按 video_id 定位到本条回答卡里的播放器并跳转(图表点击 / 跨卡导航复用;唯一的 seek-by-id 入口)
+function seekVideoById(root, id, ts){
+  const vid=root && root.querySelector('video[data-video-id="'+(window.CSS&&CSS.escape?CSS.escape(String(id)):String(id))+'"]');
+  if(!vid) return false;
+  const go=()=>{ try{ vid.currentTime=ts||0; vid.play(); vid.scrollIntoView({block:'nearest',behavior:'smooth'}); }catch(e){} };
+  if(vid.readyState>=1) go(); else vid.addEventListener('loadedmetadata', go, {once:true});
+  return true;
+}
 
 // ── 表格:排序 + 置信度条 + CSV ─────────────────────────
 function isConfCol(rows,k){
@@ -407,6 +472,99 @@ function renderChart(url){
   w.appendChild(bar); return w;
 }
 
+// ── P1 交互式图表:大脑吐 chart_spec(数据+类型),前端用 ECharts 渲染,样式 100% 由前端掌控 ──
+// 懒加载 ECharts(仅首次出图时拉,~1MB,不拖累首屏);和 marked/DOMPurify 一样走 cdnjs。
+let _echartsP=null;
+function loadECharts(){
+  if(window.echarts) return Promise.resolve(window.echarts);
+  return _echartsP || (_echartsP=new Promise((res,rej)=>{
+    const s=document.createElement('script');
+    s.src='https://cdnjs.cloudflare.com/ajax/libs/echarts/5.5.0/echarts.min.js';
+    s.async=true;
+    s.onload=()=>window.echarts?res(window.echarts):rej(new Error('echarts missing'));
+    s.onerror=()=>rej(new Error('echarts load failed'));
+    document.head.appendChild(s);
+  }));
+}
+// VS 暗色主题分类色(固定顺序,不循环);文字/网格用 chrome 灰,不用系列色
+const CHART_PALETTE=['#6ea2ff','#43c88a','#e0a23b','#b79df2','#e05a5a','#3f7bf0'];
+function buildChartOption(spec){
+  const type=(spec.chart_type||'bar');
+  const x=spec.x||[];
+  // 单系列 {y:[...]} 或多系列 {series:[{name,data}]}
+  const series0 = (spec.series && spec.series.length) ? spec.series
+                : [{name: spec.y_name||spec.unit||'value', data: spec.y||[]}];
+  const isScatter = type==='scatter';
+  const mkSeries = (s,i)=>{
+    const c=CHART_PALETTE[i%CHART_PALETTE.length];
+    if(isScatter) return {name:s.name,type:'scatter',symbolSize:9,
+      itemStyle:{color:c,opacity:.85}, data:(s.data||[]).map((v,j)=>[x[j],v])};
+    if(type==='line') return {name:s.name,type:'line',smooth:true,symbol:'circle',symbolSize:6,
+      showSymbol:(s.data||[]).length<=40, lineStyle:{width:2,color:c}, itemStyle:{color:c},
+      areaStyle:(series0.length===1)?{color:new echarts.graphic.LinearGradient(0,0,0,1,
+        [{offset:0,color:'rgba(110,162,255,.22)'},{offset:1,color:'rgba(110,162,255,0)'}])}:undefined,
+      data:s.data};
+    // bar (default)
+    return {name:s.name,type:'bar',barMaxWidth:44,
+      itemStyle:{borderRadius:[5,5,0,0],
+        color:new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:'#6ea2ff'},{offset:1,color:'#3f7bf0'}])},
+      data:s.data};
+  };
+  return {
+    backgroundColor:'transparent',
+    color:CHART_PALETTE,
+    textStyle:{fontFamily:'ui-monospace,Consolas,monospace',color:'#98a2ae'},
+    title: spec.title ? {text:spec.title,left:2,top:2,
+      textStyle:{color:'#eef2f7',fontSize:13.5,fontWeight:600,fontFamily:'system-ui,sans-serif'}} : undefined,
+    grid:{left:8,right:14,top: spec.title?38:14,bottom:6,containLabel:true},
+    tooltip:{trigger:isScatter?'item':'axis',
+      backgroundColor:'#0c0e12',borderColor:'#2c313a',borderWidth:1,
+      textStyle:{color:'#e8ebef',fontSize:12},
+      axisPointer:{type:type==='bar'?'shadow':'line',lineStyle:{color:'#2c313a'},shadowStyle:{color:'rgba(110,162,255,.08)'}}},
+    legend: series0.length>1 ? {top:2,right:6,textStyle:{color:'#98a2ae',fontSize:11},itemWidth:12,itemHeight:8} : undefined,
+    xAxis:{type:isScatter?'value':'category', data:isScatter?undefined:x, name:spec.x_name||'', nameTextStyle:{color:'#69727e'},
+      axisLine:{lineStyle:{color:'#2c313a'}}, axisTick:{show:false}, axisLabel:{color:'#69727e',fontSize:11}, splitLine:{show:false}},
+    yAxis:{type:'value', name:spec.unit||'', nameTextStyle:{color:'#69727e',align:'left'},
+      axisLine:{show:false}, axisTick:{show:false}, axisLabel:{color:'#69727e',fontSize:11},
+      splitLine:{lineStyle:{color:'#20242b'}}},
+    toolbox:{right:6,top:6,feature:{saveAsImage:{title:'PNG',backgroundColor:'#0d1015',
+      iconStyle:{borderColor:'#69727e'}}},emphasis:{iconStyle:{borderColor:'#6ea2ff'}}},
+    series: series0.map(mkSeries),
+  };
+}
+function renderChartSpec(spec){
+  const w=el('<div class="chart chartpanel"></div>');
+  const mount=el('<div class="echart"></div>'); w.appendChild(mount);
+  const skel=el('<div class="chart-skel"></div>'); w.appendChild(skel);   // 骨架:load 期间占位,不闪
+  loadECharts().then(ec=>{
+    skel.remove();
+    let chart;
+    try{ chart=ec.init(mount,null,{renderer:'canvas'}); chart.setOption(buildChartOption(spec)); }
+    catch(e){ w.appendChild(textBlock('Chart could not be rendered.')); return; }
+    // P3a:点柱子/点 → 跳到对应视频片段(spec.links[dataIndex] = video_id 或 {video_id,ts});解析限本条回答卡内
+    const links=spec.links, hasLinks=Array.isArray(links)&&links.length;
+    if(hasLinks){
+      chart.getZr().setCursorStyle('pointer');
+      chart.on('click', p=>{
+        const lk=links[p.dataIndex]; if(!lk) return;
+        const id=(typeof lk==='object')?lk.video_id:lk, ts=(typeof lk==='object')?(lk.ts||0):0;
+        seekVideoById(w.closest('.card')||document, id, ts);
+      });
+    }
+    const ro=('ResizeObserver' in window)?new ResizeObserver(()=>chart.resize()):null;
+    if(ro) ro.observe(mount); else window.addEventListener('resize',()=>chart.resize());
+    // CSV 导出(把 spec 数据落成表)
+    const bar=el('<div class="cbar"></div>');
+    const csv=el('<span class="lnk"><i class="ti ti-download" aria-hidden="true"></i>CSV</span>');
+    csv.onclick=()=>{ const ys=(spec.series&&spec.series.length)?spec.series:[{name:spec.y_name||'y',data:spec.y||[]}];
+      const cols=[spec.x_name||'x',...ys.map(s=>s.name)];
+      const rows=(spec.x||[]).map((xv,i)=>{const o={}; o[cols[0]]=xv; ys.forEach((s,j)=>o[cols[j+1]]=(s.data||[])[i]); return o;});
+      downloadCSV(rows); };
+    bar.appendChild(csv); w.appendChild(bar);
+  }).catch(()=>{ skel.remove(); w.appendChild(textBlock('Interactive chart unavailable (chart library failed to load).')); });
+  return w;
+}
+
 // ── 视频展示:内嵌 <video> 播放数据库里的视频/片段(show_video 节点产出)──────
 // 签名直链 15 分钟就过期:离开后重开历史(或页面开着超时再点播)时旧 URL 已死。
 // 渲染时按需向 /v1/resign 换一批新鲜 URL;播放报错再兜底重签一次。(浏览器对同源自动带 Basic 认证。)
@@ -419,10 +577,14 @@ async function resignVideos(ids){
   }catch(e){ return {}; }
 }
 // V1: segment marker bar — highlights [start_ts,end_ts] under the player; click seeks to the moment.
+// confidence → segment color(诚实的轻量"热力":有 score 就按置信度上色,不造逐帧假数据)
+function scoreColor(s){ return s==null?'#3f7bf0' : (s>=0.75?'#6ea2ff' : s>=0.5?'#3f7bf0' : '#2c4a78'); }
 function markerBar(vid, v){
   if(v.start_ts==null) return null;
-  const bar=el('<div style="position:relative;height:5px;margin:0 1px;border-radius:3px;background:#1d2229;cursor:pointer" title="Matched segment — click to jump"></div>');
-  const seg=el('<div style="position:absolute;top:0;height:5px;border-radius:3px;background:#3f7bf0;min-width:6px"></div>');
+  const conf=(typeof v.score==='number')?(' · confidence '+v.score.toFixed(2)):'';
+  const bar=el('<div style="position:relative;height:6px;margin:0 1px;border-radius:3px;background:#1d2229;cursor:pointer" title="Matched segment — click to jump'+conf+'"></div>');
+  const seg=el('<div style="position:absolute;top:0;height:6px;border-radius:3px;min-width:6px"></div>');
+  seg.style.background=scoreColor(v.score);
   bar.appendChild(seg);
   const place=()=>{
     const dur=vid.duration||v.duration_sec||0; if(!dur) return;
@@ -452,10 +614,17 @@ function renderVideos(list){
     const head=el('<div class="vhead"></div>');
     head.appendChild(Object.assign(el('<span class="vnum"></span>'),{textContent:'#'+(i+1)}));  // 1..N,用户可说「第 N 个」
     head.appendChild(Object.assign(el('<span></span>'),{textContent:(v.title||('Video '+(i+1))),
-      style:'overflow:hidden;text-overflow:ellipsis;white-space:nowrap'}));
+      style:'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'}));
+    if(typeof v.score==='number'){                       // P3c:置信度 chip(有分才显示)
+      const band=v.score>=0.75?'high':v.score>=0.5?'med':'low';
+      const chip=el('<span class="confchip"></span>'); chip.classList.add(band);
+      chip.textContent=band+' · '+v.score.toFixed(2); chip.title='Match confidence';
+      head.appendChild(chip);
+    }
     card.appendChild(head);
     if(v.playable && v.video_id){
       const vid=el('<video controls preload="metadata" playsinline></video>');
+      vid.dataset.videoId=v.video_id;                    // P3a:标记 id,图表点击可定位到这个播放器
       mountVideo(vid, v);
       card.appendChild(vid);
       const mb=markerBar(vid, v); if(mb) card.appendChild(mb);

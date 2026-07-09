@@ -40,7 +40,7 @@ def _start(mode: str) -> bool:
         args = [sys.executable, "-m", "evals.runner"]
         if mode == "live":
             # 控制台按钮默认每题只跑 1 次，防止误点烧钱（要 n=5 走命令行）
-            args += ["--live", "--n", "1", "--out", "evals/report_live.html"]
+            args += ["--live", "--out", "evals/report_live.html"]   # 每题次数用系统默认(3)
         env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1", REPL_USE_MOCK_DB="1")
         logf = open(_LOG, "w", encoding="utf-8")
         _state["proc"] = subprocess.Popen(args, cwd=_ROOT, env=env,

@@ -10,18 +10,20 @@ import os
 
 
 def _load_local_env() -> None:
-    """本地便利:若仓库根有 neon.env(gitignored),把其中 KEY=VALUE 载入环境
-    (不覆盖已显式设置的)。这样直接 uvicorn / 跑脚本都自动连 Neon,无需先手动 source。"""
-    p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "neon.env")
-    try:
-        with open(p, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    k, v = line.split("=", 1)
-                    os.environ.setdefault(k.strip(), v.strip())
-    except OSError:
-        pass
+    """本地便利:把仓库根 .env(gitignored,密钥统一放这)里的 KEY=VALUE 载入环境
+    (不覆盖已显式设置的)。这样直接 uvicorn / 跑脚本都自动带上配置,无需先手动 source。
+    neon.env 是老名字,2026-07-08 已并入 .env——这里还认它只为兜底,新密钥别再往里加。"""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for name in (".env", "neon.env"):
+        try:
+            with open(os.path.join(root, name), encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+        except OSError:
+            pass
 
 
 _load_local_env()

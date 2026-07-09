@@ -68,9 +68,9 @@ class DualControlSession:
             loop_driver._make_executor(SandboxClient(), Trace(), schema, None, owner=self.owner))
 
         history, turns = [], []
-        for _ in range(self.max_turns):
+        for turn_no in range(1, self.max_turns + 1):
             ut = user.next_turn(history)
-            self._apply_action(ut.get("action"), backend)
+            self._apply_action(ut.get("action"), backend, turn=turn_no)
             history.append({"who": "user_sim", "text": ut["utterance"]})
             turns.append(TurnRecord("user_sim", ut["utterance"], ut.get("action")))
             r = loop_driver.run_loop(ut["utterance"], conv, execute,
@@ -82,7 +82,7 @@ class DualControlSession:
                 break
         return {"turns": turns, "world_state": backend.world_state, "history": history}
 
-    def _apply_action(self, action, backend: EvalBackend):
+    def _apply_action(self, action, backend: EvalBackend, turn: int = 1):
         """用户动作落进假世界（说话/纠正不用落；贴图在会话开头已处理）。"""
         name = _action_name(action)
         if name == "upload_video":
@@ -92,3 +92,7 @@ class DualControlSession:
                            duration=float(action.get("duration_sec", 30)))
         elif name == "enrich_video":
             backend.enrich(action.get("video_id", ""))
+        elif name == "paste_image" and turn > 1:
+            # 目前只支持首轮贴图（随首条消息送入）；放在后面轮会被静默丢掉——
+            # 出这种题等于测了个寂寞，直接炸出来让出题人改题
+            raise ValueError(f"paste_image 只能放在第 1 轮（现在在第 {turn} 轮）——图不会真的送给 agent")
