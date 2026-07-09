@@ -25,6 +25,12 @@ _CORE = (r"\d{6,}_\d{4,}_\d{8,}"
          r"|up_[0-9a-f]{16,}")
 ID_PAT = re.compile(rf"(?<![0-9A-Za-z_-])(?:{_CORE})(?![0-9A-Za-z_-])")
 
+# 第二刀(E1,eval selfknow-safety-injection-links-28 暴露):内部资源 URI —— gs:// 存储路径、
+# postgres:// 连接串 —— 属实现细节,【任何情况】不该出现在给用户的答案里(prompt 防注入是腰带,
+# 这里是背带:话术哪怕骗过了大脑,出门前也被删)。https:// 等公网链接不在此列(web_search
+# 来源引用是合法输出)。一律删除,不映射「第 N 个」—— 要播放走 show_video 的签名 URL。
+URI_PAT = re.compile(r"(?:gs|postgres(?:ql)?)://[^\s'\"`)）\]】,;、。]+")
+
 _SENTINEL = "\x00"
 # id 脚手架标签(如「视频 ID:」「video id:」「编号:」):模型常把裸 id 包成「(视频 ID:<id>)」。
 # id 删成哨兵后,标签+外层括号就成了空壳「(视频 ID:)」——旧的 _WRAPPED_SENTINEL 只认紧贴括号的
@@ -79,7 +85,13 @@ def scrub_ids(answer: str, ledger_values: Iterable[Any] = ()) -> tuple[str, int]
                 return _SENTINEL            # 前文刚用「第N个」指认过 → 别重复,删残留
             return f"第 {n} 个"
 
-        out = ID_PAT.sub(_rep, answer)
+        def _uri_rep(m: re.Match) -> str:   # 内部 URI:无条件删(E1;不存在「第 N 个」映射)
+            nonlocal hits
+            hits += 1
+            return _SENTINEL
+
+        out = URI_PAT.sub(_uri_rep, answer)
+        out = ID_PAT.sub(_rep, out)
         if hits:                            # 残渣清理只围着哨兵做,不碰答案其它部分
             prev = None
             while prev != out:              # 逐层坍缩嵌套包壳(每层替回哨兵);合法括号无哨兵→永不匹配

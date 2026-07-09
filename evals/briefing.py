@@ -26,6 +26,29 @@ def _fail_dims(r) -> list:
     return [k for k, v in (r.get("scores") or {}).items() if v < 1.0]
 
 
+def task_feedback(r: dict) -> str:
+    """GD-0:一道题的【文本反馈】(GEPA 反思器的"梯度")。输入 = report.results.jsonl 的
+    一条记录,输出 = 这道题的完整病历(栽在哪把尺子/用户问/agent答/期望/金标依据/工具轨迹/
+    各尺子分)。build_briefing 的失败区就是逐题调它 —— 单一来源,两处共用。"""
+    ff = r.get("first_fail") or {}
+    ans = ff.get("answer") or r.get("answer") or "(无)"
+    tools = ff.get("tools") or r.get("tools") or []
+    tool_str = " → ".join(
+        f"{t.get('tool')}({t.get('args', '')})"
+        + (f" ⇒ {t['out']}" if t.get("out") else "")
+        for t in tools[:10]) or "(没调工具)"
+    pin = "🔒必过题 " if r.get("pinned") else ""
+    L = [f"### {pin}`{r['id']}` — 栽在：{_labels(_fail_dims(r))}", ""]
+    L.append(f"- **用户问**：{r.get('question', '(无)')}")
+    L.append(f"- **agent 答**：{ans}")
+    L.append(f"- **期望（判分标准）**：`{json.dumps(r.get('expect', {}), ensure_ascii=False)}`")
+    if r.get("grounding_note"):
+        L.append(f"- **金标依据（正确答案为什么是这个）**：{r['grounding_note']}")
+    L.append(f"- **agent 调的工具**：{tool_str}")
+    L.append(f"- **各尺子得分**：`{json.dumps(r.get('scores', {}), ensure_ascii=False)}`")
+    return "\n".join(L)
+
+
 def build_briefing(run: dict) -> str:
     """run = dashboard 归档的一次运行记录（含 results 明细）。返回 markdown 字符串。"""
     meta = run.get("meta") or {}
@@ -97,20 +120,7 @@ def build_briefing(run: dict) -> str:
     if not fails:
         L.append("*本次没有失败题。*")
     for r in fails:
-        ff = r.get("first_fail") or {}
-        ans = ff.get("answer") or r.get("answer") or "(无)"
-        tools = ff.get("tools") or r.get("tools") or []
-        tool_str = " → ".join(f"{t.get('tool')}({t.get('args', '')})" for t in tools[:10]) or "(没调工具)"
-        pin = "🔒必过题 " if r.get("pinned") else ""
-        L.append(f"### {pin}`{r['id']}` — 栽在：{_labels(_fail_dims(r))}")
-        L.append("")
-        L.append(f"- **用户问**：{r.get('question', '(无)')}")
-        L.append(f"- **agent 答**：{ans}")
-        L.append(f"- **期望（判分标准）**：`{json.dumps(r.get('expect', {}), ensure_ascii=False)}`")
-        if r.get("grounding_note"):
-            L.append(f"- **金标依据（正确答案为什么是这个）**：{r['grounding_note']}")
-        L.append(f"- **agent 调的工具**：{tool_str}")
-        L.append(f"- **各尺子得分**：`{json.dumps(r.get('scores', {}), ensure_ascii=False)}`")
+        L.append(task_feedback(r))
         L.append("")
 
     if infra:

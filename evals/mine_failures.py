@@ -7,7 +7,8 @@
      python -m evals.mine_failures --file logs.jsonl
 
 产出：候选清单 + 每条一份"半成品题"（题目/建议维度/待人工补金标），
-写到 evals/tasks/candidates.jsonl —— 人工过目、补上金标后再挪进正式题库。
+写到 evals/candidates.jsonl(刻意放在 tasks/ 外 —— 半成品金标是 TODO,load_tasks 也会跳过
+candidates* 文件名,双保险防止未审题混进正式题库)。人工补金标后再挪进 evals/tasks/。
 """
 from __future__ import annotations
 
@@ -74,7 +75,7 @@ def main(argv=None):
     ap.add_argument("--bq", help="BigQuery 表名：项目.数据集.usage_audit")
     ap.add_argument("--file", help="离线：日志导出 jsonl")
     ap.add_argument("--days", type=int, default=7)
-    ap.add_argument("--out", default="evals/tasks/candidates.jsonl")
+    ap.add_argument("--out", default="evals/candidates.jsonl")   # GD-0:移出 tasks/,防自动入题库
     args = ap.parse_args(argv)
 
     if args.bq:

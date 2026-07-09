@@ -232,7 +232,26 @@ FACTS = [
 #  Init  ──  建表 + 灌数据
 # ════════════════════════════════════════════════════
 
+def _active_seeds():
+    """GD-2 双世界:MOCK_WORLD=B → 世界 B 种子(repl/_mock_world_b.py,跳伞表为空)。
+    默认世界 A(原 16 视频,金标冻结不动)。EvalBackend 每场重灌(mock._conn=None)时按
+    env 切换 —— 两个世界永不同场。"""
+    import os as _os
+    w = _os.environ.get("MOCK_WORLD", "A").upper()
+    if w == "B":
+        from repl._mock_world_b import VIDEOS_B, FACTS_B
+        return VIDEOS_B, FACTS_B, []
+    if w == "C":
+        from repl._mock_world_c import VIDEOS_C, FACTS_C
+        return VIDEOS_C, FACTS_C, []
+    if w == "D":
+        from repl._mock_world_d import VIDEOS_D, FACTS_D
+        return VIDEOS_D, FACTS_D, []
+    return VIDEOS, FACTS, SKYDIVE_SEED
+
+
 def _init_conn() -> sqlite3.Connection:
+    videos, facts, sky_seed = _active_seeds()
     conn = sqlite3.connect(":memory:", check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.executescript(_SCHEMA_DDL)
@@ -240,20 +259,20 @@ def _init_conn() -> sqlite3.Connection:
     # video_metadata
     conn.executemany(
         "INSERT INTO video_metadata(video_id, title, gcs_uri, duration_sec) VALUES (?,?,?,?)",
-        [(v[0], v[1], v[2], v[3]) for v in VIDEOS],
+        [(v[0], v[1], v[2], v[3]) for v in videos],
     )
 
     # video_discovery — all_activities 存成 JSON 字符串
     conn.executemany(
         "INSERT INTO video_discovery(video_id, all_activities) VALUES (?, ?)",
-        [(v[0], json.dumps(v[4], ensure_ascii=False)) for v in VIDEOS],
+        [(v[0], json.dumps(v[4], ensure_ascii=False)) for v in videos],
     )
 
     # video_facts
     conn.executemany(
         "INSERT INTO video_facts(video_id, predicate, matched, confidence, "
         "rationale, start_ts, end_ts) VALUES (?,?,?,?,?,?,?)",
-        FACTS,
+        facts,
     )
 
     # video_fact_instances — 为每条 matched fact 在 [start_ts, end_ts] 上
@@ -274,9 +293,9 @@ def _init_conn() -> sqlite3.Connection:
         instances,
     )
 
-    # ── 跳伞专栏:建表(单源 DDL,CURRENT_TIMESTAMP 兼容 SQLite)+ 灌 seed ──
+    # ── 跳伞专栏:建表(单源 DDL,CURRENT_TIMESTAMP 兼容 SQLite)+ 灌 seed(世界 B 为空表)──
     conn.executescript(sky_create_table_sql())
-    sky_rows = [sky_to_row(vid, ext) for vid, ext in SKYDIVE_SEED]   # 缺席阶段 → None → SQL NULL
+    sky_rows = [sky_to_row(vid, ext) for vid, ext in sky_seed]   # 缺席阶段 → None → SQL NULL
     conn.executemany(
         f"INSERT INTO skydive_segments ({', '.join(SKY_COLUMNS)}) "
         f"VALUES ({', '.join(['?'] * len(SKY_COLUMNS))})",

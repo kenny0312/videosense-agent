@@ -279,7 +279,10 @@ class GeminiConversation:
                 calls.append(Call(fc.name, args, uses))
             elif getattr(p, "text", ""):
                 texts.append(p.text)
-        return calls, ("".join(texts) if texts else None)
+        text = "".join(texts) if texts else None
+        if not calls and not (text or "").strip():
+            text = _blocked_text(resp) or text             # E2:安全拦截 → 体面拒答,不交空卷
+        return calls, text
 
 
 # ── U5:google-genai 后端(gemini-3.x 起【只】在新 SDK + global 端点可用;spike 已验函数调用往返)──
@@ -327,7 +330,35 @@ class GenAIConversation:
                 calls.append(Call(fc.name, args, uses))
             elif getattr(p, "text", ""):
                 texts.append(p.text)
-        return calls, ("".join(texts) if texts else None)
+        text = "".join(texts) if texts else None
+        if not calls and not (text or "").strip():
+            text = _blocked_text(resp) or text             # E2:安全拦截 → 体面拒答,不交空卷
+        return calls, text
+
+
+# E2(eval selfknow-safety-porn-search-26 暴露):模型被安全策略拦掉生成 → 候选无 parts /
+# finish_reason=SAFETY → 旧逻辑把 None/空串当"纯文本收口"交卷,用户看到空答案。
+# 这里识别"被拦"并换成一句体面拒答;识别不出的空答案由 orchestrator 的空答网兜住(重试提示)。
+_BLOCKED_REFUSAL = ("这个请求我无法协助:本系统不提供此类内容的检索或展示。"
+                    "换一个与视频库相关的问题吧。")
+
+
+def _blocked_text(resp) -> "str | None":
+    """resp 被安全策略拦截(生成为空)→ 返回体面拒答;否则 None。全程 fail-open。"""
+    try:
+        parts = []
+        cand = resp.candidates[0] if getattr(resp, "candidates", None) else None
+        if cand is not None:
+            parts.append(str(getattr(cand, "finish_reason", "") or ""))
+        pf = getattr(resp, "prompt_feedback", None)
+        if pf is not None:
+            parts.append(str(getattr(pf, "block_reason", "") or ""))
+        sig = " ".join(parts).upper()
+        if any(k in sig for k in ("SAFETY", "BLOCK", "PROHIBITED", "SPII")):
+            return _BLOCKED_REFUSAL
+    except Exception:
+        pass
+    return None
 
 
 def make_conversation(model_name: str, declarations: list[dict], system: str,
@@ -511,12 +542,27 @@ _DATA_FACTS = (
 )
 
 # 拼装(模块级一次,字节稳定 —— L3 context caching 的前提)
-_LOOP_SYSTEM = (
-    _CONSTITUTION
-    + "\n# 经验教训(每条都有来历;部分有代码兜底,但你第一时间做对,答案才自然)\n"
-    + lessons.render()
-    + "\n\n# 关键数据说明\n" + _DATA_FACTS
-)
+def _build_loop_system() -> str:
+    """拼静态前缀(宪法+教训+数据事实)。生产路径只在 import 时调一次 → byte-stable,
+    L3 缓存前提不变;GD-0 抽成函数是给 refresh_loop_system 用的(GEPA 候选评估)。"""
+    return (
+        _CONSTITUTION
+        + "\n# 经验教训(每条都有来历;部分有代码兜底,但你第一时间做对,答案才自然)\n"
+        + lessons.render()
+        + "\n\n# 关键数据说明\n" + _DATA_FACTS
+    )
+
+
+_LOOP_SYSTEM = _build_loop_system()
+
+
+def refresh_loop_system() -> None:
+    """GD-0(GEPA 候选评估用):同进程内改了 lessons.LESSONS / 声明后,重拼静态前缀。
+    生产【绝不调用】—— _LOOP_SYSTEM 在 import 时冻结才有 byte-stable 缓存;本函数只给
+    评测/进化循环在两次候选评估之间刷新 prompt(免开新进程)。需配合 importlib.reload(lessons)
+    或直接改 lessons.LESSONS 后调用。"""
+    global _LOOP_SYSTEM
+    _LOOP_SYSTEM = _build_loop_system()
 
 
 def _detect_lang(nl: "str | None") -> str:
