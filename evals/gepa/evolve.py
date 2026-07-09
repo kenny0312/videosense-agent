@@ -169,24 +169,28 @@ def main(argv=None) -> int:
 
     # ── 代际循环 ────────────────────────────────────────────────
     child_seq = sum(1 for c in st.candidates if c.startswith("c"))
+    # gen 计数语义 = 【真花了评估钱的子代数】;无提案/重复/非法的空转只吃 attempts
+    # (首轮教训:429 空转把 gen 吃满,--resume 进门就退)。续跑时按此语义重算。
+    st.gen = child_seq
+    attempts, max_attempts = 0, args.max_gens * 3
     # 续跑时从谱系重建"试过的方向"(审计 m12:反思器不许失忆)
     tried_notes = [f"- {st.candidates[c].get('target', '?')}:{st.candidates[c].get('rationale', '')}"
                    for c in sorted(st.candidates) if c != "gen0"]
     seen_ov = {json.dumps(st.candidates[c]["overrides"], sort_keys=True, ensure_ascii=False)
                for c in st.candidates}
-    while st.gen < args.max_gens:
+    while st.gen < args.max_gens and attempts < max_attempts:
         est_gen = (args.mini_k + len(by["val"]) * args.val_n) * led.unit() + REFLECT_COST_EST
         if led.spent + est_gen > args.budget_usd - args.reserve_usd:
             st.journal("evolution_close", gen=st.gen, spent=led.spent, est_gen=round(est_gen, 2))
             break
-        st.gen += 1
+        attempts += 1
         front = frontier.pareto_wins(st.matrix)
         parent = frontier.sample_parent(front, rng) if front else "gen0"
         # 反思燃料严格只用 train 堂病历(§4:D_feedback=train;val 病历若进燃料,
         # 等于直接对着记分板优化 —— 自适应过拟合的正门。审计 B5/B9)
         meds = [v for t, v in st.meds.get(parent, {}).items() if t in train_ids]
         if not meds:
-            st.journal("skip_gen", gen=st.gen, why=f"父本 {parent} 无 train 病历"); break
+            st.journal("skip_gen", attempt=attempts, why=f"父本 {parent} 无 train 病历"); break
         rng.shuffle(meds)
         led.add(REFLECT_COST_EST)                   # 反思调用按估价入账(审计 m1)
         proposal = reflect.propose(
@@ -194,19 +198,20 @@ def main(argv=None) -> int:
             meds[:10], "\n".join(tried_notes[-8:]))
         if not proposal or proposal.get("skip"):
             note = (proposal or {}).get("rationale", "反思器输出不可解析")
-            st.journal("no_proposal", gen=st.gen, parent=parent, why=note)
+            st.journal("no_proposal", attempt=attempts, parent=parent, why=note)
             tried_notes.append(f"- (无效提案:{note[:80]})")
             continue
         overrides = reflect.to_overrides(proposal, st.candidates[parent]["overrides"])
         errs = space.validate(overrides)
         tried_notes.append(f"- {proposal['target']}:{proposal['rationale']}")
         if errs:
-            st.journal("invalid", gen=st.gen, errs=errs); continue
+            st.journal("invalid", attempt=attempts, errs=errs); continue
         key = json.dumps(overrides, sort_keys=True, ensure_ascii=False)
         if key in seen_ov:                          # 重复提案不重付评估费(审计 m15)
-            st.journal("duplicate", gen=st.gen, target=proposal["target"]); continue
+            st.journal("duplicate", attempt=attempts, target=proposal["target"]); continue
         seen_ov.add(key)
         child_seq += 1
+        st.gen += 1                                 # 只有真要花评估钱的子代才算一代
         cid = f"c{child_seq}"
         st.add_candidate(cid, parent, overrides, proposal["rationale"], proposal["cites"])
         st.candidates[cid]["target"] = proposal["target"]
