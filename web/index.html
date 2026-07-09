@@ -134,6 +134,10 @@
   .vcard .vnum{font-size:10.5px;color:var(--accent-soft);background:var(--accent-dim);padding:1px 7px;border-radius:999px;flex-shrink:0;font-variant-numeric:tabular-nums}
   .vcard video{width:100%;max-height:360px;background:#000;display:block}
   .vcard .vna{padding:14px 11px;color:var(--hint);font-size:12.5px;display:flex;align-items:center;gap:7px}
+  /* P3c: match-confidence chip on the video card header */
+  .confchip{font-size:10px;font-weight:600;padding:1px 7px;border-radius:999px;flex-shrink:0;
+    font-variant-numeric:tabular-nums;letter-spacing:.02em;text-transform:uppercase}
+  .confchip.high{color:#8fd6a8;background:#16311f} .confchip.med{color:#9dbfff;background:#16233f} .confchip.low{color:#98a2ae;background:#20242b}
   /* table */
   .tbl{margin:6px 0;border:1px solid var(--border2);border-radius:12px;overflow:hidden;background:#0d1015}
   .tbl .tbar{display:flex;align-items:center;justify-content:space-between;padding:9px 13px;font-size:12px;color:var(--muted);border-bottom:1px solid var(--border)}
@@ -305,6 +309,7 @@ function renderAssistant(card, d, ms){
   // ok
   if(d.videos && d.videos.length){ card.appendChild(renderVideos(d.videos)); }
   if(d.table && d.table.rows && d.table.rows.length){ card.appendChild(renderTable(d.table)); }
+  if(d.stat && d.stat.items && d.stat.items.length){ card.appendChild(renderStatCards(d.stat)); }   // P2:KPI 数字卡(头条指标)
   // 结论先行:答案文字始终渲染;有图则把图作为下方证据附上(别让图吞掉结论)
   if(d.answer!=null && !(typeof d.answer==='string' && !d.answer.trim())){ card.appendChild(renderAnswer(d.answer)); }
   if(d.chart_spec){ card.appendChild(renderChartSpec(d.chart_spec)); }   // P1: 交互式 ECharts(spec 驱动)
@@ -383,6 +388,25 @@ function renderStats(obj){
   return w;
 }
 function fmt(v){ if(typeof v==='number'){ return Number.isInteger(v)?v:(+v.toFixed(4)+'').replace(/\.?0+$/,''); } return String(v); }
+// P2: show_stat 侧信道 → KPI 数字卡(复用 .stats/.stat/.k/.v,零新样式)
+function renderStatCards(st){
+  const w=el('<div class="stats"></div>');
+  (st.items||[]).forEach(it=>{
+    const s=el('<div class="stat"></div>');
+    s.appendChild(Object.assign(el('<div class="k"></div>'),{textContent:String(it.label)}));
+    const v=el('<div class="v"></div>'); v.textContent=fmt(it.value)+(it.unit?(' '+it.unit):''); s.appendChild(v);
+    w.appendChild(s);
+  });
+  return w;
+}
+// P3a: 按 video_id 定位到本条回答卡里的播放器并跳转(图表点击 / 跨卡导航复用;唯一的 seek-by-id 入口)
+function seekVideoById(root, id, ts){
+  const vid=root && root.querySelector('video[data-video-id="'+(window.CSS&&CSS.escape?CSS.escape(String(id)):String(id))+'"]');
+  if(!vid) return false;
+  const go=()=>{ try{ vid.currentTime=ts||0; vid.play(); vid.scrollIntoView({block:'nearest',behavior:'smooth'}); }catch(e){} };
+  if(vid.readyState>=1) go(); else vid.addEventListener('loadedmetadata', go, {once:true});
+  return true;
+}
 
 // ── 表格:排序 + 置信度条 + CSV ─────────────────────────
 function isConfCol(rows,k){
@@ -517,6 +541,16 @@ function renderChartSpec(spec){
     let chart;
     try{ chart=ec.init(mount,null,{renderer:'canvas'}); chart.setOption(buildChartOption(spec)); }
     catch(e){ w.appendChild(textBlock('Chart could not be rendered.')); return; }
+    // P3a:点柱子/点 → 跳到对应视频片段(spec.links[dataIndex] = video_id 或 {video_id,ts});解析限本条回答卡内
+    const links=spec.links, hasLinks=Array.isArray(links)&&links.length;
+    if(hasLinks){
+      chart.getZr().setCursorStyle('pointer');
+      chart.on('click', p=>{
+        const lk=links[p.dataIndex]; if(!lk) return;
+        const id=(typeof lk==='object')?lk.video_id:lk, ts=(typeof lk==='object')?(lk.ts||0):0;
+        seekVideoById(w.closest('.card')||document, id, ts);
+      });
+    }
     const ro=('ResizeObserver' in window)?new ResizeObserver(()=>chart.resize()):null;
     if(ro) ro.observe(mount); else window.addEventListener('resize',()=>chart.resize());
     // CSV 导出(把 spec 数据落成表)
@@ -543,10 +577,14 @@ async function resignVideos(ids){
   }catch(e){ return {}; }
 }
 // V1: segment marker bar — highlights [start_ts,end_ts] under the player; click seeks to the moment.
+// confidence → segment color(诚实的轻量"热力":有 score 就按置信度上色,不造逐帧假数据)
+function scoreColor(s){ return s==null?'#3f7bf0' : (s>=0.75?'#6ea2ff' : s>=0.5?'#3f7bf0' : '#2c4a78'); }
 function markerBar(vid, v){
   if(v.start_ts==null) return null;
-  const bar=el('<div style="position:relative;height:5px;margin:0 1px;border-radius:3px;background:#1d2229;cursor:pointer" title="Matched segment — click to jump"></div>');
-  const seg=el('<div style="position:absolute;top:0;height:5px;border-radius:3px;background:#3f7bf0;min-width:6px"></div>');
+  const conf=(typeof v.score==='number')?(' · confidence '+v.score.toFixed(2)):'';
+  const bar=el('<div style="position:relative;height:6px;margin:0 1px;border-radius:3px;background:#1d2229;cursor:pointer" title="Matched segment — click to jump'+conf+'"></div>');
+  const seg=el('<div style="position:absolute;top:0;height:6px;border-radius:3px;min-width:6px"></div>');
+  seg.style.background=scoreColor(v.score);
   bar.appendChild(seg);
   const place=()=>{
     const dur=vid.duration||v.duration_sec||0; if(!dur) return;
@@ -576,10 +614,17 @@ function renderVideos(list){
     const head=el('<div class="vhead"></div>');
     head.appendChild(Object.assign(el('<span class="vnum"></span>'),{textContent:'#'+(i+1)}));  // 1..N,用户可说「第 N 个」
     head.appendChild(Object.assign(el('<span></span>'),{textContent:(v.title||('Video '+(i+1))),
-      style:'overflow:hidden;text-overflow:ellipsis;white-space:nowrap'}));
+      style:'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'}));
+    if(typeof v.score==='number'){                       // P3c:置信度 chip(有分才显示)
+      const band=v.score>=0.75?'high':v.score>=0.5?'med':'low';
+      const chip=el('<span class="confchip"></span>'); chip.classList.add(band);
+      chip.textContent=band+' · '+v.score.toFixed(2); chip.title='Match confidence';
+      head.appendChild(chip);
+    }
     card.appendChild(head);
     if(v.playable && v.video_id){
       const vid=el('<video controls preload="metadata" playsinline></video>');
+      vid.dataset.videoId=v.video_id;                    // P3a:标记 id,图表点击可定位到这个播放器
       mountVideo(vid, v);
       card.appendChild(vid);
       const mb=markerBar(vid, v); if(mb) card.appendChild(mb);
