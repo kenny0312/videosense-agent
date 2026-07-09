@@ -65,6 +65,10 @@ def build_briefing(run: dict) -> str:
              f" ｜ 结论：{run.get('verdict_label', '?')}")
     L.append(f"- 必过题：{run.get('pinned_total', 0) - run.get('pinned_failed', 0)}/{run.get('pinned_total', 0)}"
              f" 过 ｜ 环境故障（不计分）：{len(infra)} 题")
+    j = meta.get("judge") or {}
+    if j:
+        L.append(f"- AI 裁判参考分（**不进门禁**，对表 {j.get('cert', '?')}）：开放式判据做到 "
+                 f"{j.get('ok', 0)}/{j.get('total', 0)}（裁判 {j.get('model', '?')}）")
     for why in run.get("reasons", [])[:8]:
         L.append(f"- {why}")
     # 集中度报警：失败大量堆在同一把尺子上，通常是尺子/题目模板的问题，不是 agent 忽然变笨

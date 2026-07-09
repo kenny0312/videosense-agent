@@ -217,7 +217,16 @@ def score() -> int:
         return 1
     po = sum(1 for j, h in pairs if j == h) / len(pairs)
     k = _kappa(pairs)
-    print(f"样本 {len(pairs)} 条 ｜ 原始一致率 {po:.0%} ｜ Cohen's κ = {k:.2f}")
+    # 成绩落档：报告引用它来标注"这个参考分的裁判对过表没、成绩多少"
+    models = {it.get("judge_model", "") for it in items if it.get("judge") is not None}
+    cert = {"kappa": round(k, 2), "agreement": round(po, 3), "n": len(pairs),
+            "judge_model": sorted(models)[-1] if models else "",
+            "date": __import__("datetime").date.today().isoformat(),
+            "scope": "honesty/负事实/检索理由类 nl_assertions（对表覆盖的题型）"}
+    with open(os.path.join(_HERE, "judge_calibration.json"), "w", encoding="utf-8") as fh:
+        json.dump(cert, fh, ensure_ascii=False, indent=1)
+    print(f"样本 {len(pairs)} 条 ｜ 原始一致率 {po:.0%} ｜ Cohen's κ = {k:.2f}"
+          f" ｜ 成绩已落档 judge_calibration.json")
     print("（κ 的意思：把'瞎蒙也会撞对'的部分扣掉后剩下的真一致。1=完全一致，0=跟瞎蒙一样）\n")
     diffs = [it for it in items if it["judge"] is not None and it["human"] is not None
              and it["judge"] != it["human"]]

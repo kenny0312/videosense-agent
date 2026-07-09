@@ -548,6 +548,14 @@ def main(argv=None):
     with open(results_path, "w", encoding="utf-8") as fh:
         for r in cur_print:
             fh.write(json.dumps(r, ensure_ascii=False, default=str) + "\n")
+    if args.live:
+        # AI 裁判（对过表才有的参考分，永远不碰门禁）：配了 key 就顺手判一遍
+        from evals import judge as judge_mod
+        if judge_mod.available():
+            judge_mod.judge_results(results_path)
+            js = judge_mod.sidecar_summary(results_path)
+            if js:
+                meta["judge"] = js
     print_summary(cur_print, base_print, v)
     dashboard.save_run(cur_print, v, mode, meta=meta)
     dash = dashboard.rebuild()

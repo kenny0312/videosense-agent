@@ -101,6 +101,7 @@ L = {
         "hist_head": ("时间", "模式", "模型", "题数", "通过率", "结论"),
         "pin": "必过",
         "cost": "本次花费：调大脑 {llm} 次 · 看画面 {an} 次 · 总耗时 {min} 分钟",
+        "judge": "AI 裁判参考分（不进门禁）：开放式判据做到 {ok}/{total} · 裁判 {model} · 对表 {cert}",
         "foot": "跑完自动更新，浏览器 F5 即可 —— 不用 push GitHub。",
         "dl_btn": "⬇ 下载分析简报（给大模型看）",
         "dl_hint": "一个 .md 文件，扔给 Claude 等大模型，让它分析哪里出了问题、怎么修",
@@ -132,6 +133,7 @@ L = {
         "hist_head": ("Time", "Mode", "Model", "Tasks", "Pass rate", "Verdict"),
         "pin": "must-pass",
         "cost": "This run: {llm} brain calls · {an} video looks · {min} min total",
+        "judge": "AI judge reference score (never gates): {ok}/{total} open-ended rubric lines met · judge {model} · calibration {cert}",
         "foot": "Auto-updates after each run; just refresh — no GitHub push needed.",
         "dl_btn": "⬇ Download analysis briefing (for LLMs)",
         "dl_hint": "A single .md — hand it to Claude or any LLM to diagnose what went wrong and how to fix it",
@@ -436,6 +438,10 @@ def _render(runs, lang) -> str:
                      if skipped else "")
         cost_line = (f'<div class="meta">{lang["cost"].format(llm=cost.get("llm_calls", 0), an=cost.get("analyze_calls", 0), min=round(cost.get("wall_ms", 0) / 60000, 1))}</div>'
                      if cost.get("llm_calls") else "")
+        j = meta.get("judge") or {}
+        judge_line = (f'<div class="meta">{lang["judge"].format(ok=j.get("ok", 0), total=j.get("total", 0), model=_esc(j.get("model", "?")), cert=_esc(j.get("cert", "?")))}</div>'
+                      if j else "")
+        cost_line += judge_line
         reasons = "".join(f"<li>{_esc(x)}</li>" for x in latest.get("reasons", []))
         reasons_html = f'<ul class="meta" style="margin:4px 0 0">{reasons}</ul>' if reasons else ""
         reasons_html += _download_button(latest, lang)

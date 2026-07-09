@@ -95,6 +95,28 @@ def judge_one(question: str, answer: str, assertions: list[str]) -> dict:
             "verdicts": verdicts, "notes": text[:800], "judge_model": judge_model()}
 
 
+def sidecar_summary(results_path: str) -> dict | None:
+    """给报告用的裁判摘要：判了几题、判据做到几条、裁判是谁、对表成绩。
+    没跑过裁判返回 None。cert 只认"当前裁判型号 + κ≥0.7"的对表成绩——换裁判就算没对表。"""
+    out_path = results_path.rsplit(".", 1)[0] + ".judge.jsonl"
+    if not os.path.exists(out_path):
+        return None
+    rows = [json.loads(l) for l in open(out_path, encoding="utf-8") if l.strip()]
+    if not rows:
+        return None
+    cert_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "judge_calibration.json")
+    cert = {}
+    if os.path.exists(cert_path):
+        cert = json.load(open(cert_path, encoding="utf-8"))
+    calibrated = cert.get("judge_model") == judge_model() and cert.get("kappa", 0) >= 0.7
+    return {"model": judge_model(), "tasks": len(rows),
+            "ok": sum(r.get("passed", 0) for r in rows),
+            "total": sum(r.get("total", 0) for r in rows),
+            "cert": (f"κ={cert.get('kappa')}·{cert.get('n')}条·{cert.get('date')}"
+                     if calibrated else "未对表"),
+            "calibrated": calibrated}
+
+
 def judge_results(results_path: str) -> int:
     """给一份结果明细里带 nl_assertions 的题补裁判分，写成 <原名>.judge.jsonl。"""
     try:
@@ -114,10 +136,15 @@ def judge_results(results_path: str) -> int:
             asserts = (r.get("expect") or {}).get("nl_assertions") or []
             if not asserts or not r.get("answer"):
                 continue
-            v = judge_one(r.get("question", ""), r["answer"], asserts)
+            # 多轮题给完整对话——判据常覆盖每一轮，只看末轮答案会冤判(对表时踩过的坑)
+            agent_turns = [t for t in (r.get("turns") or []) if t.get("who") == "agent"]
+            answer = ("\n".join(f"【第{i}轮回答】{t.get('text', '')}"
+                                for i, t in enumerate(agent_turns, 1))
+                      if agent_turns else r["answer"])
+            v = judge_one(r.get("question", ""), answer, asserts)
             fh.write(json.dumps({"id": r["id"], **v}, ensure_ascii=False) + "\n")
             n += 1
-            print(f"[{r['id']}] 裁判：做到 {v['passed']}/{v['total']} 条")
+            print(f"[{r['id']}] 裁判：判据做到 {v['passed']}/{v['total']} 条")
     print(f"共判 {n} 题，明细：{out_path}（参考分，不进门禁）")
     return 0
 
