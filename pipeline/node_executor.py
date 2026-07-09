@@ -340,7 +340,7 @@ def _run_sandbox_node(node: Node, upstream: dict[str, Any],
             step.ok(stdout_chars=len(last.stdout), elapsed_s=f"{last.elapsed_seconds:.2f}")
             artifact = {}
             if isinstance(value, dict):
-                for key in ("svg", "png_base64"):
+                for key in ("svg", "png_base64", "chart_spec"):   # chart_spec: 前端 ECharts 渲染
                     if key in value:
                         artifact[key] = value.pop(key)
             return NodeResult(node.id, node.tool, ok=True, value=value,
