@@ -85,6 +85,15 @@ def _parse_access_keys(raw: str) -> tuple[list[str], dict[str, str]]:
 _ACCESS_KEYS, _KEY_TO_NAME = _parse_access_keys(os.environ.get("APP_ACCESS_KEYS", ""))
 _OPEN_PATHS = {"/health"}
 
+# ── fail-closed:生产环境(APP_ENV=prod)必须设 APP_ACCESS_KEYS,否则拒绝启动 ──
+# 防"忘设/写错口令 = 全站裸奔"(videosense-pyai 就是这么死的:allUsers + 无口令 → 匿名可烧钱)。
+# Cloud Run 会把启动即抛的 revision 标为 unhealthy,不切流量,旧的好版本继续服务。
+# 本地开发不设 APP_ENV(或设 APP_DEV_MODE=1)即可无鉴权跑。
+if not _ACCESS_KEYS and os.environ.get("APP_ENV") == "prod" and os.environ.get("APP_DEV_MODE") != "1":
+    raise RuntimeError(
+        "APP_ACCESS_KEYS 未设置但 APP_ENV=prod —— 拒绝以无鉴权模式对外启动。"
+        "请设 APP_ACCESS_KEYS='name:key,...'(或本地调试用 APP_DEV_MODE=1)。")
+
 
 @app.middleware("http")
 async def _gate(request: Request, call_next):
@@ -146,7 +155,9 @@ def index():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "mode": "mock" if config.USE_MOCK_DB else "alloydb"}
+    # gated 供上线后探活:确认鉴权墙生效(False = 全站无口令,危险信号)。不泄露 key,只报布尔。
+    return {"status": "ok", "mode": "mock" if config.USE_MOCK_DB else "alloydb",
+            "gated": bool(_ACCESS_KEYS)}
 
 
 # 同会话请求在本进程内串行化 —— 端点是 sync def,FastAPI 放线程池并发执行;一次请求是
