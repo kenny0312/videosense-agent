@@ -180,12 +180,81 @@
   .think{color:var(--hint);font-size:13px;display:flex;align-items:center;gap:9px}
   .breathe{width:8px;height:8px;border-radius:50%;background:var(--accent-soft);animation:breathe 1.1s ease-in-out infinite}
   @keyframes breathe{0%,100%{opacity:.3;transform:scale(.8)}50%{opacity:1;transform:scale(1.15)}}
+  /* ── shell redesign: sidebar buckets/search/menu/collapse/account ── */
+  .sidebar{width:250px}
+  .sb-top{display:flex;flex-direction:column;gap:8px}
+  .sb-row1{display:flex;align-items:center;gap:6px}
+  .collapse{width:30px;height:30px;flex-shrink:0;border:none;background:none;color:var(--hint);border-radius:8px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:background .13s,color .13s}
+  .collapse:hover{color:var(--text);background:var(--surface2)}
+  .sb-search{display:flex;align-items:center;gap:8px;background:var(--bg);border:1px solid var(--border2);border-radius:9px;padding:7px 10px}
+  .sb-search:focus-within{border-color:var(--accent)}
+  .sb-search i{color:var(--hint);font-size:15px;flex-shrink:0}
+  .sb-search input{flex:1;background:none;border:none;outline:none;color:var(--text);font:13px inherit;min-width:0}
+  .sb-search input::placeholder{color:var(--hint)}
+  .conv .title{flex:1}
+  .conv .pin-i{color:var(--pro);font-size:13px;flex-shrink:0;margin-right:-2px}
+  .conv .ci{display:none;color:var(--hint);font-size:16px;flex-shrink:0}
+  .conv .more{opacity:0;color:var(--hint);font-size:16px;line-height:1;padding:2px 4px;border-radius:6px;border:none;background:none;cursor:pointer;transition:opacity .12s,color .12s,background .12s}
+  .conv:hover .more{opacity:.65}
+  .conv .more:hover{opacity:1;color:var(--text);background:var(--hover)}
+  .sb-h.pin{color:var(--pro)}
+  .sb-h{position:sticky;top:0;background:var(--surface);z-index:1}
+  .rowmenu{position:fixed;z-index:40;background:#12161c;border:1px solid var(--border2);border-radius:10px;padding:5px;min-width:158px;box-shadow:0 16px 40px -12px #000}
+  .rowmenu button{display:flex;align-items:center;gap:9px;width:100%;background:none;border:none;color:var(--muted);font-size:13px;padding:7px 9px;border-radius:7px;cursor:pointer;text-align:left}
+  .rowmenu button:hover{background:var(--hover);color:var(--text)}
+  .rowmenu button.danger:hover{color:var(--danger)}
+  .rowmenu i{font-size:15px}
+  .rn-input{width:100%;background:var(--bg);border:1px solid var(--accent);border-radius:6px;color:var(--text);font:13px inherit;padding:6px 8px}
+  .acct{display:flex;align-items:center;gap:10px;padding:10px 12px;border-top:1px solid var(--border);cursor:pointer;transition:background .13s}
+  .acct:hover{background:var(--surface2)}
+  .acct .ini{width:28px;height:28px;border-radius:8px;background:var(--accent-dim);color:var(--accent-soft);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;flex-shrink:0}
+  .acct .meta{flex:1;min-width:0;line-height:1.3}
+  .acct .nm{font-size:12.5px;font-weight:500;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .acct .pl{font-size:11px;color:var(--pro)}
+  .acct .gear{color:var(--hint);font-size:16px}
+  /* collapsed icon-rail (desktop) */
+  .shell.collapsed .sidebar{width:56px}
+  .shell.collapsed .newbtn span,.shell.collapsed .sb-search,.shell.collapsed .sb-h,.shell.collapsed .conv .title,.shell.collapsed .conv .more,.shell.collapsed .conv .pin-i,.shell.collapsed .acct .meta,.shell.collapsed .acct .gear{display:none}
+  .shell.collapsed .newbtn{padding:9px 0}
+  .shell.collapsed .conv{justify-content:center;padding:9px 8px}
+  .shell.collapsed .conv .ci{display:inline-flex}
+  .shell.collapsed .acct{justify-content:center}
+  @media(max-width:720px){.shell.collapsed .sidebar{width:80%;max-width:300px}
+    .shell.collapsed .newbtn span,.shell.collapsed .sb-search,.shell.collapsed .sb-h,.shell.collapsed .conv .title,.shell.collapsed .conv .more,.shell.collapsed .acct .meta{display:revert}
+    .shell.collapsed .conv{justify-content:flex-start}.shell.collapsed .conv .ci{display:none}}
+  /* ── composer redesign: + attach menu, chips, tier, cost tooltip, stop ── */
+  .pluswrap{position:relative;flex-shrink:0}
+  .attach-menu{position:absolute;bottom:42px;left:0;z-index:30;background:#12161c;border:1px solid var(--border2);border-radius:11px;padding:5px;min-width:200px;box-shadow:0 16px 40px -12px #000;display:none}
+  .attach-menu.on{display:block}
+  .attach-menu button{display:flex;align-items:center;gap:10px;width:100%;background:none;border:none;color:var(--muted);font-size:13px;padding:8px 9px;border-radius:8px;cursor:pointer;text-align:left}
+  .attach-menu button:hover{background:var(--hover);color:var(--text)}
+  .attach-menu .sub{font-size:11px;color:var(--hint)}
+  .attach-menu i{font-size:16px;color:var(--accent-soft)}
+  .achips{display:flex;gap:7px;flex-wrap:wrap}
+  .achip{display:inline-flex;align-items:center;gap:7px;background:var(--surface2);border:1px solid var(--border2);border-radius:8px;padding:4px 6px 4px 8px;font-size:12px;color:var(--muted)}
+  .achip img{width:22px;height:22px;border-radius:4px;object-fit:cover;display:block}
+  .achip .x{cursor:pointer;color:var(--hint);font-size:14px;display:inline-flex}
+  .achip .x:hover{color:var(--danger)}
+  .send.stop{background:var(--danger)}
+  .send.stop:hover{background:#ec6a6a}
+  .costtip{position:absolute;bottom:34px;right:0;background:#0c0e12;border:1px solid var(--border2);border-radius:8px;padding:6px 10px;font-size:11.5px;color:var(--text);white-space:nowrap;font-variant-numeric:tabular-nums;opacity:0;pointer-events:none;transition:opacity .13s;box-shadow:0 8px 22px -10px #000}
+  .cmon:hover .costtip{opacity:1}
 </style></head>
 <body><div class="shell" id="shell">
   <aside class="sidebar" id="sidebar">
-    <div class="sb-top"><button class="btn newbtn" id="newchat"><i class="ti ti-plus" aria-hidden="true"></i>New chat</button></div>
-    <div class="sb-h">Recents</div>
+    <div class="sb-top">
+      <div class="sb-row1">
+        <button class="collapse" id="collapseBtn" aria-label="Collapse sidebar" title="Collapse sidebar (Ctrl+.)"><i class="ti ti-layout-sidebar-left-collapse" aria-hidden="true"></i></button>
+        <button class="btn newbtn" id="newchat"><i class="ti ti-plus" aria-hidden="true"></i><span>New chat</span></button>
+      </div>
+      <div class="sb-search"><i class="ti ti-search" aria-hidden="true"></i><input id="sbsearch" placeholder="Search chats…" autocomplete="off" aria-label="Search chats"></div>
+    </div>
     <div class="convlist" id="convlist"></div>
+    <div class="acct" id="acctBtn" title="Account &amp; settings" tabindex="0" role="button" aria-label="Account and settings">
+      <span class="ini">KQ</span>
+      <span class="meta"><div class="nm">You</div><div class="pl">Self-hosted</div></span>
+      <i class="ti ti-settings gear" aria-hidden="true"></i>
+    </div>
   </aside>
   <div class="app">
     <header>
@@ -198,18 +267,25 @@
     <div class="thread" id="thread"></div>
     <div class="composer">
       <div class="cwrap">
-        <div id="imgPreview" style="display:none;padding:0 2px 8px"></div>
+        <div id="imgPreview" class="achips" style="display:none;padding:0 2px 8px"></div>
         <div class="box">
-          <button class="ibtn" id="upBtn" type="button" aria-label="Upload a video"
-                  title="Upload your own video to analyze (temporary, expires; not added to the main library)"><i class="ti ti-upload" aria-hidden="true"></i></button>
+          <span class="pluswrap">
+            <button class="ibtn" id="plusBtn" type="button" aria-label="Attach" title="Attach"><i class="ti ti-plus" aria-hidden="true"></i></button>
+            <div class="attach-menu" id="attachMenu">
+              <button id="attUpload" type="button"><i class="ti ti-upload" aria-hidden="true"></i><span>Upload a video<div class="sub">temporary · not added to the library</div></span></button>
+              <button id="attImage" type="button"><i class="ti ti-photo" aria-hidden="true"></i><span>Add an image<div class="sub">or paste with Ctrl+V</div></span></button>
+            </div>
+          </span>
           <input id="upFile" type="file" accept="video/*" style="display:none">
+          <input id="imgFile" type="file" accept="image/*" style="display:none">
           <textarea id="q" rows="1" placeholder="Ask about your videos…"></textarea>
-          <button class="send" id="send" aria-label="Send"><i class="ti ti-arrow-up" aria-hidden="true"></i></button>
+          <button class="send" id="send" aria-label="Send"><i class="ti ti-arrow-up" id="sendIcon" aria-hidden="true"></i></button>
         </div>
         <div class="cfoot">
           <button id="proPill" class="propill" type="button" aria-pressed="false"
-                  title="Pro video analysis: watch-the-content questions use a stronger pro model (more accurate, slower). DB queries and counts are unaffected."><i class="ti ti-sparkles" aria-hidden="true"></i>Pro</button>
+                  title="Pro video analysis: watch-the-content questions use a stronger pro model (more accurate, slower). DB queries and counts are unaffected."><i class="ti ti-sparkles" aria-hidden="true"></i><span id="proLbl">Flash</span></button>
           <span class="cmon" title="Session cost so far ($) and cumulative tokens as a share of the context window (≈1M)">
+            <span class="costtip" id="costtip"></span>
             <span class="cm-txt" id="cmtxt"></span>
             <svg width="28" height="28" viewBox="0 0 30 30" aria-label="Context used">
               <circle cx="15" cy="15" r="12" fill="none" stroke="var(--border2)" stroke-width="2.5"></circle>
@@ -277,15 +353,13 @@ function setPendingImage(dataUrl){
   pendingImage=dataUrl;
   const wrap=$('#imgPreview'); wrap.innerHTML='';
   if(!dataUrl){ wrap.style.display='none'; return; }
-  wrap.style.display='block';
-  const chip=el('<div style="position:relative;display:inline-block"></div>');
-  const img=el('<img alt="pasted screenshot">'); img.src=dataUrl;
-  img.style.cssText='max-height:64px;max-width:130px;border-radius:8px;border:1px solid var(--border2);display:block';
-  const x=el('<button aria-label="Remove image" title="Remove"></button>');
-  x.innerHTML='<i class="ti ti-x"></i>';
-  x.style.cssText='position:absolute;top:-7px;right:-7px;width:19px;height:19px;border-radius:50%;border:none;background:#2a2f37;color:#cfd5dd;cursor:pointer;font-size:12px;line-height:1;display:flex;align-items:center;justify-content:center';
+  wrap.style.display='flex';
+  const chip=el('<div class="achip"></div>');            // 统一成可删小卡(缩略图 + ✕)
+  const img=el('<img alt="attached image">'); img.src=dataUrl; chip.appendChild(img);
+  chip.appendChild(Object.assign(el('<span></span>'),{textContent:'image'}));
+  const x=el('<span class="x" role="button" aria-label="Remove image" title="Remove"><i class="ti ti-x" aria-hidden="true"></i></span>');
   x.onclick=()=>setPendingImage(null);
-  chip.appendChild(img); chip.appendChild(x); wrap.appendChild(chip);
+  chip.appendChild(x); wrap.appendChild(chip);
 }
 function assistantShell(){
   const r=el('<div class="row"><div class="av"><i class="ti ti-sparkles" aria-hidden="true"></i></div></div>');
@@ -768,19 +842,83 @@ function saveChats(){
 function activeChat(){ return chats.find(c=>c.id===activeId)||null; }
 function titleOf(t){ t=String(t||'').trim().replace(/\s+/g,' '); return t ? (t.length>42?t.slice(0,42)+'…':t) : 'New chat'; }
 
-// ── 侧栏渲染 ───────────────────────────────────────────
+// ── 侧栏渲染:置顶 + 按日期分组 + 搜索 + 行菜单 ──────────────
+let sbFilter='';                                  // 搜索词(标题 + 本地消息文本)
+function startOfDay(t){ const d=new Date(t); d.setHours(0,0,0,0); return d.getTime(); }
+function bucketOf(ts){
+  const today=startOfDay(Date.now()), day=86400000, d=startOfDay(ts||0);
+  if(d>=today) return {k:'today', label:'Today', ord:1};
+  if(d>=today-day) return {k:'yst', label:'Yesterday', ord:2};
+  if(d>=today-7*day) return {k:'p7', label:'Previous 7 days', ord:3};
+  if(d>=today-30*day) return {k:'p30', label:'Previous 30 days', ord:4};
+  const dt=new Date(ts); return {k:'m'+dt.getFullYear()+'-'+dt.getMonth(),
+    label:dt.toLocaleDateString(undefined,{month:'long',year:'numeric'}), ord:5+ (9999-(dt.getFullYear()*12+dt.getMonth()))/100000};
+}
+function chatMatches(c, q){
+  if(!q) return true; q=q.toLowerCase();
+  if((c.title||'').toLowerCase().indexOf(q)>=0) return true;
+  return (c.messages||[]).some(m=>m.role==='user' && (m.text||'').toLowerCase().indexOf(q)>=0);   // 本地存了文本 → 能搜正文
+}
+function convRow(c){
+  const row=el('<div class="conv"></div>');
+  if(c.id===activeId) row.classList.add('active');
+  if(c.pinned) row.classList.add('pinned');
+  row.appendChild(el('<i class="ti ti-message ci" aria-hidden="true"></i>'));           // 收窄态图标
+  if(c.pinned) row.appendChild(el('<i class="ti ti-pin pin-i" aria-hidden="true"></i>'));
+  const t=el('<span class="title"></span>'); t.textContent=c.title; row.appendChild(t);
+  const more=el('<button class="more" aria-label="Chat actions"><i class="ti ti-dots" aria-hidden="true"></i></button>');
+  row.appendChild(more);
+  row.onclick=(e)=>{ if(e.target.closest('.more')) return; openChat(c.id); };
+  more.onclick=(e)=>{ e.stopPropagation(); openRowMenu(more, c); };
+  return row;
+}
 function renderSidebar(){
-  const list=$('#convlist'); list.innerHTML='';
+  const list=$('#convlist'); list.innerHTML=''; closeRowMenu();
+  const shown=chats.filter(c=>chatMatches(c, sbFilter));
   if(!chats.length){ list.appendChild(el('<div class="sb-empty">No conversations yet.<br>Ask a question to start one.</div>')); return; }
-  chats.forEach(c=>{
-    const row=el('<div class="conv"></div>'); if(c.id===activeId) row.classList.add('active');
-    const t=el('<span class="title"></span>'); t.textContent=c.title; row.appendChild(t);
-    const x=el('<span class="del" title="Delete"><i class="ti ti-x" aria-hidden="true"></i></span>'); row.appendChild(x);
-    row.onclick=()=>openChat(c.id);
-    x.onclick=(e)=>deleteChat(c.id, e);
-    list.appendChild(row);
+  if(!shown.length){ list.appendChild(el('<div class="sb-empty">No chats match your search.</div>')); return; }
+  const pinned=shown.filter(c=>c.pinned).sort((a,b)=>(b.updatedAt||0)-(a.updatedAt||0));
+  if(pinned.length){
+    list.appendChild(Object.assign(el('<div class="sb-h pin"></div>'),{textContent:'Pinned'}));
+    pinned.forEach(c=>list.appendChild(convRow(c)));
+  }
+  const groups={};                                 // 未置顶 → 按日期桶
+  shown.filter(c=>!c.pinned).forEach(c=>{ const b=bucketOf(c.updatedAt); (groups[b.k]||(groups[b.k]={b, rows:[]})).rows.push(c); });
+  Object.values(groups).sort((a,b)=>a.b.ord-b.b.ord).forEach(g=>{
+    list.appendChild(Object.assign(el('<div class="sb-h"></div>'),{textContent:g.b.label}));
+    g.rows.sort((a,b)=>(b.updatedAt||0)-(a.updatedAt||0)).forEach(c=>list.appendChild(convRow(c)));
   });
 }
+// 行 ⋯ 菜单:重命名 / 置顶 / 删除
+let _rowMenu=null;
+function closeRowMenu(){ if(_rowMenu){ _rowMenu.remove(); _rowMenu=null; } }
+function openRowMenu(anchor, c){
+  closeRowMenu();
+  const m=el('<div class="rowmenu"></div>');
+  const bRen=el('<button><i class="ti ti-edit" aria-hidden="true"></i>Rename</button>');
+  const bPin=el('<button><i class="ti ti-pin" aria-hidden="true"></i>'+(c.pinned?'Unpin':'Pin')+'</button>');
+  const bDel=el('<button class="danger"><i class="ti ti-trash" aria-hidden="true"></i>Delete</button>');
+  m.appendChild(bRen); m.appendChild(bPin); m.appendChild(bDel);
+  document.body.appendChild(m);
+  const r=anchor.getBoundingClientRect();
+  m.style.top=(r.bottom+4)+'px'; m.style.left=Math.max(8,r.right-158)+'px';
+  _rowMenu=m;
+  bPin.onclick=()=>{ c.pinned=!c.pinned; saveChats(); closeRowMenu(); renderSidebar(); };
+  bDel.onclick=()=>{ closeRowMenu(); deleteChat(c.id); };
+  bRen.onclick=()=>{ closeRowMenu(); startRename(c); };
+}
+function startRename(c){
+  renderSidebar();
+  const target=[...$('#convlist').querySelectorAll('.conv .title')].find(t=>t.textContent===c.title);
+  if(!target){ return; }
+  const inp=el('<input class="rn-input">'); inp.value=c.title;
+  target.replaceWith(inp); inp.focus(); inp.select();
+  const commit=()=>{ const v=inp.value.trim(); if(v){ c.title=titleOf(v); saveChats(); } renderSidebar(); };
+  inp.onkeydown=(e)=>{ if(e.key==='Enter'){ e.preventDefault(); commit(); } else if(e.key==='Escape'){ renderSidebar(); } };
+  inp.onblur=commit;
+}
+document.addEventListener('click',(e)=>{ if(_rowMenu && !_rowMenu.contains(e.target) && !e.target.closest('.more')) closeRowMenu(); }, true);
+window.addEventListener('resize', closeRowMenu);
 
 // ── 新对话 / 打开 / 删除 ───────────────────────────────
 function newChat(){
@@ -811,11 +949,11 @@ function deleteChat(id, ev){
 // ── 发送 ──────────────────────────────────────────────
 // SSE 流式消费(M6b):POST → 读 ReadableStream → 逐条 data: 事件;step/answer 给进度,result 给最终。
 // dag 路径不发 step 事件,只收 result —— 自动降级为"转圈到出结果"。
-async function streamQuery(q, sentSid, onEvent, image){
+async function streamQuery(q, sentSid, onEvent, image, signal){
   const body={query:q, session_id:sentSid, pro_video:proOn};
   if(image) body.image=image;
   const r=await fetch('/v1/video_vibe_query/stream',{method:'POST',
-    headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+    headers:{'Content-Type':'application/json'}, body:JSON.stringify(body), signal});
   if(!r.ok || !r.body) throw new Error('stream HTTP '+r.status);
   const reader=r.body.getReader(), dec=new TextDecoder();
   let buf='', result=null;
@@ -840,7 +978,7 @@ async function send(text){
   const shownQ = q || '';                       // 气泡显示用户真正打的字(可空)
   if(image && !q) q = 'What is in this image, and is it related to any of my videos?';  // 只发图 → 给模型一个默认意图
   $('#q').value=''; autosize(); setPendingImage(null); addUser(shownQ, image);
-  $('#send').disabled=true;
+  abortCtrl=new AbortController(); setSendStopUI(true);   // 送出即进入可 Stop 态(箭头变红,点击取消)
   const card=assistantShell();
   const think=el('<div class="think"><span class="breathe"></span><span class="tmsg">Thinking…</span></div>');
   const steps=el('<div class="trace" style="margin-top:6px"></div>');
@@ -860,7 +998,7 @@ async function send(text){
   const t0=performance.now();
   const originId=activeId, originDraft=activeDraft, sentSid=sessionId;   // 快照:发起时的归属
   try{
-    const d=await streamQuery(q, sentSid, onEvent, image) || {status:'error', error:'no result'};
+    const d=await streamQuery(q, sentSid, onEvent, image, abortCtrl.signal) || {status:'error', error:'no result'};
     const ms=Math.round(performance.now()-t0);
     updateContext(d);
     // 路由到【发起时】的会话,而非 await 后的当前会话 —— 中途切换/删除都不会错配
@@ -884,16 +1022,46 @@ async function send(text){
     }
     // c 为空且非 draft → 目标会话在 await 期间被删了 → 丢弃结果,不复活
     renderAssistant(card, d, ms);               // card 若已随切换分离则不可见,符合预期(已入库)
-  }catch(e){ card.innerHTML=''; card.appendChild(textBlock('Request failed: '+e)); }
-  finally{ sending=false; $('#send').disabled=false; $('#q').focus(); scroll(); }
+  }catch(e){
+    card.innerHTML='';
+    if(e && e.name==='AbortError'){ card.appendChild(sub('Stopped.')); }   // 用户按 Stop:安静收场,不报错
+    else card.appendChild(textBlock('Request failed: '+e));
+  }
+  finally{ sending=false; abortCtrl=null; setSendStopUI(false); $('#q').focus(); scroll(); }
+}
+// 发送键在 send ⇄ stop 之间切换:保留箭头图标(仅变红),Stop 时点击=取消 agent 循环(省 token)
+let abortCtrl=null;
+function setSendStopUI(running){
+  const s=$('#send');
+  s.classList.toggle('stop', running);
+  s.setAttribute('aria-label', running?'Stop':'Send');
+  s.setAttribute('title', running?'Stop generating':'Send');
 }
 function autosize(){const t=$('#q'); t.style.height='auto'; t.style.height=Math.min(t.scrollHeight,140)+'px';}
 
 // ── 事件 / 初始化 ──────────────────────────────────────
-$('#send').onclick=()=>send();
+$('#send').onclick=()=>{ if(sending){ if(abortCtrl) abortCtrl.abort(); } else send(); };   // 跑动中=Stop,否则发送
 $('#newchat').onclick=newChat;
 $('#toggle').onclick=()=>$('#shell').classList.toggle('nosb');
 $('#scrim').onclick=()=>$('#shell').classList.add('nosb');
+// 侧栏搜索 / 收窄成图标栏(桌面) / 账户
+$('#sbsearch').addEventListener('input',function(){ sbFilter=this.value; renderSidebar(); });
+const SB_COLLAPSED='vs_sb_collapsed';
+function setCollapsed(v){ $('#shell').classList.toggle('collapsed', v);
+  $('#collapseBtn').querySelector('i').className = v?'ti ti-layout-sidebar-left-expand':'ti ti-layout-sidebar-left-collapse';
+  try{ localStorage.setItem(SB_COLLAPSED, v?'1':'0'); }catch(e){} }
+$('#collapseBtn').onclick=()=>setCollapsed(!$('#shell').classList.contains('collapsed'));
+try{ if(localStorage.getItem(SB_COLLAPSED)==='1' && window.innerWidth>720) setCollapsed(true); }catch(e){}
+$('#acctBtn').onclick=()=>{ if(window.innerWidth<=720) $('#shell').classList.add('nosb'); newChat(); };  // 占位:自建单用户,先当"回到新对话"
+document.addEventListener('keydown',e=>{ if((e.ctrlKey||e.metaKey)&&e.key==='.'){ e.preventDefault(); if(window.innerWidth>720) setCollapsed(!$('#shell').classList.contains('collapsed')); }});
+// composer:+ 附件菜单(收纳上传视频 / 加图片)
+$('#plusBtn').onclick=(e)=>{ e.stopPropagation(); $('#attachMenu').classList.toggle('on'); };
+$('#attUpload').onclick=()=>{ $('#attachMenu').classList.remove('on'); $('#upFile').click(); };
+$('#attImage').onclick=()=>{ $('#attachMenu').classList.remove('on'); $('#imgFile').click(); };
+$('#imgFile').onchange=(e)=>{ const f=e.target.files[0]; e.target.value=''; if(!f) return;
+  if(f.size>8*1024*1024){ alert('Image too large (max 8MB).'); return; }
+  const rd=new FileReader(); rd.onload=()=>setPendingImage(rd.result); rd.readAsDataURL(f); };
+document.addEventListener('click',e=>{ if(!e.target.closest('.pluswrap')) $('#attachMenu').classList.remove('on'); });
 $('#q').addEventListener('input',autosize);
 $('#q').addEventListener('keydown',e=>{ if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();} });
 // Ctrl+V 粘贴截图 → 缩略图预览(不把二进制当文本粘进输入框)
@@ -909,15 +1077,15 @@ $('#q').addEventListener('paste',e=>{
   }
 });
 
-// ── Pro 模式开关 + 本会话累计监控(成本 $ + 累计 token 占窗口环)──
+// ── 档位开关(Flash / Pro)+ 本会话累计监控(成本 $ + 累计 token 占窗口环)──
 let proOn=false;
-$('#proPill').onclick=()=>{ proOn=!proOn; const p=$('#proPill'); p.classList.toggle('on',proOn); p.setAttribute('aria-pressed',proOn?'true':'false'); };
+$('#proPill').onclick=()=>{ proOn=!proOn; const p=$('#proPill'); p.classList.toggle('on',proOn);
+  p.setAttribute('aria-pressed',proOn?'true':'false'); $('#proLbl').textContent=proOn?'Pro':'Flash'; };
 
 // M5:上传自己的视频 → 拿 PUT 签名 URL 直传 GCS → 把临时 video_id 填进输入框,可直接提问
-$('#upBtn').onclick=()=>$('#upFile').click();
 $('#upFile').onchange=async(e)=>{
   const f=e.target.files[0]; if(!f) return;
-  const btn=$('#upBtn'), old=btn.innerHTML; btn.innerHTML='<i class="ti ti-loader-2" aria-hidden="true"></i>'; btn.disabled=true;
+  const btn=$('#plusBtn'), old=btn.innerHTML; btn.innerHTML='<i class="ti ti-loader-2" aria-hidden="true"></i>'; btn.disabled=true;
   try{
     const r=await fetch('/v1/upload_url',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({content_type:f.type||'video/mp4'})});
@@ -941,8 +1109,11 @@ function renderMonitor(){
   if(txt) txt.textContent = convTok>0 ? ('$'+convCost.toFixed(4)+' · '+fmtTok(convTok)+' tok') : '';
   const pct=Math.max(0,Math.min(100, Math.round(convTok/CTX_WINDOW*100)));
   const arc=$('#cmarc'), p=$('#cmpct');
-  if(arc) arc.setAttribute('stroke-dashoffset', (75.4*(1-pct/100)).toFixed(1));
+  if(arc){ arc.setAttribute('stroke-dashoffset', (75.4*(1-pct/100)).toFixed(1));
+    arc.setAttribute('stroke', pct>=90?'var(--danger)':pct>=70?'var(--warn)':'var(--pro)'); }  // 逼近 1M 窗口才变色
   if(p) p.textContent = pct+'%';
+  const tip=$('#costtip');
+  if(tip) tip.textContent = convTok>0 ? ('$'+convCost.toFixed(4)+' · '+fmtTok(convTok)+' / ~1M tok · '+pct+'%') : 'No spend yet this session';
 }
 function updateContext(d){       // 每轮:把本轮 token/成本累加进本会话
   const u=(d&&d.usage)||{};
