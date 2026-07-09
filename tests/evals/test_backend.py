@@ -80,6 +80,16 @@ def test_mine_failures_offline():
     assert "mined-a1" in ids and "mined-d4" in ids
 
 
+def test_n_for_profile():
+    """默认档：普通题 3 次、必过题 5 次；显式 --n 全体照办（冒烟 n=1）。"""
+    from evals.runner import n_for
+
+    assert n_for({"pinned": False}, None) == 3
+    assert n_for({"pinned": True}, None) == 5
+    assert n_for({"pinned": True}, 1) == 1      # 显式 n 覆盖一切
+    assert n_for({}, 7) == 7
+
+
 def test_judge_skips_without_key(monkeypatch, tmp_path):
     from evals import judge
 

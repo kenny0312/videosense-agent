@@ -303,19 +303,28 @@ def run_case_multi(task: dict, n: int | None = None, owner: str = "eval") -> dic
     return rec
 
 
+def n_for(task: dict, n: int | None) -> int:
+    """一道题该跑几次：显式 --n 全体照办（冒烟用）；
+    默认档：普通题 3 次、必过题 5 次（红线要建立在更多证据上）。"""
+    if n:
+        return n
+    return 5 if task.get("pinned") else 3
+
+
 def run_suite(tasks: list[dict], policies: dict | None = None, tool_results: dict | None = None,
               live: bool = False, n: int | None = None) -> list[dict]:
     if live:                                  # Mode B：真 Gemini。单轮 + 多轮；带世界动作的看接没接
         todo, skipped = split_live_tasks(tasks)
         out = []
         for i, (t, is_multi) in enumerate(todo, 1):
+            tn = n_for(t, n)
             try:
-                r = run_case_multi(t, n=n) if is_multi else run_case(t, live=True, n=n)
+                r = run_case_multi(t, n=tn) if is_multi else run_case(t, live=True, n=tn)
             except Exception as e:            # 单题崩溃不拖垮整场
                 if _is_infra_error(e):
-                    r = _infra_record(t, n, e)
+                    r = _infra_record(t, tn, e)
                 else:
-                    r = _infra_record(t, n, e)
+                    r = _infra_record(t, tn, e)
                     r["status"] = "crash"     # 代码崩溃：算没过（和环境故障分开记）
             out.append(r)
             tag = "多轮" if is_multi else "单轮"
@@ -331,7 +340,7 @@ def run_suite(tasks: list[dict], policies: dict | None = None, tool_results: dic
     for t in tasks:
         if policies is not None and t["id"] not in policies:
             continue
-        out.append(run_case(t, policies[t["id"]], tool_results.get(t["id"], {}), n=n))
+        out.append(run_case(t, policies[t["id"]], tool_results.get(t["id"], {}), n=n_for(t, n)))
     return out
 
 
@@ -487,8 +496,9 @@ def main(argv=None):
     ap.add_argument("--out", default="evals/report.html")
     ap.add_argument("--compare", action="store_true", help="脚本车道：好策略(旧版) vs 回归策略(新版)")
     ap.add_argument("--live", action="store_true", help="真跑：真 Gemini 进循环（要 GCP 凭证 + 花 token）")
-    ap.add_argument("--n", type=int, default=3,
-                    help="每题跑几次（默认 3：3 次全过才算过，压掉单次运气；省钱冒烟用 --n 1）")
+    ap.add_argument("--n", type=int, default=None,
+                    help="每题跑几次。默认档：普通题 3 次、必过题 5 次（全过才算过，压掉单次运气）；"
+                         "显式给 --n 则全体照办（省钱冒烟用 --n 1）")
     ap.add_argument("--list", action="store_true", help="只列数据集统计，不跑")
     ap.add_argument("--semantic", action="store_true",
                     help="真跑时打开语义检索：用真 embed 把假片库嵌进内存索引，测你改的 semantic_search")
@@ -517,14 +527,15 @@ def main(argv=None):
         if msg:
             print(msg)
             return 2
+        n_label = args.n or "普通3·必过5"
         cur = run_suite(tasks, live=True, n=args.n)
         prev = dashboard.latest_run("live")            # 上一次真跑当对比基准
-        if prev and str((prev.get("meta") or {}).get("n")) != str(args.n):
+        if prev and str((prev.get("meta") or {}).get("n")) != str(n_label):
             prev = None      # 每题次数不同=尺子不同，不能互当基线，重新建
         base_results = prev.get("results") if prev else None
         v = classify(cur, base_results)
         _todo, skipped = split_live_tasks(tasks)
-        meta = run_meta("live", args.n or "按题", args.tasks_dir, skipped)
+        meta = run_meta("live", n_label, args.tasks_dir, skipped)
         html = report.render(cur, v, baseline=base_results, title="评测报告 · 真跑（真 Gemini）",
                              meta=meta)
         cur_print, base_print, mode = cur, base_results, "live"
@@ -532,7 +543,7 @@ def main(argv=None):
         from evals.fixtures.policies import GOOD, REGRESSED, TOOL_RESULTS
 
         base = run_suite(tasks, GOOD, TOOL_RESULTS, n=args.n)
-        meta = run_meta("scripted", args.n or 3, args.tasks_dir)
+        meta = run_meta("scripted", args.n or "普通3·必过5", args.tasks_dir)
         if args.compare:
             cur = run_suite(tasks, REGRESSED, TOOL_RESULTS, n=args.n)
             v = classify(cur, base)
