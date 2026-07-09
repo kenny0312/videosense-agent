@@ -83,6 +83,7 @@ def _eval_batch(st: state.RunState, led: gates.Ledger, cid: str,
             return True
         rec = _run_one(t, n)
         led.add(st.record_one(cid, rec, is_val, basis), rollouts=n)
+        st.rollouts = led.rollouts
         if (i + 1) % 10 == 0:
             st.spent_usd = led.spent
             st.save()
@@ -148,6 +149,7 @@ def main(argv=None) -> int:
     rng = random.Random(st.run_id)                  # 抽样可复现
     led = gates.Ledger(args.budget_usd, args.reserve_usd)
     led.spent = st.spent_usd
+    led.rollouts = getattr(st, "rollouts", 0)   # 跨进程恢复分母,单题实测价不虚高
     print(f"运行 {st.run_id}:train {len(by['train'])} / val {len(by['val'])} / "
           f"sealed {len(by['sealed'])};预算 ${args.budget_usd}(预留 ${args.reserve_usd})")
     if args.dry:
@@ -241,67 +243,85 @@ def main(argv=None) -> int:
               f"vs 父本 {st.val_mean(parent)}(胜{sig['wins']}负{sig['losses']} p={sig['p']}),"
               f"已花 ${led.spent}")
 
-    # ── 冠军三连考:显著性 → 对称重考 → 终门(sealed 对照 gen0 基线)──
-    ranked = sorted((c for c in st.matrix if st.val_mean(c) is not None),
-                    key=lambda c: st.val_mean(c), reverse=True)
-    champ = ranked[0] if ranked else "gen0"
-    verdict = {"champion": champ, "adopted": False, "why": ""}
-    if champ == "gen0":
-        verdict["why"] = "没有子代超过 gen0 —— 诚实的空结论(§4.5 纪律6)"
-    else:
-        sig0 = gates.sign_test(st.matrix[champ], st.matrix["gen0"])
-        reexam_est = 2 * len(val_ids) * args.reexam_n * led.unit()
-        sealed_est = 2 * len(by["sealed"]) * args.sealed_n * led.unit()
+    # ── 冠军提名赛:全证据排名 → 显著性 → 对称重考 → 终门(sealed 对照 gen0)──
+    # 排名用【虚拟合并行】= 原 val 行与该候选 @re 重考行的逐题平均(全部证据),
+    # 治"幽灵霸榜":靠 n=1 运气登顶又被重考否决的候选,其虚拟分回落且进落选名单,
+    # 不再挡住后来者。重考确认门只用双方【全新】行(对称,不掺旧运气)。
+    def _virtual(cid: str) -> dict:
+        base = dict(st.matrix.get(cid, {}))
+        for t, v in st.scores_all.get(cid + "@re", {}).items():
+            if v is None:
+                continue
+            b = base.get(t)
+            base[t] = v if b is None else round((b + v) / 2, 4)
+        return base
+
+    g0_virtual = _virtual("gen0")
+    ranked = sorted((c for c in st.matrix
+                     if c != "gen0" and c not in st.disqualified
+                     and _mean(_virtual(c)) is not None),
+                    key=lambda c: _mean(_virtual(c)), reverse=True)
+    verdict = {"champion": "gen0", "adopted": False,
+               "why": "没有子代超过 gen0 —— 诚实的空结论(§4.5 纪律6)"}
+    for champ in ranked:
+        verdict["champion"] = champ
+        sig0 = gates.sign_test(_virtual(champ), g0_virtual)
         if not sig0["significant"]:
-            verdict["why"] = f"冠军 {champ} 对 gen0 不显著(p={sig0['p']})—— 视为平局不采纳"
-        elif led.spent + reexam_est > args.budget_usd:
+            verdict["why"] = f"榜首 {champ} 对 gen0 不显著(p={sig0['p']})—— 视为平局不采纳"
+            break                                   # 按虚拟分降序,后面的更弱,停
+        if led.spent + len(val_ids) * args.reexam_n * led.unit() > args.budget_usd:
             verdict["why"] = "预算不足以跑重考 —— 本轮结论无效,如实报告"
+            break
+        # 对称重考:双方都用全新 rollouts(gen0@re 已付过的题按题粒度复用)
+        try:
+            space.apply(st.candidates[champ]["overrides"])
+            stopped = _eval_batch(st, led, champ + "@re", by["val"], args.reexam_n,
+                                  False, basis, f"reexam-{champ}")
+        finally:
+            space.reset()
+        stopped = stopped or _eval_batch(st, led, "gen0@re", by["val"], args.reexam_n,
+                                         False, basis, "reexam-gen0")
+        st.peeks += 1
+        sig_re = gates.sign_test(_row(st, champ + "@re"), _row(st, "gen0@re"))
+        st.journal("reexam", cid=champ, sig=sig_re, spent=led.spent, stopped=stopped)
+        if stopped:
+            verdict["why"] = "重考中预算熔断 —— 本轮结论无效,如实报告"
+            break
+        if not sig_re["significant"]:
+            st.disqualified.append(champ)
+            st.save()
+            verdict["why"] = f"对称重考不显著(p={sig_re['p']})—— 首考是运气,取消资格"
+            continue                                # 提名下一位
+        if led.spent + 2 * len(by["sealed"]) * args.sealed_n * led.unit() > args.budget_usd:
+            verdict["why"] = "预算不足以跑终门 —— 本轮结论无效,如实报告"
+            break
+        # 终门:双方 sealed;必过题失守(崩溃算失守,环境故障不算)即打回
+        try:
+            space.apply(st.candidates[champ]["overrides"])
+            stopped = _eval_batch(st, led, champ + "@sealed", by["sealed"],
+                                  args.sealed_n, False, basis, f"sealed-{champ}")
+        finally:
+            space.reset()
+        stopped = stopped or _eval_batch(st, led, "gen0@sealed", by["sealed"],
+                                         args.sealed_n, False, basis, "sealed-gen0")
+        ch_row, g0_row = _row(st, champ + "@sealed"), _row(st, "gen0@sealed")
+        pinned_ids = {t["id"] for t in by["sealed"] if t.get("pinned")}
+        pinned_fail = [t for t in pinned_ids
+                       if ch_row.get(t) is not None and ch_row.get(t) < 1.0]
+        ch_mean, g0_mean = _mean(ch_row), _mean(g0_row)
+        st.journal("sealed", cid=champ, champ_mean=ch_mean, gen0_mean=g0_mean,
+                   pinned_fail=pinned_fail, spent=led.spent, stopped=stopped)
+        if stopped:
+            verdict["why"] = "终门中预算熔断 —— 本轮结论无效,如实报告"
+        elif pinned_fail:
+            verdict["why"] = f"终门必过题失守:{','.join(sorted(pinned_fail))} —— 打回"
+        elif ch_mean is None or g0_mean is None or ch_mean < g0_mean - 1e-9:
+            verdict["why"] = (f"sealed 对照下降(冠军 {ch_mean} vs gen0 {g0_mean})"
+                              "—— 过拟合记分板,打回")
         else:
-            # 重考:双方【都】用全新 rollouts(对称;审计 B7:不许冠军新样本打 gen0 旧存档)
-            try:
-                space.apply(st.candidates[champ]["overrides"])
-                stopped = _eval_batch(st, led, champ + "@re", by["val"], args.reexam_n,
-                                      False, basis, "reexam-champ")
-            finally:
-                space.reset()
-            stopped = stopped or _eval_batch(st, led, "gen0@re", by["val"], args.reexam_n,
-                                             False, basis, "reexam-gen0")
-            st.peeks += 1
-            sig_re = gates.sign_test(_row(st, champ + "@re"), _row(st, "gen0@re"))
-            st.journal("reexam", cid=champ, sig=sig_re, spent=led.spent, stopped=stopped)
-            if stopped:
-                verdict["why"] = "重考中预算熔断 —— 本轮结论无效,如实报告"
-            elif not sig_re["significant"]:
-                verdict["why"] = f"对称重考不显著(p={sig_re['p']})—— 首考是运气,取消资格"
-            elif led.spent + sealed_est > args.budget_usd:
-                verdict["why"] = "预算不足以跑终门 —— 本轮结论无效,如实报告"
-            else:
-                # 终门:双方 sealed;必过题失守(崩溃算失守,环境故障不算)即打回
-                try:
-                    space.apply(st.candidates[champ]["overrides"])
-                    stopped = _eval_batch(st, led, champ + "@sealed", by["sealed"],
-                                          args.sealed_n, False, basis, "sealed-champ")
-                finally:
-                    space.reset()
-                stopped = stopped or _eval_batch(st, led, "gen0@sealed", by["sealed"],
-                                                 args.sealed_n, False, basis, "sealed-gen0")
-                ch_row, g0_row = _row(st, champ + "@sealed"), _row(st, "gen0@sealed")
-                pinned_ids = {t["id"] for t in by["sealed"] if t.get("pinned")}
-                pinned_fail = [t for t in pinned_ids
-                               if ch_row.get(t) is not None and ch_row.get(t) < 1.0]
-                ch_mean, g0_mean = _mean(ch_row), _mean(g0_row)
-                st.journal("sealed", cid=champ, champ_mean=ch_mean, gen0_mean=g0_mean,
-                           pinned_fail=pinned_fail, spent=led.spent, stopped=stopped)
-                if stopped:
-                    verdict["why"] = "终门中预算熔断 —— 本轮结论无效,如实报告"
-                elif pinned_fail:
-                    verdict["why"] = f"终门必过题失守:{','.join(sorted(pinned_fail))} —— 打回"
-                elif ch_mean is None or g0_mean is None or ch_mean < g0_mean - 1e-9:
-                    verdict["why"] = (f"sealed 对照下降(冠军 {ch_mean} vs gen0 {g0_mean})"
-                                      "—— 过拟合记分板,打回")
-                else:
-                    verdict.update(adopted=True, sealed_champ=ch_mean, sealed_gen0=g0_mean,
-                                   why="三连考全过 —— 产出 diff 交人审")
+            verdict.update(adopted=True, sealed_champ=ch_mean, sealed_gen0=g0_mean,
+                           why="三连考全过 —— 产出 diff 交人审")
+        break
     st.spent_usd = led.spent
     st.save()
     _write_report(st, verdict, args, led)

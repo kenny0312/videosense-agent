@@ -36,13 +36,15 @@ class RunState:
         self.peeks = 0
         self.spent_usd = 0.0
         self.gen = 0
+        self.rollouts = 0          # 跨进程的 rollout 计数(单题实测价的分母,--resume 不虚高)
+        self.disqualified: list = []   # 重考否决的候选(不再被提名,防幽灵霸榜)
 
     # ── 持久化 ──────────────────────────────────────────
     def save(self) -> None:
         tmp = os.path.join(self.dir, "state.json.tmp")
         data = {k: getattr(self, k) for k in
                 ("run_id", "candidates", "matrix", "scores_all", "meds", "passed",
-                 "peeks", "spent_usd", "gen")}
+                 "peeks", "spent_usd", "gen", "rollouts", "disqualified")}
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=1)
         os.replace(tmp, os.path.join(self.dir, "state.json"))
