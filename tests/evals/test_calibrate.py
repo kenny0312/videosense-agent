@@ -1,7 +1,18 @@
 """裁判对表装置的离线单测：κ 算得对、人工标注不会被 collect 冲掉。"""
 import json
 
+import pytest
+
 from evals import calibrate_judge as cj
+
+
+def _items_or_skip(n_min: int = 3):
+    """样本来自本地 runs 归档(gitignored)——全新环境(CI/新 clone)没有归档时跳过,
+    不把'这台机器没跑过评测'误报成代码坏了。"""
+    items = cj._gather_items()
+    if len(items) < n_min:
+        pytest.skip(f"本地 runs 归档样本不足({len(items)} < {n_min}),数据依赖测试跳过")
+    return items
 
 
 def test_kappa_values():
@@ -13,18 +24,18 @@ def test_kappa_values():
 
 
 def test_gather_dedupes_and_keys():
-    items = cj._gather_items()
+    items = _items_or_skip(n_min=1)
     keys = [i["key"] for i in items]
     assert len(keys) == len(set(keys))                # key 唯一
     assert all(i["judge"] is None and i["human"] is None for i in items)
-    assert 10 <= len(items) <= 200                    # 样本量在合理范围
+    assert len(items) <= 200                          # 上限防失控;下限取决于本地归档,不作断言
 
 
 def test_collect_merge_keeps_human_labels(tmp_path, monkeypatch):
     """collect 重跑时，已有的人工标注和裁判判决都不能丢。"""
     cal = tmp_path / "cal.jsonl"
     monkeypatch.setattr(cj, "CAL_PATH", str(cal))
-    items = cj._gather_items()[:3]
+    items = _items_or_skip(n_min=3)[:3]
     items[0]["human"] = True                          # 已人工标注
     items[1]["judge"] = False                         # 已有裁判判决
     cj._save(items)
