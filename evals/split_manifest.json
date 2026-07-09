@@ -145,7 +145,35 @@
   "vision-oven-04": "train",
   "vision-people-02": "train",
   "vision-pov-05": "val",
-  "vision-sauce-when-07": "train"
+  "vision-sauce-when-07": "train",
+  "worldb-coherence-correction-01": "train",
+  "worldb-coherence-elliptical-02": "train",
+  "worldb-count-longest-04": "val",
+  "worldb-count-pets-03": "train",
+  "worldb-count-swimming-01": "train",
+  "worldb-count-total-02": "train",
+  "worldb-count-yoga-05": "train",
+  "worldb-display-play-cat-03": "train",
+  "worldb-display-table-pets-01": "train",
+  "worldb-honesty-flip-cat-01": "train",
+  "worldb-honesty-flip-guitar-05": "train",
+  "worldb-honesty-flip-salad-04": "train",
+  "worldb-honesty-flip-soccer-06": "train",
+  "worldb-honesty-flip-swim-02": "train",
+  "worldb-honesty-flip-yoga-03": "train",
+  "worldb-honesty-nomakeup-08": "train",
+  "worldb-honesty-noskydive-07": "train",
+  "worldb-retrieval-crafts-04": "val",
+  "worldb-retrieval-fitness-05": "train",
+  "worldb-retrieval-music-06": "train",
+  "worldb-retrieval-pets-02": "train",
+  "worldb-retrieval-swim-01": "train",
+  "worldb-retrieval-water-03": "val",
+  "worldb-timestamp-flipturn-01": "train",
+  "worldb-timestamp-goal-02": "train",
+  "worldb-timestamp-latte-03": "val",
+  "worldb-timestamp-roll-04": "val",
+  "worldb-toolcall-count-noplay-02": "train"
  },
  "families": {
   "coherence-accumulate-activity-then-time-06": "skydive-list",
@@ -292,7 +320,35 @@
   "vision-oven-04": "cooking",
   "vision-people-02": "sports-misc",
   "vision-pov-05": "sky-phases",
-  "vision-sauce-when-07": "cooking"
+  "vision-sauce-when-07": "cooking",
+  "worldb-coherence-correction-01": "worldb-music",
+  "worldb-coherence-elliptical-02": "worldb-pets",
+  "worldb-count-longest-04": "worldb-crafts",
+  "worldb-count-pets-03": "worldb-pets",
+  "worldb-count-swimming-01": "worldb-swim",
+  "worldb-count-total-02": "worldb-misc",
+  "worldb-count-yoga-05": "worldb-fitness",
+  "worldb-display-play-cat-03": "worldb-pets",
+  "worldb-display-table-pets-01": "worldb-pets",
+  "worldb-honesty-flip-cat-01": "worldb-pets",
+  "worldb-honesty-flip-guitar-05": "worldb-music",
+  "worldb-honesty-flip-salad-04": "worldb-misc",
+  "worldb-honesty-flip-soccer-06": "worldb-soccer",
+  "worldb-honesty-flip-swim-02": "worldb-swim",
+  "worldb-honesty-flip-yoga-03": "worldb-fitness",
+  "worldb-honesty-nomakeup-08": "worldb-misc",
+  "worldb-honesty-noskydive-07": "worldb-misc",
+  "worldb-retrieval-crafts-04": "worldb-crafts",
+  "worldb-retrieval-fitness-05": "worldb-fitness",
+  "worldb-retrieval-music-06": "worldb-music",
+  "worldb-retrieval-pets-02": "worldb-pets",
+  "worldb-retrieval-swim-01": "worldb-swim",
+  "worldb-retrieval-water-03": "worldb-water",
+  "worldb-timestamp-flipturn-01": "worldb-swim",
+  "worldb-timestamp-goal-02": "worldb-soccer",
+  "worldb-timestamp-latte-03": "worldb-crafts",
+  "worldb-timestamp-roll-04": "worldb-water",
+  "worldb-toolcall-count-noplay-02": "worldb-swim"
  },
  "family_members": {
   "cooking": [
@@ -475,6 +531,50 @@
    "toolcall-analyze-not-play-goggles-07",
    "toolcall-play-best-skiing-01",
    "vision-notskating-08"
+  ],
+  "worldb-crafts": [
+   "worldb-count-longest-04",
+   "worldb-retrieval-crafts-04",
+   "worldb-timestamp-latte-03"
+  ],
+  "worldb-fitness": [
+   "worldb-count-yoga-05",
+   "worldb-honesty-flip-yoga-03",
+   "worldb-retrieval-fitness-05"
+  ],
+  "worldb-misc": [
+   "worldb-count-total-02",
+   "worldb-honesty-flip-salad-04",
+   "worldb-honesty-nomakeup-08",
+   "worldb-honesty-noskydive-07"
+  ],
+  "worldb-music": [
+   "worldb-coherence-correction-01",
+   "worldb-honesty-flip-guitar-05",
+   "worldb-retrieval-music-06"
+  ],
+  "worldb-pets": [
+   "worldb-coherence-elliptical-02",
+   "worldb-count-pets-03",
+   "worldb-display-play-cat-03",
+   "worldb-display-table-pets-01",
+   "worldb-honesty-flip-cat-01",
+   "worldb-retrieval-pets-02"
+  ],
+  "worldb-soccer": [
+   "worldb-honesty-flip-soccer-06",
+   "worldb-timestamp-goal-02"
+  ],
+  "worldb-swim": [
+   "worldb-count-swimming-01",
+   "worldb-honesty-flip-swim-02",
+   "worldb-retrieval-swim-01",
+   "worldb-timestamp-flipturn-01",
+   "worldb-toolcall-count-noplay-02"
+  ],
+  "worldb-water": [
+   "worldb-retrieval-water-03",
+   "worldb-timestamp-roll-04"
   ]
  }
 }

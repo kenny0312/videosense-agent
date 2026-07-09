@@ -51,7 +51,7 @@ class DualControlSession:
         from pipeline.trace import Trace
         from sandbox.client import SandboxClient
 
-        backend = EvalBackend(self.owner).install()
+        backend = EvalBackend(self.owner, world=self.task.get("world", "A")).install()
 
         u = self.task["user"]
         user = SimulatedUser(u.get("persona", ""), u.get("goal", ""), script=u.get("script"))

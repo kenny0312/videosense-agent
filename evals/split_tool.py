@@ -22,6 +22,18 @@ MANIFEST_PATH = os.path.join(_HERE, "split_manifest.json")
 # ── 家族规则:按【金标事实/模板】归族(前缀或精确 id → 家族名)──────────
 # 顺序即优先级(先匹配先归);新题不匹配任何规则 → validate 报错,逼你归族。
 FAMILY_RULES: list[tuple[str, list[str]]] = [
+    # ── 世界 B(GD-2 新考场;翻转题与世界A同句 → 所在家族必须与 honesty-absent 同堂=train)──
+    ("worldb-swim", ["worldb-retrieval-swim-", "worldb-count-swimming-", "worldb-honesty-flip-swim-",
+                     "worldb-timestamp-flipturn-", "worldb-toolcall-count-noplay-"]),
+    ("worldb-pets", ["worldb-retrieval-pets-", "worldb-count-pets-", "worldb-honesty-flip-cat-",
+                     "worldb-display-table-pets-", "worldb-display-play-cat-", "worldb-coherence-elliptical-"]),
+    ("worldb-fitness", ["worldb-retrieval-fitness-", "worldb-honesty-flip-yoga-", "worldb-count-yoga-"]),
+    ("worldb-music", ["worldb-retrieval-music-", "worldb-honesty-flip-guitar-", "worldb-coherence-correction-"]),
+    ("worldb-water", ["worldb-retrieval-water-", "worldb-timestamp-roll-"]),
+    ("worldb-crafts", ["worldb-retrieval-crafts-", "worldb-timestamp-latte-", "worldb-count-longest-"]),
+    ("worldb-soccer", ["worldb-honesty-flip-soccer-", "worldb-timestamp-goal-"]),
+    ("worldb-misc", ["worldb-count-total-", "worldb-honesty-flip-salad-", "worldb-honesty-noskydive-",
+                     "worldb-honesty-nomakeup-"]),
     # 安全/注入/越权(封存硬约束)
     ("safety", ["safety-", "selfknow-safety-porn-", "selfknow-safety-injection-",
                 "selfknow-safety-illegal-", "selfknow-safety-delete-", "play-no-id-leak-04"]),
@@ -95,7 +107,8 @@ FAMILY_RULES: list[tuple[str, list[str]]] = [
 # 封存(优化器永远看不到;最终回归门):安全/身份/泄漏 硬约束 + 补位到 ~25%
 SEALED_FAMILIES = ["safety", "identity", "irrelevance", "park", "selfknow-cost"]
 # 验证(只用来给候选打分排序,反思器看不到失败详情)
-VAL_FAMILIES = ["sky-phases", "corpus-global", "upload", "outdoor-wheels"]
+VAL_FAMILIES = ["sky-phases", "corpus-global", "upload", "outdoor-wheels",
+                "worldb-water", "worldb-crafts"]   # B 面也要有 val 代表(无同句翻转的族才可出 train)
 # 其余全进训练(反思器可读失败详情):wingsuit / skydive-list / cooking / winter /
 # fall-skate / makeup-hair / honesty-absent / sports-misc / websearch
 

@@ -147,10 +147,12 @@ def _has_user_actions(task: dict) -> bool:
 
 
 def _titles() -> dict:
-    """每个视频的可区分别名：英文标题 + 时长数字（验指代解析用）。"""
+    """每个视频的可区分别名：英文标题 + 时长数字（验指代解析用）。
+    GD-2:两个世界的都装上(id 前缀不冲突 v*/sky*/b*,合一张表安全 —— 判分按题内金标 id 查)。"""
     from repl._mock_db import VIDEOS
+    from repl._mock_world_b import VIDEOS_B
 
-    return {v[0]: [v[1], str(int(v[3]))] for v in VIDEOS}
+    return {v[0]: [v[1], str(int(v[3]))] for v in list(VIDEOS) + list(VIDEOS_B)}
 
 
 def _task_aliases(task: dict) -> dict:
@@ -280,7 +282,7 @@ def run_case(task: dict, script=None, tool_results=None, n: int | None = None,
         if live:                                # Mode B：真 Gemini
             from pipeline import usage as _usage
             _usage.reset_usage()                # GD-0：按 rollout 记 token/$（GEPA 预算控制用）
-            res = LiveWorld(owner=owner).run(task["user_query"], max_steps=steps)
+            res = LiveWorld(owner=owner, world=task.get("world", "A")).run(task["user_query"], max_steps=steps)
             _u = _usage.summarize()
             cost["tokens"] += _u.get("tokens_total", 0) or 0
             cost["cost_usd"] = round(cost["cost_usd"] + (_u.get("cost_usd", 0) or 0), 6)

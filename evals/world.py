@@ -91,17 +91,19 @@ class EvalBackend:
     world_state 是判分用的"账本"：uploads / enriched / memory 都如实记在这。
     """
 
-    def __init__(self, owner: str = "eval"):
+    def __init__(self, owner: str = "eval", world: str = "A"):
         self.owner = owner
+        self.world = world                    # GD-2:按题选考场(A=冻结的16视频 / B=新20视频)
         self.world_state: dict = {"uploads": [], "enriched": [], "memory": ""}
 
     # 打补丁：全部是"换掉模块里的函数"，进程内幂等，只影响评测进程
     def install(self):
         os.environ["REPL_USE_MOCK_DB"] = "1"
+        os.environ["MOCK_WORLD"] = self.world  # GD-2:重灌种子时按此切世界
         from pipeline import config, mcp_client, user_memory, video_url
         import repl._mock_db as mock
 
-        mock._conn = None                     # 每次跑重新灌种子：上一场的上传不会串场
+        mock._conn = None                     # 每次跑重新灌种子：上一场的上传不会串场；世界按 env 切换
         mcp_client.query_db = mock.mock_run_sql          # 数据库查询走进程内假库（不再开子进程）
         mcp_client.get_schema = mock.mock_fetch_schema
         video_url.sign_gcs_uri = lambda uri, **kw: (f"https://eval.local/{uri}" if uri else None)
@@ -231,8 +233,8 @@ def live_preflight():
 class LiveWorld:
     """真跑：真 Gemini 当大脑，其余全是评测假后端（见 EvalBackend）。"""
 
-    def __init__(self, owner: str = "eval"):
-        self.backend = EvalBackend(owner).install()
+    def __init__(self, owner: str = "eval", world: str = "A"):
+        self.backend = EvalBackend(owner, world=world).install()
         self.owner = owner
 
     def run(self, user_query, max_steps: int = 16):

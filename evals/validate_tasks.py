@@ -23,8 +23,9 @@ KNOWN_BASIS = KNOWN_CHECKS | {"required_actions", "no_call", "no_forbidden",
 
 def _mock_ids() -> set:
     from repl._mock_db import VIDEOS
+    from repl._mock_world_b import VIDEOS_B
 
-    return {v[0] for v in VIDEOS}
+    return {v[0] for v in VIDEOS} | {v[0] for v in VIDEOS_B}   # GD-2:两个世界的 id 都合法
 
 
 def _ok_id(vid, ids) -> bool:
