@@ -3,7 +3,7 @@
 命令行：
     python -m evals.runner                 # 脚本车道（免费）：验证评测机器本身
     python -m evals.runner --compare       # 脚本车道演示"变差·打回"
-    python -m evals.runner --live --n 1    # 真跑（真 Gemini，花 token）
+    python -m evals.runner --live           # 真跑（真 Gemini，花 token；默认每题 3 次）
     python -m evals.runner --list          # 只看数据集统计
 
 几个口径（人话）：
@@ -241,7 +241,7 @@ def _is_infra_error(e: Exception) -> bool:
 
 def run_case(task: dict, script=None, tool_results=None, n: int | None = None,
              live: bool = False, owner: str = "eval") -> dict:
-    n = n or task.get("n_rollouts", 5)
+    n = n or task.get("n_rollouts", 3)
     successes = 0
     per_dim: dict = {}
     last = None
@@ -271,7 +271,7 @@ def run_case(task: dict, script=None, tool_results=None, n: int | None = None,
 def run_case_multi(task: dict, n: int | None = None, owner: str = "eval") -> dict:
     from evals.session import DualControlSession
 
-    n = n or task.get("n_rollouts", 5)
+    n = n or task.get("n_rollouts", 3)
     successes = 0
     per_dim: dict = {}
     last = None
@@ -487,7 +487,8 @@ def main(argv=None):
     ap.add_argument("--out", default="evals/report.html")
     ap.add_argument("--compare", action="store_true", help="脚本车道：好策略(旧版) vs 回归策略(新版)")
     ap.add_argument("--live", action="store_true", help="真跑：真 Gemini 进循环（要 GCP 凭证 + 花 token）")
-    ap.add_argument("--n", type=int, default=None, help="每题跑几次（真跑先 --n 1 冒烟）")
+    ap.add_argument("--n", type=int, default=3,
+                    help="每题跑几次（默认 3：3 次全过才算过，压掉单次运气；省钱冒烟用 --n 1）")
     ap.add_argument("--list", action="store_true", help="只列数据集统计，不跑")
     ap.add_argument("--semantic", action="store_true",
                     help="真跑时打开语义检索：用真 embed 把假片库嵌进内存索引，测你改的 semantic_search")
@@ -518,6 +519,8 @@ def main(argv=None):
             return 2
         cur = run_suite(tasks, live=True, n=args.n)
         prev = dashboard.latest_run("live")            # 上一次真跑当对比基准
+        if prev and str((prev.get("meta") or {}).get("n")) != str(args.n):
+            prev = None      # 每题次数不同=尺子不同，不能互当基线，重新建
         base_results = prev.get("results") if prev else None
         v = classify(cur, base_results)
         _todo, skipped = split_live_tasks(tasks)
@@ -529,7 +532,7 @@ def main(argv=None):
         from evals.fixtures.policies import GOOD, REGRESSED, TOOL_RESULTS
 
         base = run_suite(tasks, GOOD, TOOL_RESULTS, n=args.n)
-        meta = run_meta("scripted", args.n or 5, args.tasks_dir)
+        meta = run_meta("scripted", args.n or 3, args.tasks_dir)
         if args.compare:
             cur = run_suite(tasks, REGRESSED, TOOL_RESULTS, n=args.n)
             v = classify(cur, base)
