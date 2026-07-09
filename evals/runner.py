@@ -526,6 +526,9 @@ def main(argv=None):
     ap.add_argument("--list", action="store_true", help="只列数据集统计，不跑")
     ap.add_argument("--ids", default=None,
                     help="GD-0：只跑这些题（逗号分隔 id，支持前缀通配 retrieval-*）——GEPA 候选评估用")
+    ap.add_argument("--split", default=None, choices=("train", "val", "sealed"),
+                    help="GD-1：只跑某一堂（train=反思器可见 / val=候选选优 / sealed=最终门；"
+                         "清单见 evals/split_manifest.json）。子集跑同样不写仪表盘")
     # GD-0 政策：语义检索【默认开】对齐生产（生产 USE_SEMANTIC_SEARCH 默认 1;之前 eval 默认关
     # → L11 等语义教训在 eval 里是死段,优化的和上线的不是同一个 prompt）。embed 失败自动回退关。
     ap.add_argument("--semantic", action=argparse.BooleanOptionalAction, default=True,
@@ -536,6 +539,14 @@ def main(argv=None):
         os.environ["EVAL_SEMANTIC"] = "1"       # 假世界 install 时会据此建内存语义索引
 
     tasks = filter_tasks(load_tasks(args.tasks_dir), args.ids)
+    if args.split:                              # GD-1:按堂过滤(train/val/sealed)
+        from evals.split_tool import MANIFEST_PATH
+        with open(MANIFEST_PATH, encoding="utf-8") as f:
+            _splits = json.load(f).get("splits", {})
+        tasks = [t for t in tasks if _splits.get(t["id"]) == args.split]
+        if not tasks:
+            print(f"--split {args.split} 下没有题(清单没覆盖?先跑 python -m evals.split_tool)")
+            return 2
 
     if args.list:
         by_dim = Counter(d for t in tasks for d in t.get("dims", ["?"]))
@@ -588,10 +599,10 @@ def main(argv=None):
         for r in cur_print:
             fh.write(json.dumps(r, ensure_ascii=False, default=str) + "\n")
     print_summary(cur_print, base_print, v)
-    if args.ids:
-        # GD-0：子集跑（GEPA 候选评估/手工复测）不进仪表盘历史 —— 不然基线被局部样本污染
+    if args.ids or args.split:
+        # GD-0/1：子集跑（GEPA 候选评估/按堂跑/手工复测）不进仪表盘历史 —— 基线不被局部样本污染
         print(f"\n报告已生成：{args.out}（每题明细：{results_path}）")
-        print("（--ids 子集跑：不写入仪表盘/简报，基线不受影响）")
+        print("（--ids/--split 子集跑：不写入仪表盘/简报，基线不受影响）")
         return 0
     dashboard.save_run(cur_print, v, mode, meta=meta)
     dash = dashboard.rebuild()
