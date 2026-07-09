@@ -117,6 +117,15 @@
   .tname{flex:1;color:var(--muted)}
   .tms{color:var(--hint);font-variant-numeric:tabular-nums}
   .chart img{max-width:100%;border-radius:10px;background:var(--surface2);border:1px solid var(--border)}
+  /* P1: interactive ECharts panel + load skeleton */
+  .chartpanel{border:1px solid var(--border);border-radius:12px;background:#0d1015;padding:8px 8px 4px;margin:4px 0}
+  .chartpanel .echart{width:100%;height:300px}
+  .chartpanel .cbar{display:flex;justify-content:flex-end;gap:12px;padding:2px 4px 2px}
+  .chart-skel{height:300px;border-radius:9px;border:1px solid var(--border);
+    background:linear-gradient(90deg,var(--surface) 25%,var(--surface2) 50%,var(--surface) 75%);
+    background-size:200% 100%;animation:cshimmer 1.3s linear infinite}
+  @keyframes cshimmer{to{background-position:-200% 0}}
+  @media(prefers-reduced-motion:reduce){.chart-skel{animation:none}}
   /* video grid */
   .vgrid{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));margin:4px 0}
   .vcard{border:1px solid var(--border2);border-radius:12px;overflow:hidden;background:#0d1015;transition:border-color .13s}
@@ -298,7 +307,8 @@ function renderAssistant(card, d, ms){
   if(d.table && d.table.rows && d.table.rows.length){ card.appendChild(renderTable(d.table)); }
   // 结论先行:答案文字始终渲染;有图则把图作为下方证据附上(别让图吞掉结论)
   if(d.answer!=null && !(typeof d.answer==='string' && !d.answer.trim())){ card.appendChild(renderAnswer(d.answer)); }
-  if(d.plot_url){ card.appendChild(renderChart(d.plot_url)); }
+  if(d.chart_spec){ card.appendChild(renderChartSpec(d.chart_spec)); }   // P1: 交互式 ECharts(spec 驱动)
+  else if(d.plot_url){ card.appendChild(renderChart(d.plot_url)); }      // 兜底:旧静态 svg/png
 
   card.appendChild(renderFooter(d, ms));   // quiet footer: steps · time (expandable), plan/sql/code
   enhanceTimecodes(card);                  // 时间码 → 可点 chip(有视频则跳转)
@@ -436,6 +446,89 @@ function renderChart(url){
   const bar=el('<div class="chips"></div>'); bar.appendChild(el('<span style="flex:1"></span>'));
   const open=el('<a class="lnk" target="_blank" rel="noopener noreferrer"><i class="ti ti-external-link" aria-hidden="true"></i>Open</a>'); open.href=safe; bar.appendChild(open);
   w.appendChild(bar); return w;
+}
+
+// ── P1 交互式图表:大脑吐 chart_spec(数据+类型),前端用 ECharts 渲染,样式 100% 由前端掌控 ──
+// 懒加载 ECharts(仅首次出图时拉,~1MB,不拖累首屏);和 marked/DOMPurify 一样走 cdnjs。
+let _echartsP=null;
+function loadECharts(){
+  if(window.echarts) return Promise.resolve(window.echarts);
+  return _echartsP || (_echartsP=new Promise((res,rej)=>{
+    const s=document.createElement('script');
+    s.src='https://cdnjs.cloudflare.com/ajax/libs/echarts/5.5.0/echarts.min.js';
+    s.async=true;
+    s.onload=()=>window.echarts?res(window.echarts):rej(new Error('echarts missing'));
+    s.onerror=()=>rej(new Error('echarts load failed'));
+    document.head.appendChild(s);
+  }));
+}
+// VS 暗色主题分类色(固定顺序,不循环);文字/网格用 chrome 灰,不用系列色
+const CHART_PALETTE=['#6ea2ff','#43c88a','#e0a23b','#b79df2','#e05a5a','#3f7bf0'];
+function buildChartOption(spec){
+  const type=(spec.chart_type||'bar');
+  const x=spec.x||[];
+  // 单系列 {y:[...]} 或多系列 {series:[{name,data}]}
+  const series0 = (spec.series && spec.series.length) ? spec.series
+                : [{name: spec.y_name||spec.unit||'value', data: spec.y||[]}];
+  const isScatter = type==='scatter';
+  const mkSeries = (s,i)=>{
+    const c=CHART_PALETTE[i%CHART_PALETTE.length];
+    if(isScatter) return {name:s.name,type:'scatter',symbolSize:9,
+      itemStyle:{color:c,opacity:.85}, data:(s.data||[]).map((v,j)=>[x[j],v])};
+    if(type==='line') return {name:s.name,type:'line',smooth:true,symbol:'circle',symbolSize:6,
+      showSymbol:(s.data||[]).length<=40, lineStyle:{width:2,color:c}, itemStyle:{color:c},
+      areaStyle:(series0.length===1)?{color:new echarts.graphic.LinearGradient(0,0,0,1,
+        [{offset:0,color:'rgba(110,162,255,.22)'},{offset:1,color:'rgba(110,162,255,0)'}])}:undefined,
+      data:s.data};
+    // bar (default)
+    return {name:s.name,type:'bar',barMaxWidth:44,
+      itemStyle:{borderRadius:[5,5,0,0],
+        color:new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:'#6ea2ff'},{offset:1,color:'#3f7bf0'}])},
+      data:s.data};
+  };
+  return {
+    backgroundColor:'transparent',
+    color:CHART_PALETTE,
+    textStyle:{fontFamily:'ui-monospace,Consolas,monospace',color:'#98a2ae'},
+    title: spec.title ? {text:spec.title,left:2,top:2,
+      textStyle:{color:'#eef2f7',fontSize:13.5,fontWeight:600,fontFamily:'system-ui,sans-serif'}} : undefined,
+    grid:{left:8,right:14,top: spec.title?38:14,bottom:6,containLabel:true},
+    tooltip:{trigger:isScatter?'item':'axis',
+      backgroundColor:'#0c0e12',borderColor:'#2c313a',borderWidth:1,
+      textStyle:{color:'#e8ebef',fontSize:12},
+      axisPointer:{type:type==='bar'?'shadow':'line',lineStyle:{color:'#2c313a'},shadowStyle:{color:'rgba(110,162,255,.08)'}}},
+    legend: series0.length>1 ? {top:2,right:6,textStyle:{color:'#98a2ae',fontSize:11},itemWidth:12,itemHeight:8} : undefined,
+    xAxis:{type:isScatter?'value':'category', data:isScatter?undefined:x, name:spec.x_name||'', nameTextStyle:{color:'#69727e'},
+      axisLine:{lineStyle:{color:'#2c313a'}}, axisTick:{show:false}, axisLabel:{color:'#69727e',fontSize:11}, splitLine:{show:false}},
+    yAxis:{type:'value', name:spec.unit||'', nameTextStyle:{color:'#69727e',align:'left'},
+      axisLine:{show:false}, axisTick:{show:false}, axisLabel:{color:'#69727e',fontSize:11},
+      splitLine:{lineStyle:{color:'#20242b'}}},
+    toolbox:{right:6,top:6,feature:{saveAsImage:{title:'PNG',backgroundColor:'#0d1015',
+      iconStyle:{borderColor:'#69727e'}}},emphasis:{iconStyle:{borderColor:'#6ea2ff'}}},
+    series: series0.map(mkSeries),
+  };
+}
+function renderChartSpec(spec){
+  const w=el('<div class="chart chartpanel"></div>');
+  const mount=el('<div class="echart"></div>'); w.appendChild(mount);
+  const skel=el('<div class="chart-skel"></div>'); w.appendChild(skel);   // 骨架:load 期间占位,不闪
+  loadECharts().then(ec=>{
+    skel.remove();
+    let chart;
+    try{ chart=ec.init(mount,null,{renderer:'canvas'}); chart.setOption(buildChartOption(spec)); }
+    catch(e){ w.appendChild(textBlock('Chart could not be rendered.')); return; }
+    const ro=('ResizeObserver' in window)?new ResizeObserver(()=>chart.resize()):null;
+    if(ro) ro.observe(mount); else window.addEventListener('resize',()=>chart.resize());
+    // CSV 导出(把 spec 数据落成表)
+    const bar=el('<div class="cbar"></div>');
+    const csv=el('<span class="lnk"><i class="ti ti-download" aria-hidden="true"></i>CSV</span>');
+    csv.onclick=()=>{ const ys=(spec.series&&spec.series.length)?spec.series:[{name:spec.y_name||'y',data:spec.y||[]}];
+      const cols=[spec.x_name||'x',...ys.map(s=>s.name)];
+      const rows=(spec.x||[]).map((xv,i)=>{const o={}; o[cols[0]]=xv; ys.forEach((s,j)=>o[cols[j+1]]=(s.data||[])[i]); return o;});
+      downloadCSV(rows); };
+    bar.appendChild(csv); w.appendChild(bar);
+  }).catch(()=>{ skel.remove(); w.appendChild(textBlock('Interactive chart unavailable (chart library failed to load).')); });
+  return w;
 }
 
 // ── 视频展示:内嵌 <video> 播放数据库里的视频/片段(show_video 节点产出)──────
