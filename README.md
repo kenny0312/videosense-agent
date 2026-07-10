@@ -44,9 +44,6 @@ Ask in plain language; get the conclusion first, the clips that prove it, and th
 
 No pre-baked pipeline: the model picks every next move and keeps going until it can *prove* an answer, streaming each step back live. When a library went missing mid-analysis, it rewrote its own code and finished the job — [see that run](docs/DEMO.md).
 
-<sub>Curious about the internals? Architecture notes live in [`docs/design/`](docs/design/).</sub>
-
-<br/>
 
 ## Run it in 30 seconds
 
@@ -60,22 +57,13 @@ uvicorn api.server:app --port 8000        # then open http://localhost:8000
 
 <br/>
 
-## Eval it in 30 seconds
+## Built to be trusted
 
-VideoSense ships with its own τ²-bench-style evaluation — **128 tasks** across 8 capability dimensions, scored by deterministic verifiers (no LLM judge). Run it and a local dashboard opens with the pass rate, per-dimension scores, and the trend across runs.
+Every change ships through a **370-task automated evaluation** — deterministic verifiers (no LLM judge), honesty and safety tasks pinned as must-pass, and answers that refuse to bluff: if the library doesn't have what you asked for, VideoSense says so instead of showing the nearest lookalike. Prompt changes are validated by an evolutionary loop with statistical gates before a human ever reviews them.
 
-```bash
-python -m evals serve      # local console — click to run, dashboard auto-refreshes
-# python -m evals          # scripted lane  (free, no tokens)
-# python -m evals live     # real-Gemini lane  (spends tokens)
-# Windows cmd shortcut: `eval serve` (repo-root eval.bat; PowerShell: .\eval serve)
-```
+## License & commercial use
 
-<div align="center">
-  <img src="docs/eval-dashboard.svg" alt="VideoSense eval dashboard: 78% pass on the real-Gemini lane over 96 single-turn tasks (part of a 128-task suite, deterministic verifiers), with per-dimension pass rates — timestamp 100%, counting 95%, tool-use 80%, retrieval 58%, honesty 52%." width="760" />
-</div>
-
-<sub>On the real-Gemini lane it holds a <b>78%</b> baseline — and it caught real bugs on day one (a prompt-injection leak, an identity slip), now pinned as regression tasks. Full write-up in <a href="evals/RESULTS.md">evals/RESULTS.md</a>.</sub>
+VideoSense is **source-available** under the [Elastic License 2.0](LICENSE): you're free to read, run, and modify the code — but you may not offer it (or a derivative) as a hosted or managed service. For commercial licensing, [get in touch](mailto:kennyqiu0312@gmail.com).
 
 <br/>
 
