@@ -36,7 +36,8 @@ FAMILY_RULES: list[tuple[str, list[str]]] = [
                      "worldb-honesty-nomakeup-"]),
     # 安全/注入/越权(封存硬约束)
     ("safety", ["safety-", "selfknow-safety-porn-", "selfknow-safety-injection-",
-                "selfknow-safety-illegal-", "selfknow-safety-delete-", "play-no-id-leak-04"]),
+                "selfknow-safety-illegal-", "selfknow-safety-delete-", "play-no-id-leak-04",
+                "idleak-uri-request-"]),   # 救援批:逼问内部 URI = 泄漏类,随安全封存
     # 身份不漏底
     ("identity", ["identity-", "selfknow-safety-areyougpt-", "selfknow-safety-whotrained-",
                   "selfknow-safety-whatmodel-", "selfknow-safety-ctxwindow-"]),
@@ -50,13 +51,15 @@ FAMILY_RULES: list[tuple[str, list[str]]] = [
     # 上传链(uploads 共享状态)
     ("upload", ["dualcontrol-upload-"]),
     # 翼装事实族(is_wingsuit 只有 sky01+sky04 —— 20 题共押一个事实)
-    ("wingsuit", ["count-wingsuit-", "count-nonwingsuit-", "retrieval-wingsuit-",
+    ("wingsuit", ["entity-jump-type-second-",
+                  "count-wingsuit-", "count-nonwingsuit-", "retrieval-wingsuit-",
                   "skydive-honesty-01", "dualcontrol-correct-wrong-claim-",
                   "dualcontrol-memory-wingsuit-", "dualcontrol-paste-image-wingsuit-",
                   "toolcall-memory-wingsuit-", "toolcall-table-wingsuit-",
                   "coherence-accumulate-wingsuit-", "coherence-anaphora-longer-jump-"]),
     # 跳伞片单族(sky01-04 全集)
-    ("skydive-list", ["coherence-accumulate-activity-", "coherence-correction-ski-to-sky-",
+    ("skydive-list", ["idleak-play-longest-skydive-", "entity-shortest-skydive-",
+                      "coherence-accumulate-activity-", "coherence-correction-ski-to-sky-",
                       "coherence-goalshift-cooking-to-skydive-", "coherence-skydive-ordinal-",
                       "count-skydiving-", "dualcontrol-correct-count-", "retrieval-skydive-",
                       "retrieval-best-skydive-", "retrieval-aircraft-exit-",
@@ -66,12 +69,15 @@ FAMILY_RULES: list[tuple[str, list[str]]] = [
     ("sky-phases", ["timestamp-sky", "dualcontrol-paste-image-deploy-",
                     "vision-pov-", "vision-landing-", "vision-color-"]),
     # 做饭族(v006 饼干 + v007 肋排;含完全重复问句对 + enrich 双题)
-    ("cooking", ["cooking-", "honesty-cooking-", "count-cooking-", "retrieval-cooking-",
+    ("cooking", ["idleak-table-cooking-", "idleak-compare-two-cooking-", "entity-longest-cooking-",
+                 "entity-which-has-oven-",
+                 "cooking-", "honesty-cooking-", "count-cooking-", "retrieval-cooking-",
                  "display-table-cooking-", "toolcall-count-cooking-", "coherence-cooking-ordinal-",
                  "coherence-correction-count-", "dualcontrol-enrich-", "timestamp-v006-",
                  "timestamp-v007-", "vision-oven-", "vision-sauce-"]),
     # 冬季运动族(v001/v002/v003:滑雪+单板共享 v003,合并防跨族泄漏)
-    ("winter", ["count-skiing-", "count-ski-or-snowboard-", "dualcontrol-correct-skiing-",
+    ("winter", ["idleak-recommend-winter-", "idleak-best-snowboard-", "entity-fastest-snow-",
+                "count-skiing-", "count-ski-or-snowboard-", "dualcontrol-correct-skiing-",
                 "retrieval-skiing-", "retrieval-snowboarding-", "retrieval-winter-snow-",
                 "honesty-winter-broad-", "honesty-neg-iceskating-", "vision-notskating-",
                 "timestamp-v001-", "timestamp-v003-", "count-v003-duration-",
@@ -84,21 +90,24 @@ FAMILY_RULES: list[tuple[str, list[str]]] = [
                     "dualcontrol-memory-no-falling-", "timestamp-v002-falling-",
                     "vision-helmet-", "honesty-neg-helmet-", "timestamp-v009-"]),
     # 公园族(v009 标题 + v012 park scenery)
-    ("park", ["retrieval-park-", "display-play-dog-"]),
+    ("park", ["retrieval-park-", "display-play-dog-", "entity-dog-location-"]),
     # 美妆/编发族(v004+v005,教程语义)
-    ("makeup-hair", ["count-makeup-", "retrieval-makeup-", "coherence-elliptical-duration-",
+    ("makeup-hair", ["idleak-play-mascara-", "entity-mascara-tool-", "entity-braiding-what-",
+                     "count-makeup-", "retrieval-makeup-", "coherence-elliptical-duration-",
                      "coherence-elliptical-makeup-", "retrieval-tutorial-", "timestamp-v005-",
                      "toolcall-memory-dislike-makeup-", "display-count-no-play-",
                      "honesty-neg-cakedecor-"]),
     # 库外诚实族(模板克隆:库里没有 X,X∈{海边,猫,吉他,马拉松,沙拉,足球,游泳,瑜伽})
     ("honesty-absent", ["honesty-no-", "toolcall-count-swimming-"]),
     # 全库统计族(总数/最长/最短/全清单/画图)
-    ("corpus-global", ["count-total-", "count-longest-", "count-shortest-",
+    ("corpus-global", ["idleak-play-shortest-", "entity-longest-overall-",
+                       "count-total-", "count-longest-", "count-shortest-",
                        "coherence-elliptical-longest-", "display-text-longest-",
                        "toolcall-table-all-videos-", "toolcall-plot-durations-"]),
     # 杂项运动族(篮球 v010 / 跳舞 v011 / 健身宽类押 v010)
     ("sports-misc", ["count-basketball-", "count-dancing-", "vision-people-",
-                     "honesty-fitness-broad-", "timestamp-v010-"]),
+                     "honesty-fitness-broad-", "timestamp-v010-",
+                     "idleak-play-basketball-", "idleak-list-dancing-", "entity-basketball-action-"]),
     # 户外风景/轮上运动(v003+v008 共享)
     ("outdoor-wheels", ["retrieval-outdoor-scenery-", "retrieval-wheels-"]),
 ]
