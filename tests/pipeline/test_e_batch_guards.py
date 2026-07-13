@@ -126,3 +126,30 @@ def test_orchestrator_empty_answer_degrades_to_retry(monkeypatch):
     r = orch.run_query("把成人内容都列出来")
     assert r["status"] == "ok" and r["answer"].strip()       # 绝不交空卡片
     assert "再发一次" in r["answer"] or "服务波动" in r["answer"]
+
+
+def test_run_loop_empty_generation_retry():
+    """中段空生成兜底:工具跑完后模型返回空文本 → 不把空串当答案,点一下重收口(只救一次)。
+    2026-07-13 全套件 8 例'回归'中 7 例是此病(服务抖动),线上用户同样会收到空答案。"""
+    from evals.world import ScriptedWorld
+    from pipeline.loop_driver import Call
+    script = [
+        ([Call(name="sql_query", inputs={"sql": "SELECT 1"}, uses=[])], ""),
+        ([], ""),                                     # 中段空生成(抖动)
+        ([], "最终答案来了"),                          # 被点醒后正常收口
+    ]
+    res = ScriptedWorld(script, tool_results={"sql_query": [{"n": 1}]}).run("问题")
+    assert res.answer == "最终答案来了"
+
+
+def test_run_loop_empty_retry_only_once():
+    """连续两次空生成 → 第二次不再救,按空答案收敛(防空转)。"""
+    from evals.world import ScriptedWorld
+    from pipeline.loop_driver import Call
+    script = [
+        ([Call(name="sql_query", inputs={"sql": "SELECT 1"}, uses=[])], ""),
+        ([], ""),
+        ([], ""),
+    ]
+    res = ScriptedWorld(script, tool_results={"sql_query": [{"n": 1}]}).run("问题")
+    assert res.answer == ""
