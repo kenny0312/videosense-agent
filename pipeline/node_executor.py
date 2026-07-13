@@ -459,7 +459,10 @@ def _run_web_search(node: Node) -> NodeResult:
 def _translate_query_en(query: str) -> "str | None":
     """D3 跨语言桥:中文查询译成英文再检索一路。索引片段绝大多数是英文,
     多语向量把中文词映射到泛类英文语义(实测『打台球』命中躲避球而库里有台球)。
-    非中文/翻译失败 → None(fail-open,只用原文)。"""
+    非中文/翻译失败 → None(fail-open,只用原文)。SEMANTIC_BRIDGE=0 一键关(回滚阀)。"""
+    import os as _os
+    if _os.environ.get("SEMANTIC_BRIDGE", "1") != "1":
+        return None
     if not any("一" <= c <= "鿿" for c in query):
         return None
     try:
