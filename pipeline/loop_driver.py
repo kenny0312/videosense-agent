@@ -646,7 +646,9 @@ def run_query_loop(nl: str, *, schema: dict, replay_context: "str | None", sandb
                              _loop_system(schema, replay_context, runtime_facts), image=image)
     execute = _make_executor(sandbox, trace, schema, session_id, owner=owner)
     critic = make_self_check_critic() if config.USE_SELF_CHECK_CRITIC else None   # 自检 B:opt-in
+    _t0 = time.perf_counter()
     r = run_loop(nl, conv, execute, on_step=on_step, critic=critic)
+    _total_ms = (time.perf_counter() - _t0) * 1000
     # L1 机械兜底:答案里的裸 id 清洗(能映射「第N个」就换,不能就删);命中数进指标 →
     # 长期为 0 说明模型已自觉,教训 L01 可退役(prompt-constitution-lessons.md §5 闭环)。
     answer, scrub_hits = r.answer, 0
@@ -668,6 +670,17 @@ def run_query_loop(nl: str, *, schema: dict, replay_context: "str | None", sandb
     lo = LoopOutcome(answer, r.steps, r.terminated, final_tool, final_value,
                      preview_value, r.ledger, r.trace, r.step_walls)
     lo.id_scrub_hits = scrub_hits
+    # Loop Console(旁路观测,fail-open):记录这一轮的决策全息供 /console 查看
+    try:
+        from pipeline import loop_console
+        loop_console.record(query=nl, owner=owner, lo=lo, ledger=r.ledger,
+                            runtime_facts=runtime_facts,
+                            replay_chars=len(replay_context or ""),
+                            system_chars=len(_LOOP_SYSTEM),
+                            schema_chars=len(json.dumps(schema, ensure_ascii=False)),
+                            total_ms=_total_ms)
+    except Exception:
+        pass
     return lo
 
 
