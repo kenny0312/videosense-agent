@@ -61,9 +61,10 @@ def main() -> int:
     inserted = 0
     for vid, uri in rows:
         cur.execute(
-            "INSERT INTO video_metadata(video_id, title, gcs_uri) VALUES(%s,%s,%s) "
+            "INSERT INTO video_metadata(video_id, title, gcs_uri, source) VALUES(%s,%s,%s,%s) "
             "ON CONFLICT(video_id) DO NOTHING",
-            (vid, vid, uri))
+            (vid, vid, uri,
+             "pexels" if vid.startswith("v_px") else "activitynet" if vid.startswith("v_") else "seed"))
         inserted += cur.rowcount
     cur.close()
     conn.close()

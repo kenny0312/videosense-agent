@@ -20,16 +20,16 @@ def test_entries_full():
             "segments": [{"start_s": 0.0, "end_s": 9.0, "text": "Hey guys, it's Brooke."},
                          {"start_s": 9.0, "end_s": 12.3, "text": "Stay strong."}]}
     out = entries_from_enrichment("v1", data)
-    assert [s for s, _ in out] == ["caption", "transcript", "transcript"]
-    key, snip, s0, e0 = out[1][1]
+    assert [s for s, _ in out] == ["caption", "video", "transcript", "transcript"]  # v2:+video 粗向量行
+    key, snip, s0, e0 = out[2][1]                             # v2:out[1] 是 vid: 粗向量行
     assert key == "tr:v1:0" and snip == "Hey guys, it's Brooke." and (s0, e0) == (0.0, 9.0)
-    assert out[0][1][0] == "cap:v1"
+    assert out[0][1][0] == "cap:v1" and out[1][1][0] == "vid:v1"
 
 
 def test_entries_no_speech_keeps_caption_only():
     out = entries_from_enrichment("v2", {"caption": "Wingsuit flight.", "has_speech": False,
                                          "segments": [{"start_s": 0, "end_s": 1, "text": "ghost"}]})
-    assert len(out) == 1 and out[0][0] == "caption"        # has_speech=false → 段落被忽略
+    assert len(out) == 2 and out[0][0] == "caption" and out[1][0] == "video"  # v2:无话仍有 caption+video
 
 
 def test_entries_skips_junk_and_caps_length():
@@ -37,7 +37,7 @@ def test_entries_skips_junk_and_caps_length():
             "segments": ["garbage", {"text": ""}, {"start_s": "x", "end_s": None, "text": "ok"}]}
     out = entries_from_enrichment("v3", data)
     assert out[0][1][1] == "c" * MAX_SNIPPET               # caption 截断
-    assert len(out) == 2                                    # 烂段/空文本跳过;时间烂 → None 仍保留文本
+    assert len(out) == 3                                    # v2:caption+video+1段;烂段/空文本跳过
     assert out[1][1][2] is None and out[1][1][3] is None
 
 
@@ -68,7 +68,7 @@ def test_enrich_video_stubbed(monkeypatch):
     monkeypatch.setattr(en, "embed_texts", emb.embed_texts)
     monkeypatch.setattr(en, "index_entry", si.index_entry)
     stats = en.enrich_video("v9", "gs://b/v9.mp4")
-    assert stats["rows"] == 2 and stats["has_speech"] and stats["segments"] == 1
+    assert stats["rows"] == 3 and stats["has_speech"] and stats["segments"] == 1  # v2:+video 行
     assert ("caption", "cap:v9") in written and ("transcript", "tr:v9:0") in written
 
 
