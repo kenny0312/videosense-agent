@@ -88,3 +88,17 @@ def test_enrich_endpoint_validation(monkeypatch):
     assert c.post("/v1/enrich", json={"video_id": "nope_1"}).status_code == 404
     monkeypatch.setattr(en, "enrich_video", lambda vid, gcs: {"rows": 0})
     assert c.post("/v1/enrich", json={"video_id": "good_1"}).json()["status"] == "started"
+
+
+def test_m2_parse_verdicts():
+    """M2 证据先行重抽的解析:按谓词对齐、烂项丢弃、区间非法丢弃。"""
+    from perception.setup_timestamps_v2 import parse_verdicts
+    text = ('[{"predicate":"skiing","present":true,"evidence":"skier mid-slope","start_s":5,"end_s":40},'
+            '{"predicate":"ICE skating","present":false},'
+            '{"predicate":"unknown","present":true,"start_s":1,"end_s":2},'
+            '{"predicate":"snow","present":true,"start_s":9,"end_s":3}]')
+    out = parse_verdicts(text, ["skiing", "ice skating", "snow"])
+    assert [v["predicate"] for v in out] == ["skiing", "ice skating"]   # 越名丢弃/倒序区间丢弃
+    assert out[0]["present"] and out[0]["start"] == 5.0
+    assert out[1]["present"] is False
+    assert parse_verdicts("not json", ["a"]) == []
