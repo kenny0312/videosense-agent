@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import os
 from typing import Any
 
 DDL = """
@@ -135,9 +136,17 @@ def _execute(sql: str, params: tuple):
     return []
 
 
-# 相似度弱相关阈:低于此 = 只是"最接近"不是"真相关"(治过度召回 —— 语义搜永不返回空,
-# 库里没有你要的它也会塞几个最近的;必须让大脑看见"这些是弱的、其实没有匹配")。
-WEAK_THRESHOLD = 0.6
+# D3 拟合双阈(2026-07-09,30正/9负双语探针 + 抽象查询回归实测):
+#   ≥ T_HI(0.735):放心命中 —— 实测缺席实体从未到过这里(负例 max=0.733);
+#   < T_LO(0.60):连模糊都算不上,纯噪声;
+#   中间 = borderline 模糊带:抽象查询的真命中(「快节奏」≈0.6-0.7)和缺席实体的
+#   枢纽噪声(「养蜂」0.61)【同分数段,分数分不开】—— 能分开它们的是动作:
+#   信封带 video_id + 指引"核对 video_facts 再下结论"(评测 0/3→复活的实测教训:
+#   把 T_LO 卡 0.70 会误杀抽象查询)。
+# 语料明显增删后重标定:python scratchpad/d3_probe.py(拟合原料在输出 JSON)。
+T_LO = float(os.environ.get("SEMANTIC_T_LO", "0.60"))
+T_HI = float(os.environ.get("SEMANTIC_T_HI", "0.735"))
+WEAK_THRESHOLD = T_LO      # 兼容别名(evals 假世界 build_cosine_search 等引用)
 
 
 def search(vec_lit: str, k: int) -> list[dict]:
@@ -145,7 +154,8 @@ def search(vec_lit: str, k: int) -> list[dict]:
     rows = _execute(SEARCH_SQL, (vec_lit, vec_lit, int(k)))
     return [{"n": i + 1, "video_id": r[0], "source": r[1], "snippet": r[2],
              "start_ts": r[3], "end_ts": r[4], "score": round(float(r[5]), 3),
-             "relevance": "strong" if float(r[5]) >= WEAK_THRESHOLD else "weak",
+             "relevance": ("strong" if float(r[5]) >= T_HI
+                           else "borderline" if float(r[5]) >= T_LO else "weak"),
              "label": (r[2] or "")[:40]}
             for i, r in enumerate(rows)]
 

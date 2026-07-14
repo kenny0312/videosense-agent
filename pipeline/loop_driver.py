@@ -145,11 +145,20 @@ def run_loop(user_query: str, conversation, execute: Callable, *,
     msg: Any = user_query
     llm_calls = 0
     critic_used = 0
+    empty_retry_used = False
     for step in range(max_steps):
         calls, text = conversation.send(msg)
         llm_calls += 1
         if not calls:                                        # 收敛:纯文本即答案
             answer = text or ""
+            # 空生成兜底:工具都跑了、数据在手,最后一次生成却返回空(服务抖动;
+            # 2026-07-13 全套件实测 8 例"回归"里 7 例是此病)—— 不许把空串当最终
+            # 答案交付,点一下让它基于已有工具结果收口;只救一次防空转。线上用户同受益。
+            if not answer.strip() and trace and not empty_retry_used:
+                empty_retry_used = True
+                msg = ("[系统] 上一条生成为空。请基于已完成的工具结果直接给出最终回答;"
+                       "需要展示视频/表格就先调用对应的 show_ 工具。")
+                continue
             # 自检 B(设计 self-check-critic.md):收口前插一个 critic 判"满足用户没";没满足且有
             # 下一步 → 把意见喂回再来一轮(至多 max_critic 次,防空转)。critic 抛错 → 视为满足(fail-open)。
             if critic is not None and critic_used < max_critic:

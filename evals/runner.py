@@ -293,6 +293,10 @@ def run_case(task: dict, script=None, tool_results=None, n: int | None = None,
             from pipeline import usage as _usage
             _usage.reset_usage()                # GD-0：按 rollout 记 token/$（GEPA 预算控制用）
             res = LiveWorld(owner=owner, world=task.get("world", "A")).run(task["user_query"], max_steps=steps)
+            # 空生成重试(第六跑 32/55 失败是零工具+零文本 —— 首次生成就返回空,
+            # 是服务/传输抖动不是行为样本;重试一次仍空才按 0 分计,不让门被抖动污染)
+            if not (res.answer or "").strip() and not (res.trace or []):
+                res = LiveWorld(owner=owner, world=task.get("world", "A")).run(task["user_query"], max_steps=steps)
             _u = _usage.summarize()
             cost["tokens"] += _u.get("tokens_total", 0) or 0
             cost["cost_usd"] = round(cost["cost_usd"] + (_u.get("cost_usd", 0) or 0), 6)
