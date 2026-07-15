@@ -263,6 +263,9 @@
       <h1>VideoSense</h1>
       <span class="sess" id="sess"></span>
       <span class="spacer"></span>
+      <a class="icon-btn" id="consoleBtn" href="/console" target="_blank" rel="noopener"
+         style="display:none;text-decoration:none" aria-label="Loop Console"
+         title="Loop Console — how the brain thinks (admin only)"><i class="ti ti-activity" aria-hidden="true"></i></a>
     </header>
     <div class="thread" id="thread"></div>
     <div class="composer">
@@ -1130,4 +1133,9 @@ function monitorFromChat(c){     // 切换/打开会话:从该会话历史重算
 renderSidebar();
 if(chats.length) openChat(chats[0].id); else newChat();
 if(window.innerWidth<=720) $('#shell').classList.add('nosb');
+
+// ── Loop Console 入口:探针判管理员才显示(普通用户界面无痕;探针失败=静默不显示)──
+fetch('/v1/console/allowed').then(r=>r.json()).then(d=>{
+  if(d && d.allowed) $('#consoleBtn').style.display='';
+}).catch(()=>{});
 </script></body></html>

@@ -153,6 +153,52 @@ def index():
     return FileResponse(_INDEX_HTML)
 
 
+# ── Loop Console(开发者观测:大脑每步决策/prompt 构成/扇出;同一 Basic 鉴权墙内)──
+_CONSOLE_ADMINS = set(filter(None, os.environ.get("CONSOLE_ADMINS", "").split(",")))
+
+
+def _console_gate(request: Request):
+    """Console 是开发者观测面(能看到【所有用户】的问题/答案)—— 普通产品 key 不该进。
+    fail-closed:开了鉴权(有 _ACCESS_KEYS)就必须在 CONSOLE_ADMINS 名单;本地无鉴权保持全开。"""
+    if _ACCESS_KEYS and getattr(request.state, "app_user", None) not in _CONSOLE_ADMINS:
+        return Response(status_code=403, content="console 仅限 CONSOLE_ADMINS 名单")
+    return None
+
+
+@app.get("/console")
+def console_page(request: Request):
+    denied = _console_gate(request)
+    if denied:
+        return denied
+    import os as _os
+    return FileResponse(_os.path.join(_os.path.dirname(_INDEX_HTML), "console.html"))
+
+
+@app.get("/v1/console/allowed")
+def console_allowed(request: Request):
+    """主页入口按钮的探针:普通用户拿 false(按钮压根不渲染,界面无痕),不走 403。"""
+    return {"allowed": _console_gate(request) is None}
+
+
+@app.get("/v1/console/traces")
+def console_traces(request: Request):
+    denied = _console_gate(request)
+    if denied:
+        return denied
+    from pipeline import loop_console
+    return {"traces": loop_console.list_traces()}
+
+
+@app.get("/v1/console/trace/{tid}")
+def console_trace(tid: str, request: Request):
+    denied = _console_gate(request)
+    if denied:
+        return denied
+    from pipeline import loop_console
+    t = loop_console.get_trace(tid)
+    return t or Response(status_code=404, content="not found")
+
+
 @app.get("/health")
 def health():
     # gated 供上线后探活:确认鉴权墙生效(False = 全站无口令,危险信号)。不泄露 key,只报布尔。

@@ -153,3 +153,37 @@ def test_run_loop_empty_retry_only_once():
     ]
     res = ScriptedWorld(script, tool_results={"sql_query": [{"n": 1}]}).run("问题")
     assert res.answer == ""
+
+
+def test_loop_console_ring_and_record():
+    """Loop Console 数据环:用【真 run_loop】产出的形状喂 record(审查教训:
+    假形状测通了接错的字段);成功步给 args+preview,失败步给 stderr;fail-open。"""
+    from pipeline import loop_console as lc
+    from pipeline.loop_driver import Call
+    from evals.world import ScriptedWorld
+    lc._RING.clear()
+    script = [
+        ([Call(name="sql_query", inputs={"sql": "SELECT 1"}, uses=[])], "先查库里有什么"),
+        ([Call(name="python", inputs={"goal": "boom"}, uses=[])], ""),
+        ([], "最终答案"),
+    ]
+    res = ScriptedWorld(script, tool_results={"sql_query": [{"a": 1}]}, fail=("python",)).run("问")
+    class LO:                                             # run_query_loop 的最小替身
+        answer, steps, terminated = res.answer, res.steps, res.terminated
+        trace, step_walls, id_scrub_hits = res.trace, res.step_walls, 0
+        turns = res.turns
+    lc.record(query="测试问题", owner="t", lo=LO, ledger=res.ledger,
+              runtime_facts="RT", system_chars=1000, schema_chars=200, total_ms=345.6)
+    full = lc.get_trace(lc.list_traces()[0]["id"])
+    ok_step = next(x for x in full["steps"] if x["tool"] == "sql_query")
+    bad_step = next(x for x in full["steps"] if x["tool"] == "python")
+    assert "SELECT 1" in ok_step["args"]                  # inputs 真进了 args 列
+    assert ok_step["ok"] and ok_step["rows"] == 1
+    assert not bad_step["ok"] and "boom" in bad_step["out"]   # 失败步显示 stderr
+    assert full["total_ms"] == 345.6 and full["prompt"]["lessons_count"] >= 1
+    # 决策对话流:大脑原话按轮接住并与该轮的工具调用配对(轮1有原话,轮2沉默出手)
+    t0, t1 = full["turns"][0], full["turns"][1]
+    assert t0["brain"] == "先查库里有什么" and t0["steps"][0]["tool"] == "sql_query"
+    assert t1["brain"] == "" and t1["steps"][0]["tool"] == "python"
+    lc.record(query="坏记录", owner="t", lo=None, ledger={})   # lo=None → fail-open 不抛
+    assert len(lc.list_traces()) == 1
