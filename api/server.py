@@ -174,6 +174,12 @@ def console_page(request: Request):
     return FileResponse(_os.path.join(_os.path.dirname(_INDEX_HTML), "console.html"))
 
 
+@app.get("/v1/console/allowed")
+def console_allowed(request: Request):
+    """主页入口按钮的探针:普通用户拿 false(按钮压根不渲染,界面无痕),不走 403。"""
+    return {"allowed": _console_gate(request) is None}
+
+
 @app.get("/v1/console/traces")
 def console_traces(request: Request):
     denied = _console_gate(request)
