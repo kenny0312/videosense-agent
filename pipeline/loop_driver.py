@@ -247,6 +247,42 @@ def _send_with_retry(send_fn, attempts: int = 3):
             time.sleep(0.8 * (2 ** i))               # 0.8s, 1.6s
 
 
+# ── 空响应兜底 ────────────────────────────────
+def _blocked_fallback(reason, block) -> str:
+    """模型没吐任何内容(安全拦截 / 截断 / 背诵过滤等)时，给用户一句像样的话，
+    别返回一片空白。tag 取自 finish_reason 或 prompt_feedback.block_reason。"""
+    tag = str(block if block is not None else (reason if reason is not None else "")).upper()
+    if "SAFETY" in tag or "BLOCK" in tag or "PROHIBIT" in tag:
+        return "这个请求可能触发了内容安全限制，我这边没法处理。换个问法、或问视频库相关的问题，我再帮你。"
+    if "RECITATION" in tag:
+        return "抱歉，这条回答我没法给出。换个角度再问一次试试？"
+    if "MAX_TOKEN" in tag:
+        return "这次内容太长被截断了，麻烦把问题拆小一点再问我。"
+    return "抱歉，我这次没能生成回答。请再试一次，或者换个问法。"
+
+
+def _extract(resp):
+    """从 genai/vertex 响应里抽 (calls, text)。响应为空(安全拦截等)时不返回空白，
+    而是回一句兜底话——根因在 Gemini 偶发对正常请求误拦，别让用户吃一片空白。"""
+    cand = resp.candidates[0] if getattr(resp, "candidates", None) else None
+    parts = (cand.content.parts or []) if (cand and getattr(cand, "content", None)) else []
+    calls, texts = [], []
+    for p in parts:
+        fc = getattr(p, "function_call", None)
+        if fc and fc.name:
+            args = _to_py(dict(fc.args))
+            uses = [args.pop(h) for h in UPSTREAM_HANDLES.get(fc.name, []) if h in args]
+            calls.append(Call(fc.name, args, uses))
+        elif getattr(p, "text", ""):
+            texts.append(p.text)
+    if not calls and not texts:                # 整个响应是空的 = 异常，给兜底话而不是空白
+        reason = getattr(cand, "finish_reason", None) if cand else None
+        fb = getattr(resp, "prompt_feedback", None)
+        block = getattr(fb, "block_reason", None) if fb else None
+        return [], _blocked_fallback(reason, block)
+    return calls, ("".join(texts) if texts else None)
+
+
 # ── 真实适配器(live;M2 spike 已验)──────────────
 class GeminiConversation:
     """旧 vertexai SDK 后端(gemini-2.x 及以下)。U5 后仅作回滚路径:LOOP_MODEL 退回 2.5 即走这里。"""
@@ -270,16 +306,7 @@ class GeminiConversation:
             usage.add_usage(resp, self._model_name)        # loop 的 token 也记进 usage(审计 + 前端监控,之前漏了)
         except Exception:
             pass
-        calls, texts = [], []
-        for p in resp.candidates[0].content.parts:
-            fc = getattr(p, "function_call", None)
-            if fc and fc.name:
-                args = _to_py(dict(fc.args))
-                uses = [args.pop(h) for h in UPSTREAM_HANDLES.get(fc.name, []) if h in args]
-                calls.append(Call(fc.name, args, uses))
-            elif getattr(p, "text", ""):
-                texts.append(p.text)
-        return calls, ("".join(texts) if texts else None)
+        return _extract(resp)                              # 空响应给兜底话，不返回空白
 
 
 # ── U5:google-genai 后端(gemini-3.x 起【只】在新 SDK + global 端点可用;spike 已验函数调用往返)──
@@ -316,18 +343,7 @@ class GenAIConversation:
             usage.add_usage(resp, self._model_name)
         except Exception:
             pass
-        cand = resp.candidates[0] if resp.candidates else None
-        parts = (cand.content.parts or []) if (cand and cand.content) else []
-        calls, texts = [], []
-        for p in parts:
-            fc = getattr(p, "function_call", None)
-            if fc and fc.name:
-                args = _to_py(dict(fc.args))
-                uses = [args.pop(h) for h in UPSTREAM_HANDLES.get(fc.name, []) if h in args]
-                calls.append(Call(fc.name, args, uses))
-            elif getattr(p, "text", ""):
-                texts.append(p.text)
-        return calls, ("".join(texts) if texts else None)
+        return _extract(resp)                              # 空响应给兜底话，不返回空白
 
 
 def make_conversation(model_name: str, declarations: list[dict], system: str,

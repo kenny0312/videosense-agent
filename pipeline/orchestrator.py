@@ -129,8 +129,8 @@ def run_query(nl: str, *, quiet_trace: bool = False,
         log.warning("loop 抛错(优雅降级为重试提示): %r", e)
         return _result(True, trace=trace, status="ok", answer=_RETRY_MSG,
                        session_id=sid, turn_type=ttype)
-    if lo.answer is None:
-        log.warning("loop 未收敛(%s)→ 重试提示", lo.terminated)
+    if not lo.answer:                       # None 或空字符串(安全拦截漏网/未收敛)都兜底，别给用户空白
+        log.warning("loop 未产出答案(%s)→ 重试提示", lo.terminated)
         return _result(True, trace=trace, status="ok", answer=_RETRY_MSG,
                        session_id=sid, turn_type=ttype)
     # 记忆简化:不再登记 catalog/值仓 —— 唯一记忆 = transcript。推进轮号后把这一轮落 transcript
