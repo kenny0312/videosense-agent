@@ -26,6 +26,15 @@ def _fail_dims(r) -> list:
     return [k for k, v in (r.get("scores") or {}).items() if v < 1.0]
 
 
+def _has_blank(r) -> bool:
+    """失败样本里有没有'空白答案'（Gemini 安全拦截 bug 的信号）。"""
+    ff = r.get("first_fail") or {}
+    if (ff.get("answer") or "") == "" and r.get("kind") != "multi":
+        return True
+    return any(t.get("who") == "agent" and not (t.get("text") or "").strip()
+               for t in ff.get("turns") or [])
+
+
 def build_briefing(run: dict) -> str:
     """run = dashboard 归档的一次运行记录（含 results 明细）。返回 markdown 字符串。"""
     meta = run.get("meta") or {}
@@ -92,6 +101,14 @@ def build_briefing(run: dict) -> str:
         L.append(f"| {DIM_LABEL.get(d, d)} | {round(v * 100)}% |")
     L.append("")
 
+    # 空白答案（Gemini 安全拦截 bug）单独拎出——这类失败是产品 bug 拖挂，不是能力问题
+    blank_fails = [r for r in fails if _has_blank(r)]
+    if blank_fails:
+        L.append(f"> ⚠ 其中 {len(blank_fails)} 道是 **agent 返回了空白答案**（疑似 Gemini 安全拦截 bug，"
+                 f"已登记的产品缺陷）拖挂的，不是能力问题——分析时请把它们和真能力失败分开看："
+                 f"{'、'.join('`' + r['id'] + '`' for r in blank_fails)}")
+        L.append("")
+
     L.append(f"## 没过的题（{len(fails)} 道，逐条——这是分析重点）")
     L.append("")
     if not fails:
@@ -102,7 +119,8 @@ def build_briefing(run: dict) -> str:
         tools = ff.get("tools") or r.get("tools") or []
         tool_str = " → ".join(f"{t.get('tool')}({t.get('args', '')})" for t in tools[:10]) or "(没调工具)"
         pin = "🔒必过题 " if r.get("pinned") else ""
-        L.append(f"### {pin}`{r['id']}` — 栽在：{_labels(_fail_dims(r))}")
+        blank = "  ⚠空白答案(疑似产品bug)" if _has_blank(r) else ""
+        L.append(f"### {pin}`{r['id']}` — 栽在：{_labels(_fail_dims(r))}{blank}")
         L.append("")
         L.append(f"- **用户问**：{r.get('question', '(无)')}")
         L.append(f"- **agent 答**：{ans}")

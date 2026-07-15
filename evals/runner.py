@@ -303,21 +303,26 @@ def run_case_multi(task: dict, n: int | None = None, owner: str = "eval") -> dic
     return rec
 
 
-def n_for(task: dict, n: int | None) -> int:
+def n_for(task: dict, n: int | None, regression_ids: set | None = None) -> int:
     """一道题该跑几次：显式 --n 全体照办（冒烟用）；
-    默认档：普通题 3 次、必过题 5 次（红线要建立在更多证据上）。"""
+    默认档：普通题 3 次、必过题 5 次（红线要更多证据）；
+    回归套件（闭眼全过的题）只跑 1 次——它只是防退步安全网，不必反复证明。"""
     if n:
         return n
+    if regression_ids and task.get("id") in regression_ids and not task.get("pinned"):
+        return 1
     return 5 if task.get("pinned") else 3
 
 
 def run_suite(tasks: list[dict], policies: dict | None = None, tool_results: dict | None = None,
               live: bool = False, n: int | None = None) -> list[dict]:
+    from evals.suites import load_regression_ids
+    reg = load_regression_ids()               # 回归套件的题默认只跑 1 次（防退步网）
     if live:                                  # Mode B：真 Gemini。单轮 + 多轮；带世界动作的看接没接
         todo, skipped = split_live_tasks(tasks)
         out = []
         for i, (t, is_multi) in enumerate(todo, 1):
-            tn = n_for(t, n)
+            tn = n_for(t, n, reg)
             try:
                 r = run_case_multi(t, n=tn) if is_multi else run_case(t, live=True, n=tn)
             except Exception as e:            # 单题崩溃不拖垮整场
@@ -517,12 +522,23 @@ def main(argv=None):
     ap.add_argument("--list", action="store_true", help="只列数据集统计，不跑")
     ap.add_argument("--semantic", action="store_true",
                     help="真跑时打开语义检索：用真 embed 把假片库嵌进内存索引，测你改的 semantic_search")
+    ap.add_argument("--suite", choices=["all", "regression", "capability"], default="all",
+                    help="跑哪个套件：capability=会挂/闪烁的题（认真跑，省钱）；"
+                         "regression=闭眼全过的题（防退步，便宜跑）；默认 all。分层用 python -m evals.tag_suite")
     args = ap.parse_args(argv)
 
     if args.semantic:
         os.environ["EVAL_SEMANTIC"] = "1"       # 假世界 install 时会据此建内存语义索引
 
+    from evals.suites import filter_by_suite
     tasks = load_tasks(args.tasks_dir)
+    if args.suite != "all":
+        before = len(tasks)
+        tasks = filter_by_suite(tasks, args.suite)
+        print(f"套件过滤：{args.suite} —— {len(tasks)}/{before} 题")
+        if not tasks:
+            print("这个套件是空的（还没分层？先 python -m evals.tag_suite）")
+            return 0
 
     if args.list:
         by_dim = Counter(d for t in tasks for d in t.get("dims", ["?"]))

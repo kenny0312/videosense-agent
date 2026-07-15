@@ -21,6 +21,10 @@ eval serve            # 或 python -m evals serve；页面 http://127.0.0.1:8377
 # `eval` 是仓库根的 eval.bat —— Windows 快捷方式，等价于 python -m evals <子命令>，
 # 还顺手设好 UTF-8 和 mock DB。cmd 里在仓库根直接敲 `eval serve`；PowerShell 要写 `.\eval serve`。
 
+# 套件分层：别在简单题上浪费钱。跑完基线后分层，之后只认真跑有区分度的题
+python -m evals.tag_suite                        # 从最近真跑分层：闭眼全过→回归套件，会挂/闪烁→能力套件
+python -m evals.runner --live --suite capability  # 只认真跑能力套件（省钱）；回归套件便宜跑防退步
+
 # 本地仪表盘（历史/趋势/没过的题）—— 每次跑完自动更新，浏览器 F5 即可
 python -m evals.dashboard --open
 
