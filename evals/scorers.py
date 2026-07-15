@@ -314,6 +314,8 @@ _MMSS = re.compile(r"\b(\d+):([0-5]\d)\b")
 _SPAN_PAT = re.compile(
     r"(\d+(?:\.\d+)?)\s*(?:秒|s|sec|seconds?)?\s*(?:到|至|~|–|—|-|to|and|through)\s*"
     r"(?:第?\s*)?(\d+(?:\.\d+)?)", re.IGNORECASE)
+# 带"秒"单位的数字（真的是时间点，排除"第 1 个视频"这类序数/计数）
+_SEC_NUM = re.compile(r"(\d+(?:\.\d+)?)\s*(?:秒|s\b|sec\b|seconds?\b)", re.IGNORECASE)
 
 
 def _span_iou(span, gold) -> float:
@@ -326,20 +328,25 @@ def _span_iou(span, gold) -> float:
 
 def timestamp_iou(answer, cfg) -> float:
     """时间点准不准：从答案抽 [起, 止] 区间，和金标算重合度，够阈值算过。
-    四个坑都处理了：① 先剔视频 id（"sky01" 里的 01 不是时间）；
-    ② "0:11" 这种 分:秒 写法先折算成秒；③ 优先找 "X 到/to Y" 的成对说法；
-    ④ 答案里有多个区间时（先交代"核对了第 60~68 秒片段"、再给结论"62 到 65 秒"），
-      取和金标重合度最高的那个——答案里任何地方给出过正确区间就算对。"""
+    坑都处理了：① 先剔视频 id 和 markdown 加粗符号；② "0:11" 分:秒 折算成秒；
+    ③ 找 "X 到/to Y" 的成对说法；④ 中文常把"到"和起点数字隔开（"从第 8 秒开始，
+      一直持续到第 22 秒"）——正则接不住，就退而取所有带"秒"的数字，相邻两两配区间；
+    ⑤ 多个候选区间取和金标重合度最高的那个（答案里任何地方给出过正确区间就算对）。
+    只有连"秒"都找不到时，才无奈用前两个裸数字兜底（"第 1 个视频"的 1 就是这么误伤的，
+    现在优先级降到最后）。"""
     gold = cfg.get("gold_span")
     thr = cfg.get("iou_threshold", 0.5)
     if not gold:
         return 1.0
-    text = _ID_TOKEN.sub(" ", answer or "")
+    text = (answer or "").replace("*", " ").replace("`", " ")   # 剥 markdown 加粗/代码符
+    text = _ID_TOKEN.sub(" ", text)
     text = _MMSS.sub(lambda m: str(int(m.group(1)) * 60 + int(m.group(2))), text)
     spans = [tuple(sorted((float(m.group(1)), float(m.group(2)))))
              for m in _SPAN_PAT.finditer(text)]
+    secs = [float(x) for x in _SEC_NUM.findall(text)]          # 带"秒"的时间数字
+    spans += [tuple(sorted((secs[i], secs[i + 1]))) for i in range(len(secs) - 1)]
     if not spans:
-        nums = re.findall(r"\d+(?:\.\d+)?", text)
+        nums = re.findall(r"\d+(?:\.\d+)?", text)              # 实在没"秒"才用裸数字兜底
         if len(nums) < 2:
             return 0.0
         spans = [tuple(sorted((float(nums[0]), float(nums[1]))))]
