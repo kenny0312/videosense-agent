@@ -29,8 +29,16 @@
   .step .tool { color:var(--acc); }
   .step .io { color:var(--dim); overflow-wrap:anywhere; }
   .step .io .out { color:var(--txt); opacity:.85; display:block; margin-top:2px; }
+  .step .io .out b { color:var(--dim); font-weight:normal; }
   .step .ms { text-align:right; color:var(--dim); }
   .sub { border-left:3px solid var(--acc); }
+  .turn { border-left:2px solid #6b5aa5; padding-left:12px; margin-bottom:14px; }
+  .turn .brain { white-space:pre-wrap; margin-bottom:8px; color:#cfc2f0; }
+  .turn .brain .tno { color:var(--dim); font-size:11px; margin-right:8px; }
+  .turn .brain .quiet { color:var(--dim); font-style:italic; }
+  .turn .nudge { color:var(--dim); background:var(--chip); border:1px dashed var(--line);
+                 border-radius:6px; padding:6px 10px; margin-bottom:8px; white-space:pre-wrap; }
+  .conv-final { border-left:2px solid var(--ok); padding-left:12px; }
   .answer { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px 14px; white-space:pre-wrap; }
   .rt { color:var(--dim); white-space:pre-wrap; font-size:12px; }
   .empty { color:var(--dim); padding:40px; text-align:center; }
@@ -79,17 +87,30 @@ async function show(id) {
       </div>
       ${p.runtime_facts ? `<div class="rt" style="margin-top:8px">运行时事实:\n${esc(p.runtime_facts)}</div>` : ''}
     </div>
-    <div class="sec"><h2>决策轨迹(${Number(t.n_steps)} 步 · 总 ${Number(t.total_ms)}ms,其中工具 ${Number(t.tool_ms)}ms · 终止:${esc(t.terminated)})</h2>
-      ${(t.steps||[]).map(s => `
-        <div class="step ${s.sub?'sub':''}">
-          <div class="dot ${s.ok?'ok':'bad'}">${s.ok?'●':'✕'}</div>
-          <div class="tool">${esc(s.tool)}${s.cache_hit?' ⚡cache':''}${s.sub?' ⇶扇出':''}</div>
-          <div class="io">${esc(s.args||'')}${s.out?`<span class="out">→ ${esc(s.out)} ${s.rows!=null?`(${s.rows} 行)`:''}</span>`:''}</div>
-          <div class="ms">${Number(s.ms)}ms</div>
-        </div>`).join('') || '<div class="dim">纯文本收敛,没调工具</div>'}
+    <div class="sec"><h2>决策对话流(${(t.turns||[]).length} 轮 ${Number(t.n_steps)} 步 · 总 ${Number(t.total_ms)}ms,其中工具 ${Number(t.tool_ms)}ms · 终止:${esc(t.terminated)})</h2>
+      ${renderFlow(t)}
     </div>
-    <div class="sec"><h2>答案(已清洗${t.scrub_hits ? ` · 清洗命中 ${t.scrub_hits}` : ''})</h2>
+    <div class="sec conv-final"><h2>🧠 收敛 → 最终答案(已清洗${t.scrub_hits ? ` · 清洗命中 ${t.scrub_hits}` : ''})</h2>
       <div class="answer">${esc(t.answer||'(空)')}</div></div>`;
+}
+function stepCard(s) {
+  return `<div class="step ${s.sub?'sub':''}">
+      <div class="dot ${s.ok?'ok':'bad'}">${s.ok?'●':'✕'}</div>
+      <div class="tool">${esc(s.tool)}${s.cache_hit?' ⚡cache':''}${s.sub?' ⇶扇出':''}</div>
+      <div class="io">${esc(s.args||'')}${s.out?`<span class="out"><b>回喂给大脑 →</b> ${esc(s.out)} ${s.rows!=null?`(${s.rows} 行)`:''}</span>`:''}</div>
+      <div class="ms">${Number(s.ms)}ms</div>
+    </div>`;
+}
+function renderFlow(t) {
+  const turns = t.turns || [];
+  if (!turns.length)                       // 旧记录(升级前)没有 turns —— 退回平铺步骤
+    return (t.steps||[]).map(stepCard).join('') || '<div class="dim">纯文本收敛,没调工具</div>';
+  return turns.map(tn => `
+    <div class="turn">
+      ${tn.nudge ? `<div class="nudge">⚙ 系统回喂:${esc(tn.nudge)}</div>` : ''}
+      <div class="brain"><span class="tno">第 ${Number(tn.i)+1} 轮 · 🧠 大脑决策</span>${tn.brain ? esc(tn.brain) : '<span class="quiet">(这轮没写理由,直接出手)</span>'}</div>
+      ${(tn.steps||[]).map(stepCard).join('')}
+    </div>`).join('');
 }
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function fmt(n){return (n??0).toLocaleString()}

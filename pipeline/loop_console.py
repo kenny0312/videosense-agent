@@ -51,15 +51,31 @@ def record(*, query: str, owner: str, lo, ledger: dict,
             out = ((getattr(er, "preview", None) if ok
                     else (getattr(er, "stderr", "") or getattr(er, "preview", None)))
                    if er else "")
+            try:                                     # cid = "c{轮}_{i}" → 这步属于第几轮
+                turn_no = int(str(s.get("cid", "c0_0"))[1:].split("_")[0])
+            except (ValueError, IndexError):
+                turn_no = 0
             steps.append({
-                "tool": tool, "ok": ok,
+                "tool": tool, "ok": ok, "turn": turn_no,
                 "ms": round(float(s.get("ms", 0.0)), 1),
-                "args": _cap(args, 200),
+                "args": _cap(args, 600),             # 动态指令(如 analyze_video 的 instruction)要看全
                 "rows": getattr(er, "n", None) if er else None,
-                "out": _cap(out, 240),
+                "out": _cap(out, 300),
                 "cache_hit": bool(s.get("cache_hit")),
                 "sub": tool == "spawn_agents",       # 扇出步(子 agent 明细在 out 里)
             })
+        # 决策对话流:按轮聚合 —— 每轮 = 大脑原话(为什么) + 这轮发出的工具调用。
+        # brain 可能为空(模型不写理由直接出手);nudge = 系统回喂(空生成兜底/自检)。
+        by_turn: dict = {}
+        for t in (getattr(lo, "turns", None) or []):
+            d = by_turn.setdefault(int(t.get("step", 0)), {"brain": "", "nudge": "", "steps": []})
+            if t.get("nudge"):
+                d["nudge"] = _cap(t["nudge"], 300)
+            else:
+                d["brain"] = _cap(t.get("brain"), 1200)
+        for st in steps:
+            by_turn.setdefault(st["turn"], {"brain": "", "nudge": "", "steps": []})["steps"].append(st)
+        turns = [{"i": k, **v} for k, v in sorted(by_turn.items())]
         rec = ({
             "id": uuid.uuid4().hex[:10],
             "ts": time.strftime("%m-%d %H:%M:%S"),
@@ -73,7 +89,8 @@ def record(*, query: str, owner: str, lo, ledger: dict,
                 "lessons_count": len(lessons.LESSONS),
             },
             "steps": steps,
-            "answer": _cap(lo.answer, 500),                    # 已过清洗(run_query_loop 收口后)
+            "turns": turns,                                    # 决策对话流(轮 = 原话 + 工具调用)
+            "answer": _cap(lo.answer, 800),                    # 已过清洗(run_query_loop 收口后)
             "terminated": lo.terminated,
             "n_steps": lo.steps,
             "scrub_hits": getattr(lo, "id_scrub_hits", 0),
