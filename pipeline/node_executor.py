@@ -483,6 +483,21 @@ def _translate_query_en(query: str) -> "str | None":
         return None
 
 
+def _dedupe_by_video(rows: list, k: int) -> list:
+    """按视频聚合:每视频只保留最高分的一行再取 top-k(审计 B3:v2 后同一视频有
+    vid/cap/tr 多种行,平面 top-k 里互相抢名额,列表类查询的视频广度最坏减半)。
+    保留行自带的时间戳(段级行命中就有跳转点;vid/cap 行命中则无,属实)。"""
+    best: dict = {}
+    for r in rows:
+        v = r.get("video_id")
+        if v not in best or r["score"] > best[v]["score"]:
+            best[v] = r
+    out = sorted(best.values(), key=lambda r: -r["score"])[:k]
+    for i, r in enumerate(out):
+        r["n"] = i + 1
+    return out
+
+
 def _run_semantic_search(node: Node) -> NodeResult:
     """V1:语义检索(pgvector 近邻,直连 Neon)。返回行列表 —— 可直接作 show_video/show_table
     的上游(带 video_id/start_ts/end_ts/label),score 降序。
@@ -499,7 +514,7 @@ def _run_semantic_search(node: Node) -> NodeResult:
     vec = embed_query(query)
     if vec is None:
         raise ValueError("query embedding 失败(稍后重试,或改用 sql_query/analyze_video)")
-    rows = semantic_index.search(vec_literal(vec), k)
+    rows = semantic_index.search(vec_literal(vec), k * 3)   # 超采:聚合后仍够 k 个不同视频
     # 跨语言桥:英译路有 strong 命中就【以英译路为准】—— 两条路的分数刻度不同
     # (中文查询打英文片段,枢纽片段常拿虚高分:实测『打台球』原文路给躲避球 0.766,
     # 高于英译路台球的 0.75,按分高合并会把毒瘤排第一)。原文路只补【中文片段】的
@@ -508,7 +523,7 @@ def _run_semantic_search(node: Node) -> NodeResult:
     if en and en.lower() != query.lower():
         vec_en = embed_query(en)
         if vec_en is not None:
-            en_rows = semantic_index.search(vec_literal(vec_en), k)
+            en_rows = semantic_index.search(vec_literal(vec_en), k * 3)
             if any(r.get("relevance") == "strong" for r in en_rows):
                 seen = {(r["video_id"], r["snippet"]) for r in en_rows}
                 extra = [r for r in rows
@@ -520,6 +535,7 @@ def _run_semantic_search(node: Node) -> NodeResult:
                     r["n"] = i + 1
             elif not any(r.get("relevance") == "strong" for r in rows):
                 rows = en_rows          # 两路都无 strong:信封用英译路(刻度准)的最近邻
+    rows = _dedupe_by_video(rows, k)
     # 治过度召回(结构性,非靠大脑自觉):没有 strong = 不给行列表 —— show_video 结构上
     # 无法把信封当"找到的视频"展示。borderline(像与不像之间)单独说明:先核对再下结论。
     strong = [r for r in rows if r.get("relevance") == "strong"]
