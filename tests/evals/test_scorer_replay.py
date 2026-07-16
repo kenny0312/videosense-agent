@@ -184,6 +184,19 @@ def test_jga_pipe_alternatives():
     assert scorers.score_jga(["第二个是水肺潜水"], slots) == 0.0
 
 
+def test_jga_timestamp_not_mistaken_for_video_duration():
+    """批⑧冤案平反：答案里的时间数字("18秒")不能被当成"提到了时长18秒的那个视频"而判串台。
+    真答案 coherence-narrow-snowboard-ski-span-27 T3，agent 三轮全对却因 18 撞 v012 时长被冤。"""
+    titles = {"v003": ["Backcountry Snowboarding Run", "52"], "v012": ["Walking Dog in Park", "18"]}
+    blobs = ["找到 Backcountry Snowboarding Run", "第 2 个 Backcountry Snowboarding Run 里有双板滑雪",
+             "双板滑雪出现在 18.0 秒至 23.0 秒。"]
+    slots = [{"turn": 3, "resolved_ordinal": {"那段": "v003"}}]
+    assert scorers.score_jga(blobs, slots, titles) == 1.0
+    # 但真串台（明确点了别的视频标题）仍要判挂
+    bad = ["", "", "你说的那段其实在 Walking Dog in Park 里。"]
+    assert scorers.score_jga(bad, [{"turn": 3, "resolved_ordinal": {"那段": "v003"}}], titles) == 0.0
+
+
 def test_jga_resolution_via_tool_args():
     """批⑤冤案平反：agent 去查了那条视频=指代解析对了的直接证据。
     产品规则不让 id 进答案文本，不能因为它守规矩不念 id 就判它忘事（paste-image-23 曾因此被冤）。"""

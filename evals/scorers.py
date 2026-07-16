@@ -45,14 +45,17 @@ def _alias_hit(alias, blob: str) -> bool:
     return s.lower() in blob.lower()
 
 
-def _mention(vid: str, blob: str, aliases: dict | None) -> bool:
-    """一个视频有没有被"提到/交付"：id 直接出现，或它的别名（标题/时长）出现。"""
+def _mention(vid: str, blob: str, aliases: dict | None, strong: bool = False) -> bool:
+    """一个视频有没有被"提到/交付"：id 直接出现，或它的别名（标题/时长）出现。
+    strong=True 时只认 id 和标题，不认纯数字别名（时长）——因为答案里的数字常常
+    是时间点/计数（"18 秒"），不能拿它断定"提到了时长 18 秒的那个视频"。
+    判"串台/提错了别的视频"这种反向指控时必须用 strong，否则会拿时间数字冤枉人。"""
     if vid in blob:
         return True
     al = (aliases or {}).get(vid) or []
     if isinstance(al, str):
         al = [al]
-    return any(_alias_hit(x, blob) for x in al)
+    return any(_alias_hit(x, blob) for x in al if not (strong and str(x).isdigit()))
 
 
 # ── 工具审计 ─────────────────────────────────────────────────────────
@@ -399,7 +402,9 @@ def score_jga(agent_blobs: list, slots, titles: dict | None = None,
         for vid in (slot.get("resolved_ordinal", {}) or {}).values():
             if _mention(vid, turn_rich, titles):
                 continue                                   # 这一轮就点对了
-            others = any(_mention(o, turn_rich, titles)
+            # 串台判定用 strong：只有明确点了【别的视频的 id/标题】才算串台，
+            # 光出现个数字（多半是时间点/计数）不算——否则 "18 秒" 会撞上时长 18 秒的视频
+            others = any(_mention(o, turn_rich, titles, strong=True)
                          for o in (titles or {}) if o != vid)
             if others or not _mention(vid, cum, titles):
                 return 0.0                                 # 串台，或从头到尾没确立过
