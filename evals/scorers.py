@@ -389,31 +389,60 @@ def score_jga(agent_blobs: list, slots, titles: dict | None = None,
       '60' 不命中 '160'；支持 "a|b" 任一命中（中文答法也算对）。
     resolve_blobs（可选）是每轮更宽的"指代证据面"（含工具调用参数）：agent 去查/放了
     哪条视频，本身就是解析对了的直接证据——产品规则不让 id 进答案文本，
-    不能因为它守规矩不念 id 就判它忘事。"""
+    不能因为它守规矩不念 id 就判它忘事。
+
+    这把尺子内部拆成三个子检查（见 score_jga_parts）：记忆 / 指代 / 轮值。
+    本函数是门禁总口——三项都满分才算过。想看是哪一项挂的，用 score_jga_parts。"""
+    parts = score_jga_parts(agent_blobs, slots, titles, resolve_blobs)
+    return 1.0 if all(v >= 1.0 for v in parts.values()) else 0.0
+
+
+def _jga_memory(cum, slot, titles) -> bool:
+    """子检查①记忆：到这轮为止该在台面上的视频，前面任何一轮摆上过就算记住。"""
+    return all(_mention(vid, cum, titles) for vid in slot.get("video_ids", []) or [])
+
+
+def _jga_reference(turn_rich, cum, slot, titles) -> bool:
+    """子检查②指代："那个/第二个/它"这轮解析到哪条。这轮点对了✅；
+    没点名任何视频→用累积兜底；明确点了【别的视频】才算串台判挂
+    （串台判定用 strong，光出现个数字不算——否则时间点会撞上某视频时长）。"""
+    for vid in (slot.get("resolved_ordinal", {}) or {}).values():
+        if _mention(vid, turn_rich, titles):
+            continue
+        others = any(_mention(o, turn_rich, titles, strong=True)
+                     for o in (titles or {}) if o != vid)
+        if others or not _mention(vid, cum, titles):
+            return False
+    return True
+
+
+def _jga_turnfact(blob, slot) -> bool:
+    """子检查③轮值：这轮该答出的关键数字/事实（answer_contains），支持 a|b 任一命中。"""
+    want = slot.get("answer_contains")
+    if want is None:
+        return True
+    alts = [x.strip() for x in str(want).split("|") if x.strip()]
+    return (not alts) or any(_alias_hit(x, blob) for x in alts)
+
+
+def score_jga_parts(agent_blobs: list, slots, titles: dict | None = None,
+                    resolve_blobs: list | None = None) -> dict:
+    """多轮"不忘事"拆成三个子分（各 0/1），看得见是哪一项挂的：
+    - jga_memory  记忆：该记住的视频到这轮还在不在台面上
+    - jga_reference 指代："那个/它"解析对没有（串台判在这，最易出 bug 的一块被隔离）
+    - jga_turnfact 轮值：这轮该答的关键值有没有
+    每一项是"所有相关槽位都过"才 1。没有对应槽位的项默认 1（不拖累）。"""
     rich = resolve_blobs if resolve_blobs is not None else agent_blobs
+    mem = ref = fact = True
     for slot in slots or []:
         idx = int(slot.get("turn", 1)) - 1
         blob = agent_blobs[idx] if 0 <= idx < len(agent_blobs) else ""
         turn_rich = rich[idx] if 0 <= idx < len(rich) else ""
         cum = " ".join(rich[:idx + 1]) if idx >= 0 else ""
-        for vid in slot.get("video_ids", []) or []:
-            if not _mention(vid, cum, titles):
-                return 0.0
-        for vid in (slot.get("resolved_ordinal", {}) or {}).values():
-            if _mention(vid, turn_rich, titles):
-                continue                                   # 这一轮就点对了
-            # 串台判定用 strong：只有明确点了【别的视频的 id/标题】才算串台，
-            # 光出现个数字（多半是时间点/计数）不算——否则 "18 秒" 会撞上时长 18 秒的视频
-            others = any(_mention(o, turn_rich, titles, strong=True)
-                         for o in (titles or {}) if o != vid)
-            if others or not _mention(vid, cum, titles):
-                return 0.0                                 # 串台，或从头到尾没确立过
-        want = slot.get("answer_contains")
-        if want is not None:
-            alts = [x.strip() for x in str(want).split("|") if x.strip()]
-            if alts and not any(_alias_hit(x, blob) for x in alts):
-                return 0.0
-    return 1.0
+        mem = mem and _jga_memory(cum, slot, titles)
+        ref = ref and _jga_reference(turn_rich, cum, slot, titles)
+        fact = fact and _jga_turnfact(blob, slot)
+    return {"jga_memory": float(mem), "jga_reference": float(ref), "jga_turnfact": float(fact)}
 
 
 # ── 世界状态断言（双向控制题：上传/入库/记忆 真的落没落）──────────────

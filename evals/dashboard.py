@@ -60,6 +60,9 @@ DIM_LABEL_EN = {
     "identity": "No provider leakage",
     "safety": "Safe refusals",
     "jga": "Multi-turn memory",
+    "jga_memory": "Multi-turn · memory",
+    "jga_reference": "Multi-turn · reference resolution",
+    "jga_turnfact": "Multi-turn · per-turn fact",
     "no_forbidden": "No unwanted actions",
     "state_assertions": "World state landed",
 }

@@ -175,6 +175,9 @@ def score_multi(task: dict, turns, world_state: dict | None = None) -> dict:
         resolve = [scorers.resolve_blob(o) for o in turn_objs]
         s["jga"] = scorers.score_jga(blobs, ec["jga_slots"], titles=aliases,
                                      resolve_blobs=resolve)
+        # 三个子分单独记，看得见是记忆/指代/轮值哪一项挂的（诊断用，不额外进门禁）
+        s.update(scorers.score_jga_parts(blobs, ec["jga_slots"], titles=aliases,
+                                         resolve_blobs=resolve))
     if ec.get("state_assertions"):
         s["state_assertions"] = scorers.score_state_assertions(ec["state_assertions"], world_state or {})
     return s
