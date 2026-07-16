@@ -170,6 +170,7 @@ document.querySelector('meta[name="theme-color"]').content='#f4f6f9';}}catch(e){
   .send:active:not(:disabled){transform:scale(.94)}
   .send:disabled{opacity:.4;cursor:not-allowed}
   .cfoot{display:flex;align-items:center;justify-content:space-between;padding:0 4px}
+  .cfoot-l{display:flex;align-items:center;gap:8px}
   .propill{display:inline-flex;align-items:center;gap:5px;font-size:12px;padding:4px 11px;border-radius:999px;cursor:pointer;background:none;border:1px solid var(--border2);color:var(--muted);line-height:1.4;transition:color .13s,border-color .13s,background .13s}
   .propill:hover{color:var(--text);border-color:#3a3550;background:var(--hover)}
   .propill.on{background:var(--pro-dim);border-color:transparent;color:var(--pro)}
@@ -235,6 +236,11 @@ document.querySelector('meta[name="theme-color"]').content='#f4f6f9';}}catch(e){
   .attach-menu button:hover{background:var(--hover);color:var(--text)}
   .attach-menu .sub{font-size:11px;color:var(--hint)}
   .attach-menu i{font-size:16px;color:var(--accent-soft)}
+  .modelwrap{position:relative;display:inline-flex}
+  .model-menu{left:0;bottom:34px;min-width:252px}
+  .model-menu .mck{margin-left:auto;font-size:14px;color:var(--accent-soft);visibility:hidden}
+  .model-menu button.sel .mck{visibility:visible}
+  .model-menu .msep{height:1px;background:var(--border);margin:5px 4px}
   .achips{display:flex;gap:7px;flex-wrap:wrap}
   .achip{display:inline-flex;align-items:center;gap:7px;background:var(--surface2);border:1px solid var(--border2);border-radius:8px;padding:4px 6px 4px 8px;font-size:12px;color:var(--muted)}
   .achip img{width:22px;height:22px;border-radius:4px;object-fit:cover;display:block}
@@ -326,10 +332,21 @@ document.querySelector('meta[name="theme-color"]').content='#f4f6f9';}}catch(e){
           <button class="send" id="send" aria-label="Send"><i class="ti ti-arrow-up" id="sendIcon" aria-hidden="true"></i></button>
         </div>
         <div class="cfoot">
-          <button id="proPill" class="propill" type="button" aria-pressed="false"
-                  title="Pro video analysis: watch-the-content questions use a stronger pro model (more accurate, slower). DB queries and counts are unaffected."><i class="ti ti-sparkles" aria-hidden="true"></i><span id="proLbl">Flash</span></button>
+          <span class="cfoot-l">
+          <span class="modelwrap">
+            <button id="modelPill" class="propill" type="button" aria-haspopup="menu" aria-expanded="false"
+                    title="Brain model for this chat — click to switch"><i class="ti ti-cpu" aria-hidden="true"></i><span id="modelLbl">3.5 Flash</span><i class="ti ti-sparkles" id="proMark" aria-hidden="true" style="display:none"></i></button>
+            <div class="attach-menu model-menu" id="modelMenu" role="menu" aria-label="Model">
+              <button type="button" class="mopt" data-m="gemini-3.5-flash" role="menuitemradio"><i class="ti ti-bolt" aria-hidden="true"></i><span>Gemini 3.5 Flash<div class="sub">default · fast &amp; strong agentic</div></span><i class="ti ti-check mck" aria-hidden="true"></i></button>
+              <button type="button" class="mopt" data-m="gemini-2.5-flash" role="menuitemradio"><i class="ti ti-feather" aria-hidden="true"></i><span>Gemini 2.5 Flash<div class="sub">cheapest · lighter reasoning</div></span><i class="ti ti-check mck" aria-hidden="true"></i></button>
+              <button type="button" class="mopt" data-m="gemini-2.5-pro" role="menuitemradio"><i class="ti ti-diamond" aria-hidden="true"></i><span>Gemini 2.5 Pro<div class="sub">deepest reasoning · slower</div></span><i class="ti ti-check mck" aria-hidden="true"></i></button>
+              <div class="msep" role="separator"></div>
+              <button type="button" id="proVideoOpt" role="menuitemcheckbox"><i class="ti ti-sparkles" aria-hidden="true"></i><span>Pro video analysis<div class="sub">watch-the-content questions use the pro eyes</div></span><i class="ti ti-check mck" id="proCk" aria-hidden="true" style="visibility:hidden"></i></button>
+            </div>
+          </span>
           <button id="criticPill" class="propill" type="button" aria-pressed="false"
                   title="Self-check: before finalizing, an extra reviewer pass checks the answer against your question and retries once if unsatisfied (slightly slower)."><i class="ti ti-checkbox" aria-hidden="true"></i><span id="criticLbl">Check</span></button>
+          </span>
           <span class="cmon" title="Session cost so far ($) and cumulative tokens as a share of the context window (≈1M)">
             <span class="costtip" id="costtip"></span>
             <span class="cm-txt" id="cmtxt"></span>
@@ -984,6 +1001,7 @@ function newChat(){
 function openChat(id){
   const c=chats.find(x=>x.id===id); if(!c) return;
   activeId=id; activeDraft=0; sessionId=id; updateSess();
+  if(c.model && Object.prototype.hasOwnProperty.call(MODELS,c.model)){ brainModel=c.model; renderModelUI(); }   // 恢复该会话的模型选择
   thread.innerHTML='';
   if(!c.messages.length){ showEmpty(); }
   else c.messages.forEach(m=>{
@@ -1004,11 +1022,14 @@ function deleteChat(id, ev){
 // SSE 流式消费(M6b):POST → 读 ReadableStream → 逐条 data: 事件;step/answer 给进度,result 给最终。
 // dag 路径不发 step 事件,只收 result —— 自动降级为"转圈到出结果"。
 async function streamQuery(q, sentSid, onEvent, image, signal){
-  const body={query:q, session_id:sentSid, pro_video:proOn, critic:criticOn};
+  const body={query:q, session_id:sentSid, pro_video:proOn, model:brainModel, critic:criticOn};
   if(image) body.image=image;
   const r=await fetch('/v1/video_vibe_query/stream',{method:'POST',
     headers:{'Content-Type':'application/json'}, body:JSON.stringify(body), signal});
-  if(!r.ok || !r.body) throw new Error('stream HTTP '+r.status);
+  if(!r.ok || !r.body){                       // 把服务端说明带给用户(如 422 的"本账号可选:…")
+    let t=''; try{ t=await r.text(); }catch(e){}
+    throw new Error('HTTP '+r.status+(t?' — '+t.slice(0,160):''));
+  }
   const reader=r.body.getReader(), dec=new TextDecoder();
   let buf='', result=null;
   for(;;){
@@ -1066,6 +1087,7 @@ async function send(text){
       // 存历史前剥掉短命的 signed_url(15 分钟即失效;重开时按 video_id 重签,见 mountVideo)
       if(d.videos) d.videos.forEach(v=>{ delete v.signed_url; });
       c.messages.push({role:'assistant', data:d, ms});
+      c.model=brainModel;                       // 阶段A:会话记住这轮用的大脑,重开时恢复
       c.updatedAt=Date.now();
       chats=[c, ...chats.filter(x=>x!==c)];     // 最近活跃置顶
       saveChats();
@@ -1124,7 +1146,7 @@ $('#thLight').onclick=(e)=>{ e.stopPropagation(); setTheme('light'); };
 applyTheme(document.documentElement.getAttribute('data-theme')==='light'?'light':'dark');
 document.addEventListener('keydown',e=>{ if((e.ctrlKey||e.metaKey)&&e.key==='.'){ e.preventDefault(); if(window.innerWidth>720) setCollapsed(!$('#shell').classList.contains('collapsed')); }});
 // composer:+ 附件菜单(收纳上传视频 / 加图片)
-$('#plusBtn').onclick=(e)=>{ e.stopPropagation(); $('#attachMenu').classList.toggle('on'); };
+$('#plusBtn').onclick=(e)=>{ e.stopPropagation(); $('#attachMenu').classList.toggle('on'); $('#modelMenu').classList.remove('on'); };
 $('#attUpload').onclick=()=>{ $('#attachMenu').classList.remove('on'); $('#upFile').click(); };
 $('#attImage').onclick=()=>{ $('#attachMenu').classList.remove('on'); $('#imgFile').click(); };
 $('#imgFile').onchange=(e)=>{ const f=e.target.files[0]; e.target.value=''; if(!f) return;
@@ -1147,12 +1169,41 @@ $('#q').addEventListener('paste',e=>{
 });
 
 // ── 档位开关(Flash / Pro)+ 本会话累计监控(成本 $ + 累计 token 占窗口环)──
+// ── 阶段A:CC 式大脑模型切换 + Pro 视频眼开关(同一菜单;换脑不换眼)──
+const MODELS={'gemini-3.5-flash':'3.5 Flash','gemini-2.5-flash':'2.5 Flash','gemini-2.5-pro':'2.5 Pro'};
+const LS_MODEL='vs_model';
+const hasModel=(m)=>Object.prototype.hasOwnProperty.call(MODELS,m);
+let brainModel=(()=>{ try{ const m=localStorage.getItem(LS_MODEL); if(m&&hasModel(m)) return m; }catch(e){} return 'gemini-3.5-flash'; })();
 let proOn=false;
-$('#proPill').onclick=()=>{ proOn=!proOn; const p=$('#proPill'); p.classList.toggle('on',proOn);
-  p.setAttribute('aria-pressed',proOn?'true':'false'); $('#proLbl').textContent=proOn?'Pro':'Flash'; };
 let criticOn=false;   // 复核模式(判决:默认无收益,故默认关;想要双保险的问题手动开)
 $('#criticPill').onclick=()=>{ criticOn=!criticOn; const p=$('#criticPill'); p.classList.toggle('on',criticOn);
   p.setAttribute('aria-pressed',criticOn?'true':'false'); };
+function renderModelUI(){
+  $('#modelLbl').textContent=MODELS[brainModel]||brainModel;
+  document.querySelectorAll('#modelMenu .mopt').forEach(b=>b.classList.toggle('sel', b.dataset.m===brainModel));
+  $('#proCk').style.visibility=proOn?'visible':'hidden';
+  $('#proMark').style.display=proOn?'':'none';
+  $('#modelPill').classList.toggle('on', proOn);
+}
+$('#modelPill').onclick=(e)=>{ e.stopPropagation(); const on=$('#modelMenu').classList.toggle('on');
+  $('#modelPill').setAttribute('aria-expanded', on?'true':'false'); $('#attachMenu').classList.remove('on'); };
+document.querySelectorAll('#modelMenu .mopt').forEach(b=>{ b.onclick=(e)=>{ e.stopPropagation();
+  brainModel=b.dataset.m; try{ localStorage.setItem(LS_MODEL,brainModel); }catch(e2){}
+  const c=chats.find(x=>x.id===activeId); if(c){ c.model=brainModel; saveChats(); }   // 选择记在会话上
+  renderModelUI(); $('#modelMenu').classList.remove('on'); $('#modelPill').setAttribute('aria-expanded','false'); }; });
+$('#proVideoOpt').onclick=(e)=>{ e.stopPropagation(); proOn=!proOn; renderModelUI(); };
+document.addEventListener('click',e=>{ if(!e.target.closest('.modelwrap')){ $('#modelMenu').classList.remove('on'); $('#modelPill').setAttribute('aria-expanded','false'); } });
+renderModelUI();
+// 按账号过滤菜单(guest 看不到锁着的档,而不是点了才 422);fail-open:拿不到就保留静态菜单
+fetch('/v1/models').then(r=>r.ok?r.json():null).then(d=>{
+  if(!d||!Array.isArray(d.choices)||!d.choices.length) return;
+  document.querySelectorAll('#modelMenu .mopt').forEach(b=>{ if(!d.choices.includes(b.dataset.m)) b.style.display='none'; });
+  if(!d.choices.includes(brainModel)){
+    brainModel = d.choices.includes(d.default) ? d.default : d.choices[0];
+    try{ localStorage.setItem(LS_MODEL,brainModel); }catch(e){}
+    renderModelUI();
+  }
+}).catch(()=>{});
 
 // M5:上传自己的视频 → 拿 PUT 签名 URL 直传 GCS → 把临时 video_id 填进输入框,可直接提问
 $('#upFile').onchange=async(e)=>{
