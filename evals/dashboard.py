@@ -108,6 +108,10 @@ L = {
         "foot": "跑完自动更新，浏览器 F5 即可 —— 不用 push GitHub。",
         "dl_btn": "⬇ 下载分析简报（给大模型看）",
         "dl_hint": "一个 .md 文件，扔给 Claude 等大模型，让它分析哪里出了问题、怎么修",
+        "radar_suspect_hi": "⚠ AI裁判：疑似冤案（该复核）",
+        "radar_suspect_lo": "AI裁判：或许该过（低置信）",
+        "radar_agree": "AI裁判：也判挂（确认缺陷）",
+        "radar_row": "AI 裁判整体判",
         "verdict": lambda s: s,
     },
     "en": {
@@ -140,6 +144,10 @@ L = {
         "foot": "Auto-updates after each run; just refresh — no GitHub push needed.",
         "dl_btn": "⬇ Download analysis briefing (for LLMs)",
         "dl_hint": "A single .md — hand it to Claude or any LLM to diagnose what went wrong and how to fix it",
+        "radar_suspect_hi": "⚠ AI judge: likely wrongful conviction (review)",
+        "radar_suspect_lo": "AI judge: maybe should pass (low conf.)",
+        "radar_agree": "AI judge: also fails (real defect)",
+        "radar_row": "AI judge holistic verdict",
         "verdict": lambda s: _VERDICT_EN.get(s, s),
     },
 }
@@ -161,7 +169,7 @@ def save_run(results: list[dict], verdict: dict, mode: str, ts: str | None = Non
         """归档瘦身：留下钻要用的字段，答案截断。"""
         keep = {k: r.get(k) for k in ("id", "passed", "pinned", "status", "scores",
                                       "n", "successes", "pass_k", "dims", "kind",
-                                      "question", "grounding_note", "tools", "cost")}
+                                      "question", "grounding_note", "tools", "cost", "radar")}
         keep["answer"] = (r.get("answer") or "")[:500]
         ff = r.get("first_fail")
         keep["first_fail"] = ({"answer": (ff.get("answer") or "")[:500],
@@ -303,6 +311,27 @@ def _flips_section(latest, prev, lang) -> str:
     return f'<div class="sec">{lang["flips"]}</div>{box}'
 
 
+def _judge_badge(radar, lang):
+    """失败卡片上的 AI 裁判判断徽章 + 展开行。radar=None(没跑裁判)则不显示。
+    返回 (标题栏小徽章, 表格里的一行详情)。"""
+    if not radar:
+        return "", ""
+    jp = radar.get("judge_pass")
+    if jp is True and radar.get("suspect"):          # 程序挂、裁判说该过 = 疑似冤案
+        hi = radar.get("confidence") == "high"
+        color = "#d9822b" if hi else "#b9b7af"
+        tag = lang["radar_suspect_hi"] if hi else lang["radar_suspect_lo"]
+        badge = f'　<span style="font-size:11px;padding:1px 6px;border-radius:6px;background:{"#fbf0dd" if hi else "#f0efe9"};color:{color}">{tag}</span>'
+    elif jp is False:                                # 程序挂、裁判也判挂 = 确认缺陷
+        badge = f'　<span style="font-size:11px;padding:1px 6px;border-radius:6px;background:#f0efe9;color:#6b6a66">{lang["radar_agree"]}</span>'
+    else:
+        badge = ""
+    notes = _esc((radar.get("notes") or "").strip())
+    row = (f'<tr><td>{lang["radar_row"]}</td><td style="font-size:11px;color:#8f8d86">'
+           f'{"该过" if jp else "也判挂" if jp is False else "?"} · {notes}</td></tr>') if notes else ""
+    return badge, row
+
+
 def _fail_cards(latest, lang) -> str:
     fails = [r for r in latest.get("results", []) if not r.get("passed")]
     infra = [r for r in fails if r.get("status") == "infra_error"]
@@ -319,14 +348,16 @@ def _fail_cards(latest, lang) -> str:
         tools = sample.get("tools") or r.get("tools") or []
         tool_str = " → ".join(f"{x.get('tool')}({_esc(x.get('args', ''))[:60]})" for x in tools[:8]) or "—"
         expect = json.dumps(r.get("expect", {}), ensure_ascii=False)[:300]
+        badge, judge_row = _judge_badge(r.get("radar"), lang)
         cards += (
             f'<details class="card" style="margin-bottom:8px"><summary style="cursor:pointer;font-size:13px">'
-            f'{pin}<b>{_esc(r["id"])}</b>　<span style="color:#d03b3b;font-size:12px">{bad}</span></summary>'
+            f'{pin}<b>{_esc(r["id"])}</b>　<span style="color:#d03b3b;font-size:12px">{bad}</span>{badge}</summary>'
             f'<table class="drill"><tr><td>{q}</td><td>{_esc(r.get("question"))}</td></tr>'
             f'<tr><td>{a}</td><td>{_esc(ans[:400])}</td></tr>'
             f'<tr><td>{e}</td><td><code style="font-size:11px">{_esc(expect)}</code></td></tr>'
             f'<tr><td>{t}</td><td style="font-size:11px">{tool_str}</td></tr>'
-            f'<tr><td>{g}</td><td style="color:#6b6a66">{_esc(r.get("grounding_note"))}</td></tr></table></details>')
+            f'<tr><td>{g}</td><td style="color:#6b6a66">{_esc(r.get("grounding_note"))}</td></tr>'
+            f'{judge_row}</table></details>')
     for r in infra:
         cards += (f'<div class="card" style="margin-bottom:8px;border-left:3px solid #b9b7af;border-radius:0 10px 10px 0">'
                   f'<b style="font-size:13px">{_esc(r["id"])}</b>　'

@@ -607,6 +607,18 @@ def main(argv=None):
             js = judge_mod.sidecar_summary(results_path)
             if js:
                 meta["judge"] = js
+            judge_mod.disagreement_scan(results_path)     # 冤案雷达：只判失败题
+            rs = judge_mod.radar_summary(results_path)
+            if rs:
+                meta["radar"] = rs
+            radar = judge_mod.load_radar(results_path)     # 逐题裁判判断合并进记录，供仪表盘卡片显示
+            for r in cur_print:
+                if r["id"] in radar:
+                    jr = radar[r["id"]]
+                    r["radar"] = {"judge_pass": jr.get("judge_pass"),
+                                  "suspect": jr.get("wrongful_conviction_suspect"),
+                                  "confidence": jr.get("confidence"),
+                                  "notes": jr.get("judge_notes", "")[:300]}
     print_summary(cur_print, base_print, v)
     dashboard.save_run(cur_print, v, mode, meta=meta)
     dash = dashboard.rebuild()

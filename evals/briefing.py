@@ -79,6 +79,13 @@ def build_briefing(run: dict) -> str:
     if j:
         L.append(f"- AI 裁判参考分（**不进门禁**，对表 {j.get('cert', '?')}）：开放式判据做到 "
                  f"{j.get('ok', 0)}/{j.get('total', 0)}（裁判 {j.get('model', '?')}）")
+    radar = meta.get("radar") or {}
+    if radar.get("high") or radar.get("low"):
+        L.append(f"- 🔍 **AI 裁判冤案雷达**（只判失败题，找'程序挂但裁判说该过'的）：疑似冤案 "
+                 f"**{len(radar.get('high', []))} 高置信** + {len(radar.get('low', []))} 低置信"
+                 f"（裁判 {radar.get('model', '?')}，仅报警不改判，请人工复核）")
+        if radar.get("high"):
+            L.append(f"  - 高置信疑似冤案（栽在语义尺子，最该先查）：{'、'.join('`'+x+'`' for x in radar['high'])}")
     for why in run.get("reasons", [])[:8]:
         L.append(f"- {why}")
     # 集中度报警：失败大量堆在同一把尺子上，通常是尺子/题目模板的问题，不是 agent 忽然变笨
