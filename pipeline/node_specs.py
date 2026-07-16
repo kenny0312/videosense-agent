@@ -42,6 +42,9 @@ SPECS: dict[str, NodeSpec] = {
             "不要拆成多个节点。"
             "找「XX 类 / 在 XX 拍的」视频时,【标题也是证据】—— video_facts 谓词和 "
             "video_metadata.title 都要查(JOIN 后 title ILIKE),别只猜谓词词表。"
+            "【何时别只用我】:「说不清具体类别 / 宽类·上位词 / 按意思找」的检索"
+            "(如「健身运动类」「教程类」)别只靠我猜谓词 —— 先 semantic_search 按意思找,"
+            "再回来用我核实细节;按类别查询先对照数据说明里的大类词表。"
         ),
         parameters=_obj(
             {"sql": {"type": "string", "description": "完整只读 SELECT 语句"}},
@@ -60,6 +63,7 @@ SPECS: dict[str, NodeSpec] = {
             "—— 那是要个答案,(必要时先 sql_query COUNT 一下)直接文字答「有,N 个」,别因为句子里出现「视频」"
             "二字就来 show_video 把它们全播出来】。用户要看/要播的,【最终必须由本工具交付】——"
             "哪怕是靠 analyze_video 挑出来的(analyze 是你自己看,不产生用户可见的视频)。最多 8 个。"
+            "返回:交付确认(items 带编号,与 video_id 对应)—— 答案里就用「第 N 个」引用它们。"
         ),
         parameters=_obj(
             {"video_ids": {"type": "array", "items": {"type": "string"},
@@ -74,6 +78,7 @@ SPECS: dict[str, NodeSpec] = {
             "【用途:用户要【列出 / 看有哪些 / 全部列出来 / 来一份清单】很多行数据时用它】:先 sql_query 查到完整结果,"
             "再调本工具,data_result_id = 那次 sql_query 的 result_id —— 它把【完整所有行】直接成表给用户,"
             "你不用、也别自己一行行打出来(会漏/编/超长)。结果只有几行、或用户只要个数/答案时,直接文字答即可。"
+            "返回:已成表交付的确认(含行数)—— 答案里说明表已给出即可,别再逐行复述内容。"
         ),
         parameters=_obj(
             {"caption": {"type": "string",
@@ -88,6 +93,7 @@ SPECS: dict[str, NodeSpec] = {
             "【用途:回答里有【拿得出手的头条数字/汇总指标】时用它,让数字一眼可见,而不是埋在句子里】:"
             "先 sql_query 算出这些数(如 COUNT/AVG 一行),再调本工具,data_result_id = 那次 sql_query 的 result_id —— "
             "它把那一行的每个「列名: 值」渲染成一张数字卡。只是普通一句话回答、或明细很多行时,别用它(那用文字/ show_table)。"
+            "返回:已渲染数字卡的确认 —— 关键数字已在卡上,答案正文引用而不必重排版。"
         ),
         parameters=_obj(
             {"caption": {"type": "string",
@@ -233,6 +239,9 @@ SPECS: dict[str, NodeSpec] = {
             "出图(Stage 10)。依赖一个上游节点。inputs.kind = 'bar'|'line'|'scatter',"
             "inputs.x / inputs.y = 列名,inputs.title = 标题。"
             "返回 {chart_spec} —— 前端用 ECharts 渲染成【交互式】图表(hover/缩放/暗色主题,不再是静态图片)。"
+            "调用示例:先 sql_query 查出 category,video_count 两列,再 "
+            "plot(kind='bar', x='category', y='video_count', title='Videos per Category', "
+            "data_result_id=那次查询) —— x/y 必须是上游结果里【真实存在的列名】。"
         ),
         codegen_hint=(
             "**不要画图、不要生成 SVG、不要 import matplotlib**。你只需读上游数据、组装一个"
@@ -269,6 +278,7 @@ SPECS: dict[str, NodeSpec] = {
             "【通用逃生舱】:任何【没有现成专用工具能表达】的计算 / 分析 / 转换,都用它现场写 Python。"
             "inputs.instruction = 用自然语言把要做什么描述清楚。"
             "可【带上游数据】(给 data_result_id,代码里就能用那一步的结果),也可【不带】(独立计算/生成)。"
+            "返回:代码的 stdout(尽量是 JSON)—— 你读它得出结论,或把本步 result_id 传给下游。"
         ),
         codegen_hint=(
             "按 inputs['instruction'] 的自然语言要求写 Python(有上游数据就用上游、没有就独立算),"
