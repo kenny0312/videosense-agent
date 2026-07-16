@@ -1,5 +1,9 @@
 # 设计:GEPA 式 prompt 自动进化(eval 反馈驱动,阶段②立项)
 
+![GEPA v2.0 流程图](../../evals/gepa/gepa-v2-flowchart.png)
+
+> 全流程一图流:多代进化 + 严谨评估 + 防作弊(GD-0/1/2/3 材料 → 进化循环 → 冠军重考 → 封存堂终考 → PR）。
+
 > 状态:Proposal(立项,未动工) · 前置:evals 地基(已建,143 题确定性判分 + 失败简报)· 关联:docs/eval-system-and-layer0-plan.md(四阶段路线的阶段②)、prompt-constitution-lessons.md(三层记忆)
 
 ## 1. 为什么(动机与证据)
