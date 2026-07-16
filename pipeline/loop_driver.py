@@ -355,14 +355,105 @@ class GenAIConversation:
         return _extract(resp)                              # 空响应给兜底话，不返回空白
 
 
+class OpenAICompatConversation:
+    """阶段B:OpenAI 兼容后端(Qwen/DashScope、OpenRouter、vLLM/Ollama 自托管走同一套)。
+    接口与另两个后端一致:send(msg) -> (calls, text)。历史自管——【成功后才 append】,
+    保证 _send_with_retry 重发的是同一 payload(与 SDK 后端的不变量对齐)。
+    tool_call_id:loop 的 (name, result) 元组不带 id,按【顺序】和上一轮 assistant 的
+    tool_calls 对位(prepared 顺序 = 模型吐出顺序,loop_driver 里从未重排)。"""
+    def __init__(self, model_name: str, declarations: list[dict], system: str,
+                 image: "tuple[bytes, str] | None" = None):
+        self._model_name = model_name
+        self._tools = [{"type": "function", "function": d} for d in declarations]
+        self._messages: list[dict] = [{"role": "system", "content": system}]
+        self._pending_image = image
+        self._last_tool_ids: list[str] = []
+        self.tokens = 0
+
+    def _post(self, payload: dict) -> dict:
+        import requests
+        r = requests.post(config.OAI_COMPAT_BASE_URL.rstrip("/") + "/chat/completions",
+                          json=payload, timeout=180,
+                          headers={"Authorization": "Bearer " + config.OAI_COMPAT_API_KEY})
+        if r.status_code >= 400:
+            e = RuntimeError(f"oai-compat HTTP {r.status_code}: {r.text[:200]}")
+            e.response = r                     # 给 _is_transient 嗅 status_code(429/5xx 重试)
+            raise e
+        return r.json()
+
+    def send(self, msg):
+        import base64
+        from pipeline import usage
+        if isinstance(msg, str):
+            content: Any = msg
+            if self._pending_image is not None:   # 首次发送:图作多模态 part 附在文本前
+                data, mime = self._pending_image
+                content = [{"type": "image_url", "image_url":
+                            {"url": f"data:{mime};base64,{base64.b64encode(data).decode()}"}},
+                           {"type": "text", "text": msg}]
+                self._pending_image = None
+            new_msgs = [{"role": "user", "content": content}]
+        else:                                  # 工具结果:按顺序对位上一轮的 tool_call_id
+            new_msgs = [{"role": "tool",
+                         "tool_call_id": (self._last_tool_ids[i] if i < len(self._last_tool_ids)
+                                          else f"call_{i}"),
+                         "content": json.dumps(r, ensure_ascii=False, default=str)}
+                        for i, (_n, r) in enumerate(msg)]
+        payload = {"model": self._model_name, "messages": self._messages + new_msgs,
+                   "tools": self._tools, "temperature": 0.0}
+        data = _send_with_retry(lambda: self._post(payload))
+        self._messages.extend(new_msgs)        # 成功了才落历史
+        choice = (data.get("choices") or [{}])[0]
+        m = choice.get("message") or {}
+        am = {"role": "assistant", "content": m.get("content") or ""}
+        if m.get("tool_calls"):
+            am["tool_calls"] = m["tool_calls"]
+        self._messages.append(am)
+        # usage:垫片成 Gemini usage_metadata 字段名,计价/审计零改动
+        u = data.get("usage") or {}
+        shim = type("U", (), {})()
+        shim.prompt_token_count = u.get("prompt_tokens", 0) or 0
+        shim.candidates_token_count = u.get("completion_tokens", 0) or 0
+        shim.total_token_count = u.get("total_tokens", 0) or 0
+        shim.cached_content_token_count = ((u.get("prompt_tokens_details") or {}).get("cached_tokens", 0)) or 0
+        resp_shim = type("R", (), {})()
+        resp_shim.usage_metadata = shim
+        self.tokens += shim.total_token_count
+        try:
+            usage.add_usage(resp_shim, self._model_name)
+        except Exception:
+            pass
+        # (calls, text) 抽取:与 _extract 同一契约(uses 从 inputs 里 pop 出句柄)
+        calls, self._last_tool_ids = [], []
+        for tc in (m.get("tool_calls") or []):
+            fn = tc.get("function") or {}
+            try:
+                args = json.loads(fn.get("arguments") or "{}")
+            except Exception:
+                args = {}
+            if not isinstance(args, dict):
+                args = {}
+            uses = [args.pop(h) for h in UPSTREAM_HANDLES.get(fn.get("name", ""), []) if h in args]
+            calls.append(Call(fn.get("name", ""), args, uses))
+            self._last_tool_ids.append(tc.get("id") or f"call_{len(self._last_tool_ids)}")
+        text = m.get("content") or None
+        if not calls and not (text and text.strip()):
+            return [], _blocked_fallback(choice.get("finish_reason"), None)
+        return calls, text
+
+
 def make_conversation(model_name: str, declarations: list[dict], system: str,
                       image: "tuple[bytes, str] | None" = None):
-    """按模型代际选后端:gemini-1.x/2.x → 旧 vertexai SDK(不动);其余(3.x 起)→ google-genai。
+    """按模型选后端:gemini-1.x/2.x → 旧 vertexai SDK(不动);gemini 其余(3.x 起)→
+    google-genai;非 gemini(qwen 等)→ OpenAI 兼容端点(阶段B,需 OAI_COMPAT_API_KEY)。
     回滚 = LOOP_MODEL 环境变量退回 gemini-2.5-flash,自动回到旧路径,零代码改动。
-    image(粘贴截图)两条路径都直通(阶段A 起 2.5 系是用户可选档,不再是"极少用")。"""
-    if (model_name or "").startswith(("gemini-1", "gemini-2")):
+    image(粘贴截图)三条路径都直通。"""
+    n = model_name or ""
+    if n.startswith(("gemini-1", "gemini-2")):
         return GeminiConversation(model_name, declarations, system, image=image)
-    return GenAIConversation(model_name, declarations, system, image=image)
+    if n.startswith("gemini"):
+        return GenAIConversation(model_name, declarations, system, image=image)
+    return OpenAICompatConversation(model_name, declarations, system, image=image)
 
 
 def make_self_check_critic():

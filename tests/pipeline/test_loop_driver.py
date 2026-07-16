@@ -433,12 +433,14 @@ def test_loop_system_injects_runtime_facts():
 # ── U5:后端工厂(gemini-3.x → google-genai;1.x/2.x → 旧 vertexai SDK)──
 def test_make_conversation_backend_choice(monkeypatch):
     picked = {}
-    monkeypatch.setattr(ld, "GeminiConversation", lambda m, d, s: picked.setdefault("legacy", m))
+    monkeypatch.setattr(ld, "GeminiConversation", lambda m, d, s, image=None: picked.setdefault("legacy", m))
     monkeypatch.setattr(ld, "GenAIConversation", lambda m, d, s, image=None: picked.setdefault("genai", m))
-    ld.make_conversation("gemini-2.5-flash", [], "s")     # 回滚路径:旧 SDK
+    monkeypatch.setattr(ld, "OpenAICompatConversation", lambda m, d, s, image=None: picked.setdefault("oai", m))
+    ld.make_conversation("gemini-2.5-flash", [], "s")     # 回滚/阶段A 可选:旧 SDK(image 也直通)
     ld.make_conversation("gemini-3.5-flash", [], "s")     # 默认:genai
-    ld.make_conversation("gemini-4-flash", [], "s")       # 未来代际也走 genai(负向匹配 1.x/2.x)
-    assert picked == {"legacy": "gemini-2.5-flash", "genai": "gemini-3.5-flash"}
+    ld.make_conversation("gemini-4-flash", [], "s")       # 未来 gemini 代际也走 genai
+    ld.make_conversation("qwen3.7-plus", [], "s")         # 阶段B:非 gemini → OpenAI 兼容端点
+    assert picked == {"legacy": "gemini-2.5-flash", "genai": "gemini-3.5-flash", "oai": "qwen3.7-plus"}
 
 
 def test_price_table_covers_35flash():

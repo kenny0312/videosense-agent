@@ -59,6 +59,12 @@ LOOP_MODEL_CHOICES = [m.strip() for m in os.environ.get(
     "LOOP_MODEL_CHOICES", "gemini-3.5-flash,gemini-2.5-flash,gemini-2.5-pro").split(",") if m.strip()]
 LOOP_MODEL_GUEST_CHOICES = [m.strip() for m in os.environ.get(
     "LOOP_MODEL_GUEST_CHOICES", "gemini-3.5-flash,gemini-2.5-flash").split(",") if m.strip()]
+# 阶段B:OpenAI 兼容大脑端点(Qwen/DashScope、OpenRouter、vLLM/Ollama 自托管同一套)。
+# 默认阿里云美东(us-central1 后端 ~30-40ms RTT)。key 为空 = 功能不可用;
+# qwen 模型【故意不在】默认白名单——过了 evals live 门再手动加进 LOOP_MODEL_CHOICES。
+OAI_COMPAT_BASE_URL = os.environ.get(
+    "OAI_COMPAT_BASE_URL", "https://dashscope-us.aliyuncs.com/compatible-mode/v1")
+OAI_COMPAT_API_KEY  = os.environ.get("OAI_COMPAT_API_KEY", "")
 GENAI_LOCATION     = os.environ.get("GENAI_LOCATION", "global")     # genai 后端端点(3.x 需 global)
 
 # U6:联网搜索工具(Gemini Google-Search grounding;spike 已验)。
