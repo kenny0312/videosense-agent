@@ -2,6 +2,11 @@
 <html lang="en"><head><meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>VideoSense</title>
+<meta name="theme-color" content="#0a0b0d"/>
+<script>/* 首屏前定主题,防暗→亮闪烁:记忆优先,其次跟系统 */
+try{var _t=localStorage.getItem('vs_theme')||(matchMedia('(prefers-color-scheme: light)').matches?'light':'dark');
+if(_t==='light'){document.documentElement.setAttribute('data-theme','light');
+document.querySelector('meta[name="theme-color"]').content='#f4f6f9';}}catch(e){}</script>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/tabler-icons/3.24.0/tabler-icons.min.css"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.9/purify.min.js"></script>
@@ -239,6 +244,32 @@
   .send.stop:hover{background:#ec6a6a}
   .costtip{position:absolute;bottom:34px;right:0;background:#0c0e12;border:1px solid var(--border2);border-radius:8px;padding:6px 10px;font-size:11.5px;color:var(--text);white-space:nowrap;font-variant-numeric:tabular-nums;opacity:0;pointer-events:none;transition:opacity .13s;box-shadow:0 8px 22px -10px #000}
   .cmon:hover .costtip{opacity:1}
+
+  /* ── 亮色主题:令牌整套换血;规则排在最后保证覆盖 ── */
+  :root[data-theme="light"]{
+    --bg:#f4f6f9; --surface:#ffffff; --surface2:#eaeef4; --hover:#64748b1f; --border:#dfe5ed; --border2:#c9d2de;
+    --text:#171c23; --muted:#5a6574; --hint:#8a94a2; --accent:#3f7bf0; --accent-soft:#2b5fd0; --accent-dim:#e6eefc;
+    --ok:#1d9e66; --warn:#a97a10; --danger:#c94a4a;
+    --pro:#7a5cd0; --pro-dim:#efeafb;
+  }
+  /* 亮色下少数写死深色的部件(暗色规则一字不动) */
+  :root[data-theme="light"] .av{background:#eaeef4}
+  :root[data-theme="light"] .answer .tc{background:#e6eefc}
+  :root[data-theme="light"] .answer .tc.seek:hover{background:#d5e3fb}
+  :root[data-theme="light"] .chartpanel,:root[data-theme="light"] .vcard,:root[data-theme="light"] .tbl{background:#fff;box-shadow:0 1px 2px rgba(23,28,35,.05)}
+  :root[data-theme="light"] .tbl th{background:#f0f3f7}
+  :root[data-theme="light"] .rowmenu,:root[data-theme="light"] .attach-menu{background:#fff;box-shadow:0 12px 32px -14px rgba(23,28,35,.3)}
+  :root[data-theme="light"] .costtip{background:#fff;box-shadow:0 8px 22px -10px rgba(23,28,35,.35)}
+  :root[data-theme="light"] .confchip.high{color:#127a4e;background:#dcf3e7}
+  :root[data-theme="light"] .confchip.med{color:#2b5fd0;background:#e6eefc}
+  :root[data-theme="light"] .confchip.low{color:#5a6574;background:#e8ecf1}
+  :root[data-theme="light"] .scrim{background:rgba(23,28,35,.35)}
+  /* 账户区的 ☀/☾ 二态开关 */
+  .mode{display:flex;border:1px solid var(--border2);border-radius:999px;padding:2px;gap:2px;flex-shrink:0}
+  .mode button{border:0;background:none;color:var(--hint);width:24px;height:20px;border-radius:999px;display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0;font-size:12px;line-height:1}
+  .mode button.on{background:var(--accent-dim);color:var(--accent-soft)}
+  .mode button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+  .shell.collapsed .acct .mode{display:none}
 </style></head>
 <body><div class="shell" id="shell">
   <aside class="sidebar" id="sidebar">
@@ -253,6 +284,10 @@
     <div class="acct" id="acctBtn" title="Account &amp; settings" tabindex="0" role="button" aria-label="Account and settings">
       <span class="ini">KQ</span>
       <span class="meta"><div class="nm">You</div><div class="pl">Self-hosted</div></span>
+      <span class="mode" role="group" aria-label="Theme">
+        <button type="button" id="thDark" title="Dark theme" aria-label="Dark theme"><i class="ti ti-moon" aria-hidden="true"></i></button>
+        <button type="button" id="thLight" title="Light theme" aria-label="Light theme"><i class="ti ti-sun" aria-hidden="true"></i></button>
+      </span>
       <i class="ti ti-settings gear" aria-hidden="true"></i>
     </div>
   </aside>
@@ -560,8 +595,14 @@ function loadECharts(){
     document.head.appendChild(s);
   }));
 }
-// VS 暗色主题分类色(固定顺序,不循环);文字/网格用 chrome 灰,不用系列色
+// VS 分类色两主题通用(固定顺序,不循环);文字/网格 chrome 色按主题切,见 chartChrome()
 const CHART_PALETTE=['#6ea2ff','#43c88a','#e0a23b','#b79df2','#e05a5a','#3f7bf0'];
+const LIVE_CHARTS=[];   // {chart,spec,mount} —— 主题切换时批量重刷 chrome 色
+function chartChrome(){
+  return document.documentElement.getAttribute('data-theme')==='light'
+    ? {tx:'#5a6574',title:'#171c23',tipBg:'#ffffff',tipTx:'#171c23',tipBd:'#c9d2de',axis:'#c9d2de',label:'#8a94a2',split:'#e4e9f0',saveBg:'#ffffff',ptr:'rgba(63,123,240,.08)'}
+    : {tx:'#98a2ae',title:'#eef2f7',tipBg:'#0c0e12',tipTx:'#e8ebef',tipBd:'#2c313a',axis:'#2c313a',label:'#69727e',split:'#20242b',saveBg:'#0d1015',ptr:'rgba(110,162,255,.08)'};
+}
 function buildChartOption(spec){
   const type=(spec.chart_type||'bar');
   const x=spec.x||[];
@@ -584,25 +625,26 @@ function buildChartOption(spec){
         color:new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:'#6ea2ff'},{offset:1,color:'#3f7bf0'}])},
       data:s.data};
   };
+  const C=chartChrome();
   return {
     backgroundColor:'transparent',
     color:CHART_PALETTE,
-    textStyle:{fontFamily:'ui-monospace,Consolas,monospace',color:'#98a2ae'},
+    textStyle:{fontFamily:'ui-monospace,Consolas,monospace',color:C.tx},
     title: spec.title ? {text:spec.title,left:2,top:2,
-      textStyle:{color:'#eef2f7',fontSize:13.5,fontWeight:600,fontFamily:'system-ui,sans-serif'}} : undefined,
+      textStyle:{color:C.title,fontSize:13.5,fontWeight:600,fontFamily:'system-ui,sans-serif'}} : undefined,
     grid:{left:8,right:14,top: spec.title?38:14,bottom:6,containLabel:true},
     tooltip:{trigger:isScatter?'item':'axis',
-      backgroundColor:'#0c0e12',borderColor:'#2c313a',borderWidth:1,
-      textStyle:{color:'#e8ebef',fontSize:12},
-      axisPointer:{type:type==='bar'?'shadow':'line',lineStyle:{color:'#2c313a'},shadowStyle:{color:'rgba(110,162,255,.08)'}}},
-    legend: series0.length>1 ? {top:2,right:6,textStyle:{color:'#98a2ae',fontSize:11},itemWidth:12,itemHeight:8} : undefined,
-    xAxis:{type:isScatter?'value':'category', data:isScatter?undefined:x, name:spec.x_name||'', nameTextStyle:{color:'#69727e'},
-      axisLine:{lineStyle:{color:'#2c313a'}}, axisTick:{show:false}, axisLabel:{color:'#69727e',fontSize:11}, splitLine:{show:false}},
-    yAxis:{type:'value', name:spec.unit||'', nameTextStyle:{color:'#69727e',align:'left'},
-      axisLine:{show:false}, axisTick:{show:false}, axisLabel:{color:'#69727e',fontSize:11},
-      splitLine:{lineStyle:{color:'#20242b'}}},
-    toolbox:{right:6,top:6,feature:{saveAsImage:{title:'PNG',backgroundColor:'#0d1015',
-      iconStyle:{borderColor:'#69727e'}}},emphasis:{iconStyle:{borderColor:'#6ea2ff'}}},
+      backgroundColor:C.tipBg,borderColor:C.tipBd,borderWidth:1,
+      textStyle:{color:C.tipTx,fontSize:12},
+      axisPointer:{type:type==='bar'?'shadow':'line',lineStyle:{color:C.axis},shadowStyle:{color:C.ptr}}},
+    legend: series0.length>1 ? {top:2,right:6,textStyle:{color:C.tx,fontSize:11},itemWidth:12,itemHeight:8} : undefined,
+    xAxis:{type:isScatter?'value':'category', data:isScatter?undefined:x, name:spec.x_name||'', nameTextStyle:{color:C.label},
+      axisLine:{lineStyle:{color:C.axis}}, axisTick:{show:false}, axisLabel:{color:C.label,fontSize:11}, splitLine:{show:false}},
+    yAxis:{type:'value', name:spec.unit||'', nameTextStyle:{color:C.label,align:'left'},
+      axisLine:{show:false}, axisTick:{show:false}, axisLabel:{color:C.label,fontSize:11},
+      splitLine:{lineStyle:{color:C.split}}},
+    toolbox:{right:6,top:6,feature:{saveAsImage:{title:'PNG',backgroundColor:C.saveBg,
+      iconStyle:{borderColor:C.label}}},emphasis:{iconStyle:{borderColor:'#6ea2ff'}}},
     series: series0.map(mkSeries),
   };
 }
@@ -615,6 +657,7 @@ function renderChartSpec(spec){
     let chart;
     try{ chart=ec.init(mount,null,{renderer:'canvas'}); chart.setOption(buildChartOption(spec)); }
     catch(e){ w.appendChild(textBlock('Chart could not be rendered.')); return; }
+    LIVE_CHARTS.push({chart, spec, mount});   // 注册:主题切换时重刷 chrome 色
     // P3a:点柱子/点 → 跳到对应视频片段(spec.links[dataIndex] = video_id 或 {video_id,ts});解析限本条回答卡内
     const links=spec.links, hasLinks=Array.isArray(links)&&links.length;
     if(hasLinks){
@@ -1053,6 +1096,21 @@ function setCollapsed(v){ $('#shell').classList.toggle('collapsed', v);
 $('#collapseBtn').onclick=()=>setCollapsed(!$('#shell').classList.contains('collapsed'));
 try{ if(localStorage.getItem(SB_COLLAPSED)==='1' && window.innerWidth>720) setCollapsed(true); }catch(e){}
 $('#acctBtn').onclick=()=>{ if(window.innerWidth<=720) $('#shell').classList.add('nosb'); newChat(); };  // 占位:自建单用户,先当"回到新对话"
+// ── 主题切换:头部内联脚本已定初始态,这里只管按钮态/持久化/图表重刷 ──
+const LS_THEME='vs_theme';
+function applyTheme(t){
+  document.documentElement.setAttribute('data-theme', t==='light'?'light':'dark');
+  const mc=document.querySelector('meta[name="theme-color"]'); if(mc) mc.content = t==='light'?'#f4f6f9':'#0a0b0d';
+  $('#thDark').classList.toggle('on', t!=='light');
+  $('#thLight').classList.toggle('on', t==='light');
+  for(let i=LIVE_CHARTS.length-1;i>=0;i--){ const c=LIVE_CHARTS[i];
+    if(!c.mount.isConnected){ LIVE_CHARTS.splice(i,1); continue; }
+    try{ c.chart.setOption(buildChartOption(c.spec), true); }catch(e){} }
+}
+function setTheme(t){ try{ localStorage.setItem(LS_THEME,t); }catch(e){} applyTheme(t); }
+$('#thDark').onclick=(e)=>{ e.stopPropagation(); setTheme('dark'); };
+$('#thLight').onclick=(e)=>{ e.stopPropagation(); setTheme('light'); };
+applyTheme(document.documentElement.getAttribute('data-theme')==='light'?'light':'dark');
 document.addEventListener('keydown',e=>{ if((e.ctrlKey||e.metaKey)&&e.key==='.'){ e.preventDefault(); if(window.innerWidth>720) setCollapsed(!$('#shell').classList.contains('collapsed')); }});
 // composer:+ 附件菜单(收纳上传视频 / 加图片)
 $('#plusBtn').onclick=(e)=>{ e.stopPropagation(); $('#attachMenu').classList.toggle('on'); };
