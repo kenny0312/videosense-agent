@@ -65,7 +65,8 @@ def _result(ok: bool, *, trace: Trace, dag: DAG | None = None,
 def run_query(nl: str, *, quiet_trace: bool = False,
               session: "Session | None" = None,
               owner: str = "anon", on_step=None, pro_video: bool = False,
-              image: "tuple[bytes, str] | None" = None) -> dict:
+              image: "tuple[bytes, str] | None" = None,
+              critic: bool = False) -> dict:
     usage.reset_usage()                  # 清空本轮 token 累加器(每请求一次)
     # Pro 模式:本请求的 analyze_video 用 pro 模型;否则默认 flash。每请求开头都设(跨请求不串)。
     from perception import analyze_video_contextual as _AVC
@@ -122,7 +123,8 @@ def run_query(nl: str, *, quiet_trace: bool = False,
         lo = loop_driver.run_query_loop(nl, schema=schema, replay_context=replay_ctx,
                                         sandbox=sandbox, trace=trace, session_id=sid,
                                         on_step=on_step, runtime_facts=rt_facts, owner=owner,
-                                        image=image)
+                                        image=image,
+                                        use_critic=(True if critic else None))
         lstep.ok(steps=lo.steps, terminated=lo.terminated)
     except Exception as e:
         lstep.fail(error=repr(e))

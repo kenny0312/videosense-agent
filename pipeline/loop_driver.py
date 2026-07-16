@@ -659,16 +659,19 @@ def _loop_system(schema: dict, replay_context: "str | None",
 def run_query_loop(nl: str, *, schema: dict, replay_context: "str | None", sandbox, trace,
                    session_id: "str | None", on_step=None,
                    runtime_facts: "str | None" = None, owner: str = "anon",
-                   image: "tuple[bytes, str] | None" = None) -> LoopOutcome:
+                   image: "tuple[bytes, str] | None" = None,
+                   use_critic: "bool | None" = None) -> LoopOutcome:
     """orchestrator 的 loop 入口:建会话 + 执行器 → run_loop → 收产物(纯 handle,无合成 DAG)。
     replay_context(M5)= 从 transcript 回放出的多轮上下文(取代旧 recipe 块)。
     on_step(M6b)= 每步回调,供 SSE 流式。runtime_facts(U3)= 运行时状态注入节(自我认知)。
     owner(L2)= 认证身份,供 update_memory 等按 owner 作用域的工具。
-    image(粘贴截图,bytes+mime)= 附在首轮用户消息作多模态输入。"""
+    image(粘贴截图,bytes+mime)= 附在首轮用户消息作多模态输入。
+    use_critic = 请求级 critic 模式(None=跟随 USE_SELF_CHECK_CRITIC 全局默认;True/False=本请求强制)。"""
     conv = make_conversation(config.LOOP_MODEL, loop_function_declarations(),
                              _loop_system(schema, replay_context, runtime_facts), image=image)
     execute = _make_executor(sandbox, trace, schema, session_id, owner=owner)
-    critic = make_self_check_critic() if config.USE_SELF_CHECK_CRITIC else None   # 自检 B:opt-in
+    _critic_on = config.USE_SELF_CHECK_CRITIC if use_critic is None else use_critic
+    critic = make_self_check_critic() if _critic_on else None   # 自检 B:请求级模式(默认跟全局)
     _t0 = time.perf_counter()
     r = run_loop(nl, conv, execute, on_step=on_step, critic=critic)
     _total_ms = (time.perf_counter() - _t0) * 1000
