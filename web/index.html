@@ -264,6 +264,12 @@ document.querySelector('meta[name="theme-color"]').content='#f4f6f9';}}catch(e){
   :root[data-theme="light"] .confchip.med{color:#2b5fd0;background:#e6eefc}
   :root[data-theme="light"] .confchip.low{color:#5a6574;background:#e8ecf1}
   :root[data-theme="light"] .scrim{background:rgba(23,28,35,.35)}
+  /* 写死浅色"文字"的部件(暗底白字 → 亮底深字) */
+  :root[data-theme="light"] .user .bubble{color:#1c3d7a}
+  :root[data-theme="light"] .answer strong{color:#0f1319}
+  :root[data-theme="light"] .answer h1,:root[data-theme="light"] .answer h2,:root[data-theme="light"] .answer h3{color:#0f1319}
+  :root[data-theme="light"] pre{color:#3b4450}
+  :root[data-theme="light"] .badge.refused{background:#fbe4e4;color:#a33a3a}
   /* 账户区的 ☀/☾ 二态开关 */
   .mode{display:flex;border:1px solid var(--border2);border-radius:999px;padding:2px;gap:2px;flex-shrink:0}
   .mode button{border:0;background:none;color:var(--hint);width:24px;height:20px;border-radius:999px;display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0;font-size:12px;line-height:1}
