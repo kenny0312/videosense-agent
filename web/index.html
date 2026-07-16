@@ -47,7 +47,7 @@ document.querySelector('meta[name="theme-color"]').content='#f4f6f9';}}catch(e){
     .shell:not(.nosb) .scrim{display:block;position:fixed;inset:0;z-index:25;background:rgba(0,0,0,.5)}
   }
   header{display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--border)}
-  header .logo{width:29px;height:29px;border-radius:8px;background:var(--accent-dim);display:flex;align-items:center;justify-content:center;color:var(--accent-soft);font-size:15px}
+  header .logo{width:29px;height:29px;border-radius:8px;background:var(--accent);display:flex;align-items:center;justify-content:center;color:#fff;font-size:15px}
   header h1{font-size:15.5px;font-weight:600;margin:0;letter-spacing:-.01em}
   header .sess{font-size:12.5px;color:var(--hint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:40vw}
   header .spacer{flex:1}
@@ -305,7 +305,7 @@ document.querySelector('meta[name="theme-color"]').content='#f4f6f9';}}catch(e){
   <div class="app">
     <header>
       <button class="icon-btn" id="toggle" aria-label="Toggle sidebar"><i class="ti ti-menu-2" aria-hidden="true"></i></button>
-      <div class="logo"><i class="ti ti-player-play" aria-hidden="true"></i></div>
+      <div class="logo" aria-hidden="true"><svg width="17" height="17" viewBox="0 0 24 24" fill="none"><path d="M2.6 12.4C6 6.8 12.8 4.6 22.2 4.8L21.7 5.8C15.4 6.9 11.9 8.8 9.6 11.7L5 12.6Z" fill="#fff"/><path d="M3.8 14.6C7.8 16.7 13.4 16.5 19 13.1L21 11C18 17.2 10 19.4 3 15.5Z" fill="#dbe8ff"/><path d="M11.8 9.9L16.4 8.9L17.4 12.3L12.8 13.9Z" fill="#fff"/><path d="M18.4 4.9L10.6 17.2" style="stroke:var(--accent)" stroke-width="2.1"/></svg></div>
       <h1>VideoSense</h1>
       <span class="sess" id="sess"></span>
       <span class="spacer"></span>
