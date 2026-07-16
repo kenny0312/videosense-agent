@@ -65,7 +65,8 @@ def _result(ok: bool, *, trace: Trace, dag: DAG | None = None,
 def run_query(nl: str, *, quiet_trace: bool = False,
               session: "Session | None" = None,
               owner: str = "anon", on_step=None, pro_video: bool = False,
-              image: "tuple[bytes, str] | None" = None) -> dict:
+              image: "tuple[bytes, str] | None" = None,
+              model: "str | None" = None) -> dict:
     usage.reset_usage()                  # 清空本轮 token 累加器(每请求一次)
     # Pro 模式:本请求的 analyze_video 用 pro 模型;否则默认 flash。每请求开头都设(跨请求不串)。
     from perception import analyze_video_contextual as _AVC
@@ -105,7 +106,7 @@ def run_query(nl: str, *, quiet_trace: bool = False,
     # U3 自我认知:把会话累计 usage / 模型档位 / 窗口等真实数字注入 loop(元问题不再拒答/编数)。
     rt_facts = loop_driver.runtime_facts_line(
         getattr(session, "usage_cum", None) if session is not None else None, nl=nl,
-        has_image=image is not None)
+        has_image=image is not None, model=model)
     # L2 用户记忆:跨会话偏好/事实(owner 作用域;无记忆 = 空串不占 token;fail-open)。
     if config.USE_USER_MEMORY:
         try:
@@ -122,7 +123,7 @@ def run_query(nl: str, *, quiet_trace: bool = False,
         lo = loop_driver.run_query_loop(nl, schema=schema, replay_context=replay_ctx,
                                         sandbox=sandbox, trace=trace, session_id=sid,
                                         on_step=on_step, runtime_facts=rt_facts, owner=owner,
-                                        image=image)
+                                        image=image, model=model)
         lstep.ok(steps=lo.steps, terminated=lo.terminated)
     except Exception as e:
         lstep.fail(error=repr(e))

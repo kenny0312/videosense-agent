@@ -53,6 +53,12 @@ CRITIC_MODEL  = os.environ.get("CRITIC_MODEL", "gemini-2.5-flash")
 # gemini-3.x 起【只】在新 google-genai SDK + global 端点可用(us-central1 404,已实测)——
 # 后端由 loop_driver.make_conversation 按模型代际自动选。回滚:LOOP_MODEL=gemini-2.5-flash(旧 SDK 路径)。
 LOOP_MODEL         = os.environ.get("LOOP_MODEL", "gemini-3.5-flash")
+# 阶段A(CC 式切换):每请求可选大脑模型。服务端白名单 —— 绝不信任客户端字符串,
+# 防任意模型名烧钱/打崩;guest* 账号锁便宜档(2.5-pro 输出单价 4x 于 2.5-flash)。
+LOOP_MODEL_CHOICES = [m.strip() for m in os.environ.get(
+    "LOOP_MODEL_CHOICES", "gemini-3.5-flash,gemini-2.5-flash,gemini-2.5-pro").split(",") if m.strip()]
+LOOP_MODEL_GUEST_CHOICES = [m.strip() for m in os.environ.get(
+    "LOOP_MODEL_GUEST_CHOICES", "gemini-3.5-flash,gemini-2.5-flash").split(",") if m.strip()]
 GENAI_LOCATION     = os.environ.get("GENAI_LOCATION", "global")     # genai 后端端点(3.x 需 global)
 
 # U6:联网搜索工具(Gemini Google-Search grounding;spike 已验)。
