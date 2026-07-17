@@ -1,9 +1,5 @@
 <div align="center">
 
-<img src="docs/logo.png" alt="" width="92" />
-
-<br/>
-
 <img src="docs/hero.svg" alt="VideoSense — ask your video library anything; it answers with proof" width="100%" />
 
 <br/><br/>
