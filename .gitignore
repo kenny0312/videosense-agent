@@ -55,6 +55,7 @@ dashboard*.html
 
 # 评测生成物（跑完自动产出，不进 git）
 evals/briefing.md
+evals/suites.json               # 套件分层：从本地真跑归档派生，机器态，python -m evals.tag_suite 重生成
 
 # GEPA 运行产物(报告/状态/流水,只有结论进 PR)
 evals/gepa/runs/

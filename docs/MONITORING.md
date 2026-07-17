@@ -7,7 +7,7 @@
 - **只想随手查** → 直接用 Logs Explorer(下面"0. 即时查询")。零配置。
 - **想要图表看板**(人均 token / 成本趋势)→ 把日志 sink 到 **BigQuery**,再用 **Looker Studio** 画图(本文 1–5 步)。
 
-> 字段映射在 `pipeline/usage.py`(token 累加 + 估算单价 `_PRICE`)和 `api/server.py:_audit`(落日志)。
+> 字段映射在 `pipeline/agentops/usage.py`(token 累加 + 估算单价 `_PRICE`)和 `api/server.py:_audit`(落日志)。
 > 成本是**估算**(`usage_metadata × 单价`),绝对花费以 GCP 账单为准。
 
 ---

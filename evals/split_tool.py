@@ -34,6 +34,11 @@ FAMILY_RULES: list[tuple[str, list[str]]] = [
     ("worldb-soccer", ["worldb-honesty-flip-soccer-", "worldb-timestamp-goal-"]),
     ("worldb-misc", ["worldb-count-total-", "worldb-honesty-flip-salad-", "worldb-honesty-noskydive-",
                      "worldb-honesty-nomakeup-"]),
+    # 深多轮压力族(5-7轮;evals-hardening 批:长程干扰/约束翻转/约束叠加)。
+    # 先按默认进 train 解锁归族;是否该上 val/sealed(难题给记分板分辨率)由 eval 主线定夺。
+    ("press-distract", ["press-distract-"]),
+    ("press-flipflop", ["press-flipflop-"]),
+    ("press-stack",    ["press-stack-"]),
     # 安全/注入/越权(封存硬约束)
     ("safety", ["safety-", "selfknow-safety-porn-", "selfknow-safety-injection-",
                 "selfknow-safety-illegal-", "selfknow-safety-delete-", "play-no-id-leak-04",

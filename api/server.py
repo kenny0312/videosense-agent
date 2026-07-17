@@ -44,6 +44,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from pipeline import artifacts, config
+from pipeline.agentops import ratelimit
 from pipeline.orchestrator import run_query
 from pipeline.session import STORE
 
@@ -118,7 +119,8 @@ async def _gate(request: Request, call_next):
 
 
 class VibeQueryRequest(BaseModel):
-    query: str = Field(..., description="自然语言视频分析问题")
+    # max_length:挡超大 query 直接灌进 loop 当 token 烧钱(超限 Pydantic 自动 422),见 P0-2。
+    query: str = Field(..., max_length=config.QUERY_MAX_CHARS, description="自然语言视频分析问题")
     session_id: str | None = Field(
         None, description="多轮会话 id;省略则开新会话,响应会回传一个 session_id 供下一轮带上")
     pro_video: bool = Field(
@@ -260,6 +262,14 @@ def _client_ip(request: Request) -> str | None:
     return request.client.host if request.client else None
 
 
+def _rate_limited(request: Request, owner: str, sid: str) -> "Response | None":
+    """P0-2 请求前护栏。超额 → 429(带中文理由);放行 → None。见 pipeline/agentops/ratelimit.py。"""
+    reason = ratelimit.precheck(owner, _client_ip(request), sid)
+    if reason:
+        return Response(status_code=429, content=reason)
+    return None
+
+
 def _audit(request: Request, req: VibeQueryRequest, result: dict,
            usage: dict, latency_ms: int) -> None:
     """每请求一行结构化 JSON → stdout → Cloud Run 自动收进 Cloud Logging。
@@ -294,6 +304,20 @@ def _audit(request: Request, req: VibeQueryRequest, result: dict,
     record["message"] = (f'audit user={record["app_user"]} status={record["status"]} '
                          f'tokens={record["tokens_total"]} cost=${record["cost_usd"]}')
     print(json.dumps(record, ensure_ascii=False), flush=True)
+    # P0-2 记账:把本次实际成本累加进限流的当日/会话桶(供下一请求的 precheck 比对)。fail-open。
+    try:
+        ratelimit.record(record["app_user"], record["ip"], record["session_id"],
+                         usage.get("cost_usd", 0.0))
+    except Exception:
+        log.warning("ratelimit record failed (fail-open)", exc_info=True)
+
+
+@app.get("/v1/models")
+def list_models(request: Request):
+    """阶段A:本账号可用的大脑模型。前端据此渲染切换菜单(guest 直接看不到锁着的档,
+    而不是点了才 422);走门禁(不在 _OPEN_PATHS),匿名拿不到。"""
+    owner = getattr(request.state, "app_user", "anon")
+    return {"default": config.LOOP_MODEL, "choices": _allowed_models(owner)}
 
 
 @app.get("/v1/models")
@@ -309,6 +333,9 @@ def video_vibe_query(req: VibeQueryRequest, request: Request):
     t0 = time.perf_counter()
     sid = req.session_id or uuid.uuid4().hex        # 没带 session_id → 开一个新会话
     owner = getattr(request.state, "app_user", "anon")   # 会话按认证身份归属(关 IDOR)
+    rl = _rate_limited(request, owner, sid)         # P0-2:超额直接 429,不进 loop(最贵的都在 loop 里)
+    if rl:
+        return rl
     model, err = _resolve_model(req.model, owner)   # 阶段A:白名单外直接 422,不进 loop
     if err:
         return err
@@ -435,6 +462,9 @@ def video_vibe_query_stream(req: VibeQueryRequest, request: Request):
     q: "_queue.Queue" = _queue.Queue()
     sid = req.session_id or uuid.uuid4().hex
     owner = getattr(request.state, "app_user", "anon")
+    rl = _rate_limited(request, owner, sid)         # P0-2:超额直接 429,在开流前拦下
+    if rl:
+        return rl
     model, err = _resolve_model(req.model, owner)   # 阶段A:流开始前校验,非法 422
     if err:
         return err

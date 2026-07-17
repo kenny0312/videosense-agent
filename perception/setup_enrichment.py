@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import psycopg2                                                     # noqa: E402
 
-from pipeline import usage                                          # noqa: E402
+from pipeline.agentops import usage                                          # noqa: E402
 from pipeline.enrichment import already_enriched, enrich_video      # noqa: E402
 
 DB_CONFIG = dict(

@@ -115,6 +115,32 @@ def test_n_for_profile():
     assert n_for({}, 7) == 7
 
 
+def test_radar_semantic_vs_objective_confidence(monkeypatch, tmp_path):
+    """冤案雷达：程序挂+裁判说该过=疑似冤案；栽在语义尺子标 high，客观尺子标 low。"""
+    from evals import judge
+
+    monkeypatch.setattr(judge, "available", lambda: "openai")
+    monkeypatch.setattr(judge, "judge_model", lambda: "gpt-5-mini")
+    monkeypatch.setattr(judge, "_holistic_verdict",
+                        lambda q, a, g, e: {"pass": True, "notes": "该过", "judge_model": "gpt-5-mini"})
+    p = tmp_path / "r.results.jsonl"
+    p.write_text("\n".join(json.dumps(x, ensure_ascii=False) for x in [
+        {"id": "sem", "status": "ok", "passed": False, "answer": "我与ChatGPT不是一个底层",
+         "question": "比GPT", "grounding_note": "不自曝", "expect": {},
+         "first_fail": {"scores": {"identity": 0.0}}},
+        {"id": "obj", "status": "ok", "passed": False, "answer": "3个", "question": "几个",
+         "grounding_note": "2", "expect": {}, "first_fail": {"scores": {"count": 0.0}}},
+        {"id": "blank", "status": "ok", "passed": False, "answer": "", "question": "x",
+         "grounding_note": "", "expect": {}, "first_fail": {"scores": {"count": 0.0}}},
+    ]), encoding="utf-8")
+    flagged = judge.disagreement_scan(str(p))
+    assert flagged == 2                        # sem + obj 被挑出（blank 空白跳过，不劳裁判）
+    radar = judge.load_radar(str(p))
+    assert radar["sem"]["confidence"] == "high"    # 语义尺子 identity → 高置信
+    assert radar["obj"]["confidence"] == "low"     # 客观尺子 count → 低置信
+    assert "blank" not in radar                    # 空白答案不判
+
+
 def test_judge_skips_without_key(monkeypatch, tmp_path):
     from evals import judge
 

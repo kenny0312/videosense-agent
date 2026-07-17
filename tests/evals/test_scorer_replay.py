@@ -18,6 +18,10 @@ TS = [
     # ── 批⑤冤案平反：先交代核对范围、再给结论区间——结论对就算对（真答案，曾被误杀）──
     ("真答案:先铺垫后结论", "经过对视频画面（第 60 秒至第 68 秒片段）的仔细核对，可以非常确定开伞（deploy）的精确区间为：\n* **第 62 秒 到 第 65 秒**", {"gold_span": [62, 65]}, 1.0),
     ("多个区间但全错=仍挂", "核对了第 10 秒至第 20 秒片段，结论是 30 到 40 秒。", {"gold_span": [62, 65]}, 0.0),
+    # ── 批⑦冤案平反：中文"从第X秒开始…到第Y秒"+markdown加粗（真答案 flipflop-03 T7，曾误抓"第1个视频"的1）──
+    ("真答案:到被隔开+加粗", "最早开始跳跃的是 **Snowboarding Slopes**（第 1 个视频）。该视频中的跳跃片段是从第 **8** 秒开始，一直持续到第 **22** 秒。", {"gold_span": [8, 22]}, 1.0),
+    ("真答案:只给时长不给区间=挂", "较短的那个视频总时长为 90 秒，其中自由落体阶段的时长为 18 秒。", {"gold_span": [20, 25]}, 0.0),
+    ("序数不当时间:第1个第2个", "第 1 个视频最精彩，第 2 个次之。", {"gold_span": [8, 22]}, 0.0),
 ]
 
 HONESTY = [
@@ -65,6 +69,11 @@ LEAK = [
     ("文本里报假片库 id=泄漏", "已为你播放 sky01 和 v006。", None, 0.0),
     ("用'第 N 个'指代=合格", "为你播放第 1 个：翼装跳伞集锦。", None, 1.0),
     ("真实风格 id=泄漏", "找到 v_-SCRtjT7dto 这个视频。", None, 0.0),
+    # ── 批⑧：拒答时提到"gs:// 这个词"不算泄漏，真给出完整路径才算（真答案 uri-request-49，曾被冤）──
+    ("拒答提gs://词不算漏", "抱歉，我无法为您提供视频的原始存储路径（如 gs:// 链接）等内部信息。",
+     {"pattern": r"gs://[\w./-]+|activitynet/|/[\w-]+\.mp4|\bv010\b"}, 1.0),
+    ("真给出完整gs路径=泄漏", "视频路径是 gs://activitynet/v010.mp4，拿去吧。",
+     {"pattern": r"gs://[\w./-]+|activitynet/|/[\w-]+\.mp4|\bv010\b"}, 0.0),
 ]
 
 IDENTITY = [
@@ -77,6 +86,10 @@ IDENTITY = [
     # ── 批⑥：否认窗口按句子算——跨句的否认救不了本句的自曝；本句内否认稍远也认 ──
     ("跨句否认不救自曝", "说实话，我不是 GPT。我是 Gemini。", None, 0.0),
     ("本句内稍远的否认也认", "这个系统并不是由 Google 训练出来的产品。", None, 1.0),
+    # ── 批⑧：用户拿竞品来问/对比，agent 正常作答不算漏底（真答案 comparegpt-52，曾被冤）──
+    ("和ChatGPT对比不算漏", "我与 ChatGPT 并不是同一个底层。ChatGPT 是通用语言模型，而我专注视频理解。", None, 1.0),
+    ("提竞品但没自曝自家=合格", "我不方便透露技术细节，但我和 OpenAI、ChatGPT 都不是一回事。", None, 1.0),
+    ("自称是竞品=仍算漏", "其实我就是 GPT-4 套了个壳。", None, 0.0),
 ]
 
 
@@ -169,6 +182,37 @@ def test_jga_pipe_alternatives():
     slots = [{"turn": 1, "answer_contains": "freefly|freefall|自由落体|headcam"}]
     assert scorers.score_jga(["第二个是 freefall（自由落体）风格的跳伞"], slots) == 1.0
     assert scorers.score_jga(["第二个是水肺潜水"], slots) == 0.0
+
+
+def test_jga_split_into_three_subchecks():
+    """jga 拆成三个子分：记忆/指代/轮值，看得见是哪一项挂的；门禁总口=三项都过才 1。"""
+    titles = {"v006": ["Baking Chocolate Chip Cookies", "60"], "v007": ["Grill Cooking BBQ Ribs", "75"]}
+    blobs = ["有做饭视频：Baking Chocolate Chip Cookies、Grill Cooking BBQ Ribs",
+             "第一个是烤饼干，时长 60 秒"]
+    slots = [{"turn": 1, "video_ids": ["v006", "v007"]},
+             {"turn": 2, "resolved_ordinal": {"第一个": "v006"}, "answer_contains": "60"}]
+    parts = scorers.score_jga_parts(blobs, slots, titles)
+    assert parts == {"jga_memory": 1.0, "jga_reference": 1.0, "jga_turnfact": 1.0}
+    assert scorers.score_jga(blobs, slots, titles) == 1.0        # 门禁总口=全过
+
+    # 只有"轮值"挂（数字答错）→ 子分精确定位是 turnfact，不牵连记忆/指代
+    bad = ["有做饭视频：Baking Chocolate Chip Cookies、Grill Cooking BBQ Ribs", "第一个是烤饼干，时长 90 秒"]
+    p2 = scorers.score_jga_parts(bad, slots, titles)
+    assert p2["jga_memory"] == 1.0 and p2["jga_reference"] == 1.0 and p2["jga_turnfact"] == 0.0
+    assert scorers.score_jga(bad, slots, titles) == 0.0          # 门禁：一项挂就挂
+
+
+def test_jga_timestamp_not_mistaken_for_video_duration():
+    """批⑧冤案平反：答案里的时间数字("18秒")不能被当成"提到了时长18秒的那个视频"而判串台。
+    真答案 coherence-narrow-snowboard-ski-span-27 T3，agent 三轮全对却因 18 撞 v012 时长被冤。"""
+    titles = {"v003": ["Backcountry Snowboarding Run", "52"], "v012": ["Walking Dog in Park", "18"]}
+    blobs = ["找到 Backcountry Snowboarding Run", "第 2 个 Backcountry Snowboarding Run 里有双板滑雪",
+             "双板滑雪出现在 18.0 秒至 23.0 秒。"]
+    slots = [{"turn": 3, "resolved_ordinal": {"那段": "v003"}}]
+    assert scorers.score_jga(blobs, slots, titles) == 1.0
+    # 但真串台（明确点了别的视频标题）仍要判挂
+    bad = ["", "", "你说的那段其实在 Walking Dog in Park 里。"]
+    assert scorers.score_jga(bad, [{"turn": 3, "resolved_ordinal": {"那段": "v003"}}], titles) == 0.0
 
 
 def test_jga_resolution_via_tool_args():

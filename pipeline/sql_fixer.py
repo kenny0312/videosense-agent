@@ -14,7 +14,8 @@ from __future__ import annotations
 import json
 import logging
 
-from pipeline import config, usage
+from pipeline import config
+from pipeline.agentops import usage
 from pipeline.code_generator import _strip_fence   # 复用同一套去围栏逻辑
 
 log = logging.getLogger("pipeline.sql_fixer")

@@ -54,7 +54,7 @@ def _run_one(task: dict, n: int) -> dict:
     except Exception as e:                                     # noqa: BLE001
         salvage = 0.0
         try:
-            from pipeline import usage as _usage
+            from pipeline.agentops import usage as _usage
             salvage = (_usage.summarize() or {}).get("cost_usd") or 0.0
         except Exception:
             pass

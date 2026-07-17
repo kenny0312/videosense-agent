@@ -90,7 +90,7 @@ def already_enriched(video_id: str) -> bool:
 def enrich_video(video_id: str, gcs_uri: str) -> dict:
     """富化一个视频:flash(low res)→ 解析 → embed → upsert。返回统计;失败上抛(调用方定策略)。"""
     from google.genai import types
-    from pipeline import usage
+    from pipeline.agentops import usage
     from pipeline.genai_client import get_client
 
     low = gcs_uri.lower()

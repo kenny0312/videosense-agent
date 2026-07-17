@@ -3,6 +3,15 @@
 把 API + 聊天前端部到 Cloud Run,**只有持口令的人能访问**。鉴权在应用层(HTTP Basic
 Auth):设了 `APP_ACCESS_KEYS` 才生效,不设则无鉴权(本地开发不受影响)。
 
+> 🔒 **P0 已上线的两道护栏(2026-07-16):**
+> 1. **镜像 fail-closed** —— Dockerfile 钉死 `APP_ENV=prod`,所以部署时**必须**带 `APP_ACCESS_KEYS`,
+>    否则容器启动即报错、revision 被标 unhealthy 不切流量(旧版继续服务)。**再也不会无口令裸奔上线。**
+> 2. **限流已随代码进仓**(`pipeline/agentops/ratelimit.py`) —— 按成本+速率纵深限流,复用你已配的 Upstash Redis,
+>    默认额度宽松,无需额外配置。默认值与调法见 [billing-guardrails.md](billing-guardrails.md)。
+>
+> ⚠️ **上线前务必先做 [billing-guardrails.md](billing-guardrails.md) 的账单三道底线**(Gemini 花费上限 +
+> GCP 预算告警)—— 那是不依赖 Redis 的硬底线,限流只是软护栏。
+
 > 从源码部署用 Cloud Build 在云端打镜像 —— **你本地不需要装 Docker**。
 
 > **每条命令都给了 bash 和 PowerShell 两版。** bash 的 `\` 换行在 PowerShell 里会报错

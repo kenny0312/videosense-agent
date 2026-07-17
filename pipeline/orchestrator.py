@@ -15,10 +15,11 @@ from __future__ import annotations
 import logging
 from typing import Any, TYPE_CHECKING
 
-from pipeline import config, mcp_client, usage
+from pipeline import config, mcp_client
+from pipeline.agentops import usage
 from pipeline.dag_schema import DAG
 from pipeline.node_executor import NodeResult
-from pipeline.trace import Trace
+from pipeline.agentops.trace import Trace
 from sandbox.client import SandboxClient
 
 if TYPE_CHECKING:                       # 仅类型提示;运行期不 import session(不在 import 期碰 STORE)

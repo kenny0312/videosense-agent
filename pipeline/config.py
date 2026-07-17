@@ -126,6 +126,20 @@ ANALYZE_CACHE_TTL_SECONDS = int(os.environ.get("ANALYZE_CACHE_TTL_SECONDS", str(
 #   =1 → 退回纯串行(秒级回退开关);起步 3,压测看 Gemini 429/限流再调。
 MAX_ANALYZE_PARALLEL = int(os.environ.get("MAX_ANALYZE_PARALLEL", "3"))
 
+# ── P0-2:滥用/账单护栏(限流,见 pipeline/agentops/ratelimit.py)──────────────────
+# 按【成本 $】+【请求速率】双口径,纵深四维(IP/用户/会话/全局)。默认值给得宽松:正常用户
+# 打不到,失控/白嫖才会撞墙 —— 起步值,按实际用量与 MONITORING 里的 cost 分布再调紧。
+# 无 Redis(本地/测试)时限流本就 no-op;真正的硬底线是 provider spend cap(见 docs/billing-guardrails.md)。
+USE_RATE_LIMIT           = os.environ.get("USE_RATE_LIMIT", "1").lower() in ("1", "true", "yes")
+RL_REQ_PER_MIN           = int(os.environ.get("RL_REQ_PER_MIN", "30"))            # 具名用户每分钟请求数
+RL_REQ_PER_MIN_GUEST     = int(os.environ.get("RL_REQ_PER_MIN_GUEST", "8"))       # 匿名/guest 每分钟(更紧)
+RL_IP_REQ_PER_MIN        = int(os.environ.get("RL_IP_REQ_PER_MIN", "40"))         # 每 IP 每分钟(仅小额度档查;同 IP 可能多设备)
+RL_DAILY_COST_USD        = float(os.environ.get("RL_DAILY_COST_USD", "2.0"))      # 具名用户每日成本顶 $
+RL_DAILY_COST_USD_GUEST  = float(os.environ.get("RL_DAILY_COST_USD_GUEST", "0.20"))  # 匿名/guest 每日 $
+RL_SESSION_COST_USD      = float(os.environ.get("RL_SESSION_COST_USD", "0.75"))   # 单会话累计成本顶 $
+RL_GLOBAL_DAILY_COST_USD = float(os.environ.get("RL_GLOBAL_DAILY_COST_USD", "15.0"))  # 全站每日成本熔断 $
+QUERY_MAX_CHARS          = int(os.environ.get("QUERY_MAX_CHARS", "8000"))         # 单条问题字符上限(挡超大 query 灌 token)
+
 # ── AlloyDB ───────────────────────────────────
 ALLOYDB_HOST     = os.environ.get("ALLOYDB_HOST", "localhost")
 ALLOYDB_PORT     = int(os.environ.get("ALLOYDB_PORT", "5432"))

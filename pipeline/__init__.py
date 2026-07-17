@@ -14,6 +14,9 @@ videoUnderstanding — Pipeline 包
     code_generator.py 沙箱工具(plot/python)→ Python 代码 + 自愈修复
     subagents.py      spawn_agents 子 agent 异质 fan-out(opt-in)
     orchestrator.py   请求级封装:回放/usage/收口,调 loop_driver.run_query_loop
-    trace.py          结构化 trace(实时打印 + 可序列化)
     main.py           dev CLI 入口(跑同一 loop,看 trace)
+
+子包:
+    agentops/         运维/可观测/成本护栏横切层(ratelimit 限流 / trace 追踪 / usage 记账);
+                      后续 MLOps 件(预算熔断/告警/指标/Langfuse)往这里落。见 agentops/__init__.py。
 """

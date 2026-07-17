@@ -202,6 +202,9 @@ def score_multi(task: dict, turns, world_state: dict | None = None) -> dict:
         resolve = [scorers.resolve_blob(o) for o in turn_objs]
         s["jga"] = scorers.score_jga(blobs, ec["jga_slots"], titles=aliases,
                                      resolve_blobs=resolve)
+        # 三个子分单独记，看得见是记忆/指代/轮值哪一项挂的（诊断用，不额外进门禁）
+        s.update(scorers.score_jga_parts(blobs, ec["jga_slots"], titles=aliases,
+                                         resolve_blobs=resolve))
     if ec.get("state_assertions"):
         s["state_assertions"] = scorers.score_state_assertions(ec["state_assertions"], world_state or {})
     return s
@@ -290,7 +293,7 @@ def run_case(task: dict, script=None, tool_results=None, n: int | None = None,
     for _ in range(n):
         t0 = time.perf_counter()
         if live:                                # Mode B：真 Gemini
-            from pipeline import usage as _usage
+            from pipeline.agentops import usage as _usage
             _usage.reset_usage()                # GD-0：按 rollout 记 token/$（GEPA 预算控制用）
             res = LiveWorld(owner=owner, world=task.get("world", "A")).run(task["user_query"], max_steps=steps)
             # 空生成重试(第六跑 32/55 失败是零工具+零文本 —— 首次生成就返回空,
@@ -328,7 +331,7 @@ def run_case_multi(task: dict, n: int | None = None, owner: str = "eval") -> dic
     cost = {"llm_calls": 0, "analyze_calls": 0, "wall_ms": 0, "tokens": 0, "cost_usd": 0.0}
     for _ in range(n):
         t0 = time.perf_counter()
-        from pipeline import usage as _usage
+        from pipeline.agentops import usage as _usage
         _usage.reset_usage()                     # GD-0：按 rollout 记 token/$
         out = DualControlSession(task, owner=owner).run()
         _u = _usage.summarize()
@@ -359,21 +362,26 @@ def run_case_multi(task: dict, n: int | None = None, owner: str = "eval") -> dic
     return rec
 
 
-def n_for(task: dict, n: int | None) -> int:
+def n_for(task: dict, n: int | None, regression_ids: set | None = None) -> int:
     """一道题该跑几次：显式 --n 全体照办（冒烟用）；
-    默认档：普通题 3 次、必过题 5 次（红线要建立在更多证据上）。"""
+    默认档：普通题 3 次、必过题 5 次（红线要更多证据）；
+    回归套件（闭眼全过的题）只跑 1 次——它只是防退步安全网，不必反复证明。"""
     if n:
         return n
+    if regression_ids and task.get("id") in regression_ids and not task.get("pinned"):
+        return 1
     return 5 if task.get("pinned") else 3
 
 
 def run_suite(tasks: list[dict], policies: dict | None = None, tool_results: dict | None = None,
               live: bool = False, n: int | None = None) -> list[dict]:
+    from evals.suites import load_regression_ids
+    reg = load_regression_ids()               # 回归套件的题默认只跑 1 次（防退步网）
     if live:                                  # Mode B：真 Gemini。单轮 + 多轮；带世界动作的看接没接
         todo, skipped = split_live_tasks(tasks)
         out = []
         for i, (t, is_multi) in enumerate(todo, 1):
-            tn = n_for(t, n)
+            tn = n_for(t, n, reg)
             try:
                 r = run_case_multi(t, n=tn) if is_multi else run_case(t, live=True, n=tn)
             except Exception as e:            # 单题崩溃不拖垮整场
@@ -580,6 +588,9 @@ def main(argv=None):
     # → L11 等语义教训在 eval 里是死段,优化的和上线的不是同一个 prompt）。embed 失败自动回退关。
     ap.add_argument("--semantic", action=argparse.BooleanOptionalAction, default=True,
                     help="真跑时打开语义检索（默认开,对齐生产;--no-semantic 关）")
+    ap.add_argument("--suite", choices=["all", "regression", "capability"], default="all",
+                    help="跑哪个套件：capability=会挂/闪烁的题（认真跑，省钱）；"
+                         "regression=闭眼全过的题（防退步，便宜跑）；默认 all。分层用 python -m evals.tag_suite")
     args = ap.parse_args(argv)
 
     if args.semantic:
@@ -594,6 +605,14 @@ def main(argv=None):
         if not tasks:
             print(f"--split {args.split} 下没有题(清单没覆盖?先跑 python -m evals.split_tool)")
             return 2
+    if args.suite != "all":                     # 套件分层(与 --ids/--split 可叠加)
+        from evals.suites import filter_by_suite
+        before = len(tasks)
+        tasks = filter_by_suite(tasks, args.suite)
+        print(f"套件过滤：{args.suite} —— {len(tasks)}/{before} 题")
+        if not tasks:
+            print("这个套件是空的（还没分层？先 python -m evals.tag_suite）")
+            return 0
 
     if args.list:
         by_dim = Counter(d for t in tasks for d in t.get("dims", ["?"]))
@@ -659,6 +678,18 @@ def main(argv=None):
             js = judge_mod.sidecar_summary(results_path)
             if js:
                 meta["judge"] = js
+            judge_mod.disagreement_scan(results_path)     # 冤案雷达：只判失败题
+            rs = judge_mod.radar_summary(results_path)
+            if rs:
+                meta["radar"] = rs
+            radar = judge_mod.load_radar(results_path)     # 逐题裁判判断合并进记录，供仪表盘卡片显示
+            for r in cur_print:
+                if r["id"] in radar:
+                    jr = radar[r["id"]]
+                    r["radar"] = {"judge_pass": jr.get("judge_pass"),
+                                  "suspect": jr.get("wrongful_conviction_suspect"),
+                                  "confidence": jr.get("confidence"),
+                                  "notes": jr.get("judge_notes", "")[:300]}
     print_summary(cur_print, base_print, v)
     if args.ids or args.split:
         # GD-0/1：子集跑（GEPA 候选评估/按堂跑/手工复测）不进仪表盘历史 —— 基线不被局部样本污染

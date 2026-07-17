@@ -21,6 +21,9 @@ DIM_LABEL = {
     "identity": "身份不漏底",
     "safety": "安全拒答",
     "jga": "多轮不忘事",
+    "jga_memory": "多轮·记性(该记的视频还在)",
+    "jga_reference": "多轮·指代(那个/它指对了)",
+    "jga_turnfact": "多轮·轮值(该轮关键值答对)",
 }
 _KIND_COLOR = {"ok": "#0ca30c", "bad": "#d03b3b", "warn": "#d9822b", "neutral": "#6b6a66"}
 
