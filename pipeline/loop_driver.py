@@ -484,7 +484,10 @@ class OpenAICompatConversation:
             self._last_tool_ids.append(tc.get("id") or f"call_{len(self._last_tool_ids)}")
         text = m.get("content") or None
         if not calls and not (text and text.strip()):
-            return [], _blocked_fallback(choice.get("finish_reason"), None)
+            # E2 语义对齐:安全拦截 → 体面拒答;其余空生成 → None,上游按瞬时波动给重试提示
+            if "content_filter" in str(choice.get("finish_reason") or "").lower():
+                return [], _BLOCKED_REFUSAL
+            return [], None
         return calls, text
 
 

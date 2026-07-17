@@ -97,7 +97,21 @@ def test_empty_response_gets_fallback(monkeypatch):
         monkeypatch.setattr(config, "OAI_COMPAT_API_KEY", "k-test")
         conv = OpenAICompatConversation("qwen3.7-plus", DECLS, "s")
         calls, text = conv.send("hi")
-        assert calls == [] and text and len(text) > 5      # 兜底话,不是空白
+        assert calls == [] and text and len(text) > 5      # 安全拦截 → 体面拒答(E2)
+    finally:
+        srv.shutdown()
+
+
+def test_plain_empty_returns_none(monkeypatch):
+    """非拦截的空生成 → (,[ None):按 E2 交给上游发重试提示,不在适配器层编话。"""
+    srv, url = _mk([{"choices": [{"message": {"role": "assistant", "content": ""},
+                                  "finish_reason": "stop"}], "usage": _usage_msg(10, 0)}])
+    try:
+        monkeypatch.setattr(config, "OAI_COMPAT_BASE_URL", url)
+        monkeypatch.setattr(config, "OAI_COMPAT_API_KEY", "k-test")
+        conv = OpenAICompatConversation("qwen3.7-plus", DECLS, "s")
+        calls, text = conv.send("hi")
+        assert calls == [] and text is None
     finally:
         srv.shutdown()
 
