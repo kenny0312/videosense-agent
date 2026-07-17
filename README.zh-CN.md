@@ -1,9 +1,5 @@
 <div align="center">
 
-<img src="docs/logo.png" alt="" width="92" />
-
-<br/>
-
 <img src="docs/hero.svg" alt="VideoSense — 随便问你的视频库，它用证据回答" width="100%" />
 
 <br/><br/>
