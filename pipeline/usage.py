@@ -29,6 +29,9 @@ _PRICE = {
     "gemini-2.5-pro":   {"in": 1.25, "out": 10.0, "cached": 0.3125},
     "gemini-2.5-flash": {"in": 0.30, "out": 2.50, "cached": 0.075},
     "gemini-3.5-flash": {"in": 1.50, "out": 9.00, "cached": 0.15},   # U5:global 端点价
+    # 阶段B 候选(DashScope 国际站 2026-07 牌价,基础档;cached 按 ~80% 折扣估)
+    "qwen3.7-plus":     {"in": 0.40, "out": 1.60, "cached": 0.08},
+    "qwen3.6-flash":    {"in": 0.25, "out": 1.50, "cached": 0.05},
 }
 
 

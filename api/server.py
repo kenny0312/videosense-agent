@@ -127,11 +127,35 @@ class VibeQueryRequest(BaseModel):
         False, description="复核模式:收口前多一道自检判'满足用户没',不满足自动补一轮(略慢)")
     image: str | None = Field(
         None, description="可选:粘贴的截图,data URL(data:image/png;base64,...)。作多模态输入附在本轮。")
+    model: str | None = Field(
+        None, description="可选:本请求的大脑模型(服务端白名单内可切,如 gemini-2.5-pro;省略用默认)")
 
 
 # 粘贴图片:data URL → (bytes, mime)。限类型 + 大小(防超大 base64 撑爆请求/成本)。
 _IMG_MIMES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
 _MAX_IMG_BYTES = int(os.environ.get("MAX_IMAGE_BYTES", str(8 * 1024 * 1024)))   # 解码后 8MB
+
+
+def _is_guest(owner: str) -> bool:
+    """约定:APP_ACCESS_KEYS 里名字以 guest 开头(大小写不限)的账号 = 便宜档(成本保险丝)。"""
+    return (owner or "").lower().startswith("guest")
+
+
+def _allowed_models(owner: str) -> list[str]:
+    return config.LOOP_MODEL_GUEST_CHOICES if _is_guest(owner) else config.LOOP_MODEL_CHOICES
+
+
+def _resolve_model(raw: str | None, owner: str):
+    """阶段A:每请求大脑模型。服务端白名单校验(绝不信任客户端字符串)。
+    返回 (model, err_response);省略/空 = (None, None) 用默认。"""
+    m = (raw or "").strip()
+    if not m:
+        return None, None
+    allowed = _allowed_models(owner)
+    if m not in allowed:
+        return None, Response(status_code=422,
+                              content="不支持的 model;本账号可选:" + ", ".join(allowed))
+    return m, None
 
 
 def _parse_image(data_url: str | None) -> "tuple[bytes, str] | None":
@@ -272,16 +296,27 @@ def _audit(request: Request, req: VibeQueryRequest, result: dict,
     print(json.dumps(record, ensure_ascii=False), flush=True)
 
 
+@app.get("/v1/models")
+def list_models(request: Request):
+    """阶段A:本账号可用的大脑模型。前端据此渲染切换菜单(guest 直接看不到锁着的档,
+    而不是点了才 422);走门禁(不在 _OPEN_PATHS),匿名拿不到。"""
+    owner = getattr(request.state, "app_user", "anon")
+    return {"default": config.LOOP_MODEL, "choices": _allowed_models(owner)}
+
+
 @app.post("/v1/video_vibe_query")
 def video_vibe_query(req: VibeQueryRequest, request: Request):
     t0 = time.perf_counter()
     sid = req.session_id or uuid.uuid4().hex        # 没带 session_id → 开一个新会话
     owner = getattr(request.state, "app_user", "anon")   # 会话按认证身份归属(关 IDOR)
+    model, err = _resolve_model(req.model, owner)   # 阶段A:白名单外直接 422,不进 loop
+    if err:
+        return err
     with _session_lock(f"{owner}:{sid}"):           # 同会话 read-modify-write 串行,防丢轮
         session = STORE.get_or_create(sid, owner=owner)
         result = run_query(req.query, quiet_trace=True, session=session, owner=owner,
-                           pro_video=req.pro_video, image=_parse_image(req.image),
-                           critic=req.critic)
+                           pro_video=req.pro_video and not _is_guest(owner),   # guest 也锁 pro 眼
+                           image=_parse_image(req.image), model=model, critic=req.critic)
         STORE.save(session, owner=owner)            # 写时机:每请求一次(纯内存模式无操作)
     result["session_id"] = sid                      # 回传,客户端下一轮带上即可续聊
     usage = result.pop("usage", {}) or {}           # token/成本:内部审计用,不回传给前端
@@ -400,14 +435,18 @@ def video_vibe_query_stream(req: VibeQueryRequest, request: Request):
     q: "_queue.Queue" = _queue.Queue()
     sid = req.session_id or uuid.uuid4().hex
     owner = getattr(request.state, "app_user", "anon")
+    model, err = _resolve_model(req.model, owner)   # 阶段A:流开始前校验,非法 422
+    if err:
+        return err
 
     def work():
         try:
             with _session_lock(f"{owner}:{sid}"):
                 session = STORE.get_or_create(sid, owner=owner)
                 result = run_query(req.query, quiet_trace=True, session=session, owner=owner,
-                                   on_step=lambda ev: q.put(ev), pro_video=req.pro_video, critic=req.critic,
-                                   image=_parse_image(req.image))
+                                   on_step=lambda ev: q.put(ev),
+                                   pro_video=req.pro_video and not _is_guest(owner),
+                                   image=_parse_image(req.image), model=model, critic=req.critic)
                 STORE.save(session, owner=owner)
             result["session_id"] = sid
             usage = result.get("usage", {}) or {}        # get(非 pop):留在 result 里给前端 context 监控
