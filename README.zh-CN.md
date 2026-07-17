@@ -44,9 +44,6 @@
 
 没有写死的流水线：模型自己决定每一步，直到能**证明**答案为止，每一步都实时流式返回。有一次分析中途缺库，它自己重写代码把活干完——[看那次运行](docs/DEMO.md)。
 
-<sub>想看内部实现？架构笔记在 [`docs/design/`](docs/design/)。</sub>
-
-<br/>
 
 ## 30 秒跑起来
 
@@ -60,22 +57,13 @@ uvicorn api.server:app --port 8000        # 然后打开 http://localhost:8000
 
 <br/>
 
-## 30 秒跑评测
+## 值得信任的答案
 
-VideoSense 自带一套 τ²-bench 风格的评测——**128 道题**、8 个能力维度，用确定性校验器打分（不用 LLM 裁判）。跑完自动弹出本地仪表盘，看通过率、各维度分数、以及跨轮次的走势。
+每次变更都要过 **370 道题的自动化评测** —— 确定性校验器打分(不用 LLM 裁判),诚实与安全类是必过题;答案拒绝硬凑:库里没有你问的内容时,它会如实说没有,而不是端出一个最像的。Prompt 的每次改动都先过带统计门槛的进化循环,再交人工审核。
 
-```bash
-python -m evals serve      # 本地控制台——点按钮跑，仪表盘自动刷新
-# python -m evals          # 脚本车道（免费，不花 token）
-# python -m evals live     # 真 Gemini 车道（花 token）
-# Windows cmd 快捷方式：`eval serve`（仓库根的 eval.bat；PowerShell 里写 .\eval serve）
-```
+## 许可与商用
 
-<div align="center">
-  <img src="docs/eval-dashboard.svg" alt="VideoSense 评测仪表盘：真 Gemini 车道 96 道单轮题通过率 78%（属于 128 题套件，确定性校验器），各维度通过率——时间戳 100%、计数 95%、工具选择 80%、检索 58%、诚实性 52%。" width="760" />
-</div>
-
-<sub>真 Gemini 车道稳定在 <b>78%</b> 基线——而且上线第一天就抓到了真 bug（一次提示注入泄漏、一次身份暴露），现已固化成回归题。完整报告见 <a href="evals/RESULTS.zh-CN.md">evals/RESULTS.zh-CN.md</a>。</sub>
+VideoSense 以 **source-available** 形式开放源码([Elastic License 2.0](LICENSE)):可以读、可以跑、可以改 —— 但不可以把它(或其衍生品)作为托管/在线服务提供给第三方。商业授权请[联系我](mailto:kennyqiu0312@gmail.com)。
 
 <br/>
 

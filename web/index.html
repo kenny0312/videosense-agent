@@ -170,6 +170,7 @@ document.querySelector('meta[name="theme-color"]').content='#f4f6f9';}}catch(e){
   .send:active:not(:disabled){transform:scale(.94)}
   .send:disabled{opacity:.4;cursor:not-allowed}
   .cfoot{display:flex;align-items:center;justify-content:space-between;padding:0 4px}
+  .cfoot-l{display:flex;align-items:center;gap:8px}
   .propill{display:inline-flex;align-items:center;gap:5px;font-size:12px;padding:4px 11px;border-radius:999px;cursor:pointer;background:none;border:1px solid var(--border2);color:var(--muted);line-height:1.4;transition:color .13s,border-color .13s,background .13s}
   .propill:hover{color:var(--text);border-color:#3a3550;background:var(--hover)}
   .propill.on{background:var(--pro-dim);border-color:transparent;color:var(--pro)}
@@ -309,6 +310,9 @@ document.querySelector('meta[name="theme-color"]').content='#f4f6f9';}}catch(e){
       <h1>VideoSense</h1>
       <span class="sess" id="sess"></span>
       <span class="spacer"></span>
+      <a class="icon-btn" id="consoleBtn" href="/console" target="_blank" rel="noopener"
+         style="display:none;text-decoration:none" aria-label="Loop Console"
+         title="Loop Console — how the brain thinks (admin only)"><i class="ti ti-activity" aria-hidden="true"></i></a>
     </header>
     <div class="thread" id="thread"></div>
     <div class="composer">
@@ -328,6 +332,7 @@ document.querySelector('meta[name="theme-color"]').content='#f4f6f9';}}catch(e){
           <button class="send" id="send" aria-label="Send"><i class="ti ti-arrow-up" id="sendIcon" aria-hidden="true"></i></button>
         </div>
         <div class="cfoot">
+          <span class="cfoot-l">
           <span class="modelwrap">
             <button id="modelPill" class="propill" type="button" aria-haspopup="menu" aria-expanded="false"
                     title="Brain model for this chat — click to switch"><i class="ti ti-cpu" aria-hidden="true"></i><span id="modelLbl">3.5 Flash</span><i class="ti ti-sparkles" id="proMark" aria-hidden="true" style="display:none"></i></button>
@@ -338,6 +343,9 @@ document.querySelector('meta[name="theme-color"]').content='#f4f6f9';}}catch(e){
               <div class="msep" role="separator"></div>
               <button type="button" id="proVideoOpt" role="menuitemcheckbox"><i class="ti ti-sparkles" aria-hidden="true"></i><span>Pro video analysis<div class="sub">watch-the-content questions use the pro eyes</div></span><i class="ti ti-check mck" id="proCk" aria-hidden="true" style="visibility:hidden"></i></button>
             </div>
+          </span>
+          <button id="criticPill" class="propill" type="button" aria-pressed="false"
+                  title="Self-check: before finalizing, an extra reviewer pass checks the answer against your question and retries once if unsatisfied (slightly slower)."><i class="ti ti-checkbox" aria-hidden="true"></i><span id="criticLbl">Check</span></button>
           </span>
           <span class="cmon" title="Session cost so far ($) and cumulative tokens as a share of the context window (≈1M)">
             <span class="costtip" id="costtip"></span>
@@ -1014,7 +1022,7 @@ function deleteChat(id, ev){
 // SSE 流式消费(M6b):POST → 读 ReadableStream → 逐条 data: 事件;step/answer 给进度,result 给最终。
 // dag 路径不发 step 事件,只收 result —— 自动降级为"转圈到出结果"。
 async function streamQuery(q, sentSid, onEvent, image, signal){
-  const body={query:q, session_id:sentSid, pro_video:proOn, model:brainModel};
+  const body={query:q, session_id:sentSid, pro_video:proOn, model:brainModel, critic:criticOn};
   if(image) body.image=image;
   const r=await fetch('/v1/video_vibe_query/stream',{method:'POST',
     headers:{'Content-Type':'application/json'}, body:JSON.stringify(body), signal});
@@ -1167,6 +1175,9 @@ const LS_MODEL='vs_model';
 const hasModel=(m)=>Object.prototype.hasOwnProperty.call(MODELS,m);
 let brainModel=(()=>{ try{ const m=localStorage.getItem(LS_MODEL); if(m&&hasModel(m)) return m; }catch(e){} return 'gemini-3.5-flash'; })();
 let proOn=false;
+let criticOn=false;   // 复核模式(判决:默认无收益,故默认关;想要双保险的问题手动开)
+$('#criticPill').onclick=()=>{ criticOn=!criticOn; const p=$('#criticPill'); p.classList.toggle('on',criticOn);
+  p.setAttribute('aria-pressed',criticOn?'true':'false'); };
 function renderModelUI(){
   $('#modelLbl').textContent=MODELS[brainModel]||brainModel;
   document.querySelectorAll('#modelMenu .mopt').forEach(b=>b.classList.toggle('sel', b.dataset.m===brainModel));
@@ -1242,4 +1253,9 @@ function monitorFromChat(c){     // 切换/打开会话:从该会话历史重算
 renderSidebar();
 if(chats.length) openChat(chats[0].id); else newChat();
 if(window.innerWidth<=720) $('#shell').classList.add('nosb');
+
+// ── Loop Console 入口:探针判管理员才显示(普通用户界面无痕;探针失败=静默不显示)──
+fetch('/v1/console/allowed').then(r=>r.json()).then(d=>{
+  if(d && d.allowed) $('#consoleBtn').style.display='';
+}).catch(()=>{});
 </script></body></html>

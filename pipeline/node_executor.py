@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -203,6 +204,31 @@ def _run_show_video(node: Node, upstream: dict[str, Any]) -> NodeResult:
 
 SHOW_TABLE_MAX_ROWS = 1000
 
+# E1(eval selfknow-safety-injection-links-28 暴露):show_table 渲染【原始行】、天然绕过答案
+# 清洗器 —— 大脑被注入话术骗着 SELECT gcs_uri 时,表格就成了泄漏通道。机械规则下沉代码:
+# 内部存储路径列整列剔除;别名列(SELECT gcs_uri AS link)靠值形状兜底打码。
+_SENSITIVE_COLS = {"gcs_uri"}
+_INTERNAL_URI = re.compile(r"^\s*(?:gs|postgres(?:ql)?)://", re.I)
+
+
+def _sanitize_table_rows(norm: "list[dict]") -> "list[dict]":
+    """剔除内部路径列 + 打码内部 URI 值。fail-open:单行异常跳过该行清洗(宁展示别崩)。"""
+    out = []
+    for r in norm:
+        try:
+            clean = {}
+            for k, v in r.items():
+                if str(k).lower() in _SENSITIVE_COLS:
+                    continue                                   # 整列剔除
+                if isinstance(v, str) and _INTERNAL_URI.match(v):
+                    clean[k] = "(内部路径,不展示)"              # 别名列兜底
+                else:
+                    clean[k] = v
+            out.append(clean or {"value": "(仅含内部字段,已隐藏)"})
+        except Exception:
+            out.append(r)
+    return out
+
 
 def _run_show_table(node: Node, upstream: dict[str, Any]) -> NodeResult:
     """主进程节点:把【上游查询的完整结果】原样放进 NodeResult.table 侧信道,供前端渲染成表格。
@@ -214,6 +240,7 @@ def _run_show_table(node: Node, upstream: dict[str, Any]) -> NodeResult:
     n = len(rows)
     shown = rows[:SHOW_TABLE_MAX_ROWS]
     norm = [r if isinstance(r, dict) else {"value": r} for r in shown]
+    norm = _sanitize_table_rows(norm)                  # E1:内部路径列/值出门前拦下
     cols: list = []
     for r in norm:                                 # 列名 = 所有行键的并集(保序)
         for k in r:
@@ -430,9 +457,52 @@ def _run_web_search(node: Node) -> NodeResult:
     return NodeResult(node.id, node.tool, ok=True, value=value)
 
 
+def _translate_query_en(query: str) -> "str | None":
+    """D3 跨语言桥:中文查询译成英文再检索一路。索引片段绝大多数是英文,
+    多语向量把中文词映射到泛类英文语义(实测『打台球』命中躲避球而库里有台球)。
+    非中文/翻译失败 → None(fail-open,只用原文)。SEMANTIC_BRIDGE=0 一键关(回滚阀)。"""
+    import os as _os
+    if _os.environ.get("SEMANTIC_BRIDGE", "1") != "1":
+        return None
+    if not any("一" <= c <= "鿿" for c in query):
+        return None
+    try:
+        from google.genai import types as _t
+        from pipeline.genai_client import get_client
+        resp = get_client().models.generate_content(
+            model="gemini-2.5-flash",
+            contents=("把这个视频检索查询翻成英文的动名词活动短语(索引片段的惯用形态,"
+                      "例:washing car / playing pool / applying mascara),只输出短语本身:"
+                      + query),
+            # 关思考:flash 2.5 的思考 token 计入输出上限,开着会把短语挤没(实测)
+            config=_t.GenerateContentConfig(
+                temperature=0.0, max_output_tokens=200,
+                thinking_config=_t.ThinkingConfig(thinking_budget=0)))
+        en = (resp.text or "").strip().strip('"')
+        return en or None
+    except Exception:
+        return None
+
+
+def _dedupe_by_video(rows: list, k: int) -> list:
+    """按视频聚合:每视频只保留最高分的一行再取 top-k(审计 B3:v2 后同一视频有
+    vid/cap/tr 多种行,平面 top-k 里互相抢名额,列表类查询的视频广度最坏减半)。
+    保留行自带的时间戳(段级行命中就有跳转点;vid/cap 行命中则无,属实)。"""
+    best: dict = {}
+    for r in rows:
+        v = r.get("video_id")
+        if v not in best or r["score"] > best[v]["score"]:
+            best[v] = r
+    out = sorted(best.values(), key=lambda r: -r["score"])[:k]
+    for i, r in enumerate(out):
+        r["n"] = i + 1
+    return out
+
+
 def _run_semantic_search(node: Node) -> NodeResult:
     """V1:语义检索(pgvector 近邻,直连 Neon)。返回行列表 —— 可直接作 show_video/show_table
-    的上游(带 video_id/start_ts/end_ts/label),score 降序。"""
+    的上游(带 video_id/start_ts/end_ts/label),score 降序。
+    D3:中文查询双路(原文 + 英译)检索合并;strong/borderline/weak 三档判定。"""
     from pipeline import config as _cfg
     from pipeline.embeddings import embed_query, vec_literal
     from pipeline import semantic_index
@@ -445,13 +515,42 @@ def _run_semantic_search(node: Node) -> NodeResult:
     vec = embed_query(query)
     if vec is None:
         raise ValueError("query embedding 失败(稍后重试,或改用 sql_query/analyze_video)")
-    rows = semantic_index.search(vec_literal(vec), k)
-    # 治过度召回(结构性,非靠大脑自觉):全是 weak(或空)= 库里【没有真正匹配的】。
-    # 此时返回【信封 dict 而非行列表】—— show_video 结构上无法把它当"找到的视频"来展示,
-    # 大脑只能读 note 如实说"没有,最接近的是…"。有 strong 命中才返回行列表(正常走 show)。
+    rows = semantic_index.search(vec_literal(vec), k * 3)   # 超采:聚合后仍够 k 个不同视频
+    # 跨语言桥:英译路有 strong 命中就【以英译路为准】—— 两条路的分数刻度不同
+    # (中文查询打英文片段,枢纽片段常拿虚高分:实测『打台球』原文路给躲避球 0.766,
+    # 高于英译路台球的 0.75,按分高合并会把毒瘤排第一)。原文路只补【中文片段】的
+    # strong 命中(analyze 中文摘要是同语言打分,刻度可信),英文片段的原文路命中丢弃。
+    en = _translate_query_en(query)
+    if en and en.lower() != query.lower():
+        vec_en = embed_query(en)
+        if vec_en is not None:
+            en_rows = semantic_index.search(vec_literal(vec_en), k * 3)
+            if any(r.get("relevance") == "strong" for r in en_rows):
+                seen = {(r["video_id"], r["snippet"]) for r in en_rows}
+                extra = [r for r in rows
+                         if r.get("relevance") == "strong"
+                         and any("一" <= c <= "鿿" for c in r["snippet"])
+                         and (r["video_id"], r["snippet"]) not in seen]
+                rows = (en_rows + extra)[:k]
+                for i, r in enumerate(rows):
+                    r["n"] = i + 1
+            elif not any(r.get("relevance") == "strong" for r in rows):
+                rows = en_rows          # 两路都无 strong:信封用英译路(刻度准)的最近邻
+    rows = _dedupe_by_video(rows, k)
+    # 治过度召回(结构性,非靠大脑自觉):没有 strong = 不给行列表 —— show_video 结构上
+    # 无法把信封当"找到的视频"展示。borderline(像与不像之间)单独说明:先核对再下结论。
     strong = [r for r in rows if r.get("relevance") == "strong"]
     if not strong:
-        closest = [{"snippet": r["snippet"][:80], "score": r["score"]} for r in rows[:3]]
+        border = [r for r in rows if r.get("relevance") == "borderline"]
+        closest = [{"video_id": r["video_id"], "snippet": r["snippet"][:80], "score": r["score"]}
+                   for r in (border or rows)[:3]]
+        if border:
+            return NodeResult(node.id, node.tool, ok=True, value={
+                "no_strong_match": True, "borderline": True,
+                "note": "有几条命中介于【像与不像】之间(分数进了模糊带)。别直接当找到了:"
+                        "先用 sql_query 查这些视频的 video_facts 核对是否真有该内容 —— "
+                        "核上了就正常引用这些视频回答(该展示展示);核不上就如实说没有。",
+                "closest": closest})
         return NodeResult(node.id, node.tool, ok=True, value={
             "no_strong_match": True,
             "note": "库里没有与该查询【真正匹配】的内容(全部为弱相关)。如实告诉用户没有,"

@@ -25,8 +25,12 @@ def _cosine(a, b) -> float:
 
 
 def build_cosine_search(index, weak_threshold: float = 0.6):
-    """内存语义检索：query 向量 vs 索引里每条文档向量算 cosine，取 top-k，标 strong/weak。
-    index = [(video_id, snippet, start, end, vector)]。返回值和真 semantic_index.search 同格式。"""
+    """内存语义检索：query 向量 vs 索引里每条文档向量算 cosine，取 top-k。
+    index = [(video_id, snippet, start, end, vector)]。返回值与真 semantic_index.search
+    同格式,relevance 三档口径也与真实现对齐(D3:strong/borderline/weak)——
+    评测世界的语义判定必须和生产同一套,否则调的是两个系统。"""
+    from pipeline import semantic_index as _si
+
     def search(vec_lit, k):
         try:
             qv = json.loads(vec_lit)
@@ -35,7 +39,8 @@ def build_cosine_search(index, weak_threshold: float = 0.6):
         scored = sorted(((_cosine(qv, e[4]), e) for e in index), key=lambda x: -x[0])[:int(k)]
         return [{"n": i + 1, "video_id": e[0], "source": "eval", "snippet": e[1],
                  "start_ts": e[2], "end_ts": e[3], "score": round(sc, 3),
-                 "relevance": "strong" if sc >= weak_threshold else "weak",
+                 "relevance": ("strong" if sc >= _si.T_HI
+                               else "borderline" if sc >= _si.T_LO else "weak"),
                  "label": (e[1] or "")[:40]}
                 for i, (sc, e) in enumerate(scored)]
     return search
@@ -91,17 +96,27 @@ class EvalBackend:
     world_state 是判分用的"账本"：uploads / enriched / memory 都如实记在这。
     """
 
-    def __init__(self, owner: str = "eval"):
+    def __init__(self, owner: str = "eval", world: str = "A"):
         self.owner = owner
+        self.world = world                    # GD-2:按题选考场(A=冻结的16视频 / B=新20视频)
         self.world_state: dict = {"uploads": [], "enriched": [], "memory": ""}
 
     # 打补丁：全部是"换掉模块里的函数"，进程内幂等，只影响评测进程
     def install(self):
         os.environ["REPL_USE_MOCK_DB"] = "1"
+        # 考场 id 形状(v001/sky01/b001/c001/d001)与生产(v_长串/GX/纯数长串)不同,
+        # 生产清洗器对它们空转 → 把假世界 id 纳入清洗模式(幂等),背带在两边同样勒紧
+        from pipeline import answer_guard as _ag
+        import re as _re
+        if r"sky\d{2}" not in _ag.ID_PAT.pattern:
+            _ag.ID_PAT = _re.compile(
+                _ag.ID_PAT.pattern
+                + r"|(?<![0-9A-Za-z_-])(?:[vbcd]\d{3}|sky\d{2})(?![0-9A-Za-z_-])")
+        os.environ["MOCK_WORLD"] = self.world  # GD-2:重灌种子时按此切世界
         from pipeline import config, mcp_client, user_memory, video_url
         import repl._mock_db as mock
 
-        mock._conn = None                     # 每次跑重新灌种子：上一场的上传不会串场
+        mock._conn = None                     # 每次跑重新灌种子：上一场的上传不会串场；世界按 env 切换
         mcp_client.query_db = mock.mock_run_sql          # 数据库查询走进程内假库（不再开子进程）
         mcp_client.get_schema = mock.mock_fetch_schema
         video_url.sign_gcs_uri = lambda uri, **kw: (f"https://eval.local/{uri}" if uri else None)
@@ -232,8 +247,8 @@ def live_preflight():
 class LiveWorld:
     """真跑：真 Gemini 当大脑，其余全是评测假后端（见 EvalBackend）。"""
 
-    def __init__(self, owner: str = "eval"):
-        self.backend = EvalBackend(owner).install()
+    def __init__(self, owner: str = "eval", world: str = "A"):
+        self.backend = EvalBackend(owner, world=world).install()
         self.owner = owner
 
     def run(self, user_query, max_steps: int = 16):
@@ -242,10 +257,21 @@ class LiveWorld:
         from sandbox.client import SandboxClient
 
         schema = mcp_client.get_schema()
+        # GD-0:runtime_facts 对齐生产 —— orchestrator 每请求都注入「运行时状态」(模型档/语言指令等,
+        # orchestrator.py 的 runtime_facts_line 调用),eval 此前传 None → 评测的 prompt 比生产少一节,
+        # 语言指令等段在 eval 里成了死代码。usage_cum 传 None(单题无会话累计),与生产新会话首轮一致。
+        rt = loop_driver.runtime_facts_line(None, nl=user_query)
         conv = loop_driver.make_conversation(
             config.LOOP_MODEL,
             loop_driver.loop_function_declarations(),
-            loop_driver._loop_system(schema, None, None),
+            loop_driver._loop_system(schema, None, rt),
         )
         execute = loop_driver._make_executor(SandboxClient(), Trace(), schema, None, owner=self.owner)
-        return run_loop(user_query, conv, self.backend.wrap_execute(execute), max_steps=max_steps)
+        res = run_loop(user_query, conv, self.backend.wrap_execute(execute), max_steps=max_steps)
+        # 保真:生产在 run_loop 外层还有一道终清洗(loop_driver 收口处 scrub_ids),用户看到的
+        # 是清洗后的答案;评测此前直连 run_loop 绕过了它 → 尺子在看用户看不到的裸文本。
+        # (selfknow-links 实录:模型手滑列裸 id,生产会被兜住、考场却记 0 —— 考的不是同一个系统)
+        from pipeline.answer_guard import scrub_ids
+        if res.answer:
+            res.answer, _ = scrub_ids(res.answer, (er.value for er in res.ledger.values()))
+        return res

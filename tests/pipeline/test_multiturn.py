@@ -209,6 +209,26 @@ def test_pro_video_sets_analyze_model_override():
         _restore_loop(sl); orch.mcp_client = m
 
 
+# ── 复核模式:请求级 critic 透传(默认关;critic=True 本请求强制开)─────
+def test_critic_request_mode_passthrough():
+    s = Session("t")
+    m = _stub_mcp()
+    seen = {}
+
+    def fake_loop(nl, **kw):
+        seen["use_critic"] = kw.get("use_critic")
+        return LoopOutcome(answer="ok", steps=1, terminated="text", final_tool="sql_query",
+                           final_value=[{"x": 1}], preview_value=[{"x": 1}], results={}, trace=[])
+    sl, calls = _stub_loop(fake_loop)
+    try:
+        orch.run_query("有几个视频", session=s, critic=True)
+        assert seen["use_critic"] is True                  # 请求开 → 本请求强制开
+        orch.run_query("有几个视频", session=s)
+        assert seen["use_critic"] is None                  # 没开 → None(跟随全局默认)
+    finally:
+        _restore_loop(sl); orch.mcp_client = m
+
+
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

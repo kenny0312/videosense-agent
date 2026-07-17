@@ -36,44 +36,8 @@ def make_exec(values=None, fail=()):
     return execute
 
 
-class _FakePart:
-    def __init__(self, text=None, fc=None):
-        self.text = text or ""
-        self.function_call = fc
-
-
-class _FakeResp:
-    """模拟 genai 响应。空响应(安全拦截)= candidates 有但 parts 空 + finish_reason。"""
-    def __init__(self, parts=None, finish_reason=None, block_reason=None, no_cand=False):
-        content = None if parts is None else type("C", (), {"parts": parts})()
-        cand = type("Cand", (), {"content": content, "finish_reason": finish_reason})()
-        self.candidates = [] if no_cand else [cand]
-        self.prompt_feedback = type("FB", (), {"block_reason": block_reason})() if block_reason else None
-
-
-def test_extract_blank_safety_block_gives_fallback():
-    """空响应 bug 修复：安全拦截(无 parts)→ 返回礼貌兜底话，不是 None/空白。"""
-    calls, text = ld._extract(_FakeResp(parts=[], finish_reason="SAFETY"))
-    assert calls == [] and text and "安全" in text          # 有话说，且点明安全限制
-
-    calls, text = ld._extract(_FakeResp(no_cand=True, block_reason="SAFETY"))
-    assert calls == [] and text                              # candidates 全空也兜底
-
-    calls, text = ld._extract(_FakeResp(parts=[], finish_reason="MAX_TOKENS"))
-    assert "截断" in text                                    # 截断给不同的话
-
-
-def test_extract_normal_text_and_blank_never_leaks():
-    """正常文本照常返回；且 run_loop 拿到空响应不会把空白当答案。"""
-    calls, text = ld._extract(_FakeResp(parts=[_FakePart(text="正常答案")]))
-    assert calls == [] and text == "正常答案"
-
-    class _BlockConv:
-        def send(self, msg):
-            return ld._extract(_FakeResp(parts=[], finish_reason="SAFETY"))
-
-    r = run_loop("危险问题", _BlockConv(), make_exec(), max_steps=4)
-    assert r.answer and r.answer.strip()                     # 绝不是空白
+# (旧 _extract/_blocked_fallback 的空响应测试已删:该职责由 _blocked_text 承担,
+#  等价覆盖见 tests/pipeline/test_e_batch_guards.py 的 blocked_* 四连测。)
 
 
 def test_converges_on_text():

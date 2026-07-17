@@ -122,9 +122,9 @@ def main() -> int:
             blob.content_type = "video/mp4"
             blob.upload_from_filename(str(upload_path), timeout=1800)
             cur.execute(
-                "INSERT INTO video_metadata(video_id, title, gcs_uri, duration_sec) "
-                "VALUES(%s,%s,%s,%s) ON CONFLICT(video_id) DO NOTHING",
-                (vid, vid, uri, dur))
+                "INSERT INTO video_metadata(video_id, title, gcs_uri, duration_sec, source) "
+                "VALUES(%s,%s,%s,%s,%s) ON CONFLICT(video_id) DO NOTHING",
+                (vid, vid, uri, dur, "seed"))
             inserted += cur.rowcount
             done += 1
             tag = "  +db" if cur.rowcount else "  (db 已存在)"

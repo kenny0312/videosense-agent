@@ -125,6 +125,8 @@ class VibeQueryRequest(BaseModel):
         None, description="多轮会话 id;省略则开新会话,响应会回传一个 session_id 供下一轮带上")
     pro_video: bool = Field(
         False, description="Pro 视频分析:本请求的 analyze_video 用更强的 pro 模型(更准、更慢)")
+    critic: bool = Field(
+        False, description="复核模式:收口前多一道自检判'满足用户没',不满足自动补一轮(略慢)")
     image: str | None = Field(
         None, description="可选:粘贴的截图,data URL(data:image/png;base64,...)。作多模态输入附在本轮。")
     model: str | None = Field(
@@ -177,6 +179,52 @@ def _parse_image(data_url: str | None) -> "tuple[bytes, str] | None":
 @app.get("/")
 def index():
     return FileResponse(_INDEX_HTML)
+
+
+# ── Loop Console(开发者观测:大脑每步决策/prompt 构成/扇出;同一 Basic 鉴权墙内)──
+_CONSOLE_ADMINS = set(filter(None, os.environ.get("CONSOLE_ADMINS", "").split(",")))
+
+
+def _console_gate(request: Request):
+    """Console 是开发者观测面(能看到【所有用户】的问题/答案)—— 普通产品 key 不该进。
+    fail-closed:开了鉴权(有 _ACCESS_KEYS)就必须在 CONSOLE_ADMINS 名单;本地无鉴权保持全开。"""
+    if _ACCESS_KEYS and getattr(request.state, "app_user", None) not in _CONSOLE_ADMINS:
+        return Response(status_code=403, content="console 仅限 CONSOLE_ADMINS 名单")
+    return None
+
+
+@app.get("/console")
+def console_page(request: Request):
+    denied = _console_gate(request)
+    if denied:
+        return denied
+    import os as _os
+    return FileResponse(_os.path.join(_os.path.dirname(_INDEX_HTML), "console.html"))
+
+
+@app.get("/v1/console/allowed")
+def console_allowed(request: Request):
+    """主页入口按钮的探针:普通用户拿 false(按钮压根不渲染,界面无痕),不走 403。"""
+    return {"allowed": _console_gate(request) is None}
+
+
+@app.get("/v1/console/traces")
+def console_traces(request: Request):
+    denied = _console_gate(request)
+    if denied:
+        return denied
+    from pipeline import loop_console
+    return {"traces": loop_console.list_traces()}
+
+
+@app.get("/v1/console/trace/{tid}")
+def console_trace(tid: str, request: Request):
+    denied = _console_gate(request)
+    if denied:
+        return denied
+    from pipeline import loop_console
+    t = loop_console.get_trace(tid)
+    return t or Response(status_code=404, content="not found")
 
 
 @app.get("/health")
@@ -272,6 +320,14 @@ def list_models(request: Request):
     return {"default": config.LOOP_MODEL, "choices": _allowed_models(owner)}
 
 
+@app.get("/v1/models")
+def list_models(request: Request):
+    """阶段A:本账号可用的大脑模型。前端据此渲染切换菜单(guest 直接看不到锁着的档,
+    而不是点了才 422);走门禁(不在 _OPEN_PATHS),匿名拿不到。"""
+    owner = getattr(request.state, "app_user", "anon")
+    return {"default": config.LOOP_MODEL, "choices": _allowed_models(owner)}
+
+
 @app.post("/v1/video_vibe_query")
 def video_vibe_query(req: VibeQueryRequest, request: Request):
     t0 = time.perf_counter()
@@ -287,7 +343,7 @@ def video_vibe_query(req: VibeQueryRequest, request: Request):
         session = STORE.get_or_create(sid, owner=owner)
         result = run_query(req.query, quiet_trace=True, session=session, owner=owner,
                            pro_video=req.pro_video and not _is_guest(owner),   # guest 也锁 pro 眼
-                           image=_parse_image(req.image), model=model)
+                           image=_parse_image(req.image), model=model, critic=req.critic)
         STORE.save(session, owner=owner)            # 写时机:每请求一次(纯内存模式无操作)
     result["session_id"] = sid                      # 回传,客户端下一轮带上即可续聊
     usage = result.pop("usage", {}) or {}           # token/成本:内部审计用,不回传给前端
@@ -420,7 +476,7 @@ def video_vibe_query_stream(req: VibeQueryRequest, request: Request):
                 result = run_query(req.query, quiet_trace=True, session=session, owner=owner,
                                    on_step=lambda ev: q.put(ev),
                                    pro_video=req.pro_video and not _is_guest(owner),
-                                   image=_parse_image(req.image), model=model)
+                                   image=_parse_image(req.image), model=model, critic=req.critic)
                 STORE.save(session, owner=owner)
             result["session_id"] = sid
             usage = result.get("usage", {}) or {}        # get(非 pop):留在 result 里给前端 context 监控

@@ -83,6 +83,12 @@ LESSONS: list[Lesson] = [
            "ORDER BY COUNT(DISTINCT video_id) DESC LIMIT N 一次排好 —— 别靠脑子回忆或跨轮拼凑手工排序"
            "(数字对了序也会错)。",
            "SQL 排序护栏下沉成代码后 → 退役"),
+    Lesson("L13", "2026-07-08", "eval dualcontrol-enrich-then-retrieve-02 / enrich-grill-22:"
+           "被问「用 X 能语义搜到吗」,没真搜、拿库里 facts 推断出'能搜到'",
+           "用户要求【验证某操作是否生效】(「用 X 能搜到吗」「索引好了没」「现在能找到吗」)时,"
+           "必须【真执行那个操作】(如真调 semantic_search(X))并以其真实结果作答 —— "
+           "禁止从库里数据【推断】代替执行:推断对了也是没验证。",
+           "连续两轮全量评测该类题零违例 → 退役"),
 ]
 
 

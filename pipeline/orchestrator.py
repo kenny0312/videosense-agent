@@ -67,6 +67,7 @@ def run_query(nl: str, *, quiet_trace: bool = False,
               session: "Session | None" = None,
               owner: str = "anon", on_step=None, pro_video: bool = False,
               image: "tuple[bytes, str] | None" = None,
+              critic: bool = False,
               model: "str | None" = None) -> dict:
     usage.reset_usage()                  # 清空本轮 token 累加器(每请求一次)
     # Pro 模式:本请求的 analyze_video 用 pro 模型;否则默认 flash。每请求开头都设(跨请求不串)。
@@ -124,15 +125,18 @@ def run_query(nl: str, *, quiet_trace: bool = False,
         lo = loop_driver.run_query_loop(nl, schema=schema, replay_context=replay_ctx,
                                         sandbox=sandbox, trace=trace, session_id=sid,
                                         on_step=on_step, runtime_facts=rt_facts, owner=owner,
-                                        image=image, model=model)
+                                        image=image, model=model,
+                                        use_critic=(True if critic else None))
         lstep.ok(steps=lo.steps, terminated=lo.terminated)
     except Exception as e:
         lstep.fail(error=repr(e))
         log.warning("loop 抛错(优雅降级为重试提示): %r", e)
         return _result(True, trace=trace, status="ok", answer=_RETRY_MSG,
                        session_id=sid, turn_type=ttype)
-    if not lo.answer:                       # None 或空字符串(安全拦截漏网/未收敛)都兜底，别给用户空白
-        log.warning("loop 未产出答案(%s)→ 重试提示", lo.terminated)
+    if lo.answer is None or not lo.answer.strip():
+        # E2:空串答案也兜住 —— 已识别的安全拦截在 conversation 层换成了体面拒答;
+        # 走到这的空答是"没识别出原因的空生成",按瞬时波动给重试提示,绝不把空卡片交给用户。
+        log.warning("loop 未收敛或空答(%s)→ 重试提示", lo.terminated)
         return _result(True, trace=trace, status="ok", answer=_RETRY_MSG,
                        session_id=sid, turn_type=ttype)
     # 记忆简化:不再登记 catalog/值仓 —— 唯一记忆 = transcript。推进轮号后把这一轮落 transcript

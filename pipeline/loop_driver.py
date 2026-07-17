@@ -12,6 +12,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -129,6 +130,7 @@ class LoopResult:
     ledger: dict[str, ExecResult]
     llm_calls: int
     step_walls: list = field(default_factory=list)   # M4.2:每步墙钟(ms),vs Σtool_ms 量化并行加速
+    turns: list = field(default_factory=list)        # Console:每轮大脑原话 [{step,brain}|{step,nudge}]
 
 
 # ── 纯控制流(注入 conversation + execute,离线可测)──────────────
@@ -142,14 +144,29 @@ def run_loop(user_query: str, conversation, execute: Callable, *,
     trace: list[dict] = []
     seen: dict = {}
     step_walls: list[float] = []
+    turns: list[dict] = []        # 大脑每轮的"原话"(调工具前说的为什么)—— 以前被丢弃,Console 要看
     msg: Any = user_query
     llm_calls = 0
     critic_used = 0
+    empty_retry_used = False
     for step in range(max_steps):
         calls, text = conversation.send(msg)
         llm_calls += 1
+        # 大脑这轮的"原话" = 思考摘要(genai include_thoughts)+ 随调用说的话;以前被丢弃
+        _thoughts = (getattr(conversation, "last_thoughts", "") or "").strip()
         if not calls:                                        # 收敛:纯文本即答案
             answer = text or ""
+            if _thoughts:                                    # 收敛轮的思考(为什么现在答)也入流
+                turns.append({"step": step, "brain": _thoughts})
+            # 空生成兜底:工具都跑了、数据在手,最后一次生成却返回空(服务抖动;
+            # 2026-07-13 全套件实测 8 例"回归"里 7 例是此病)—— 不许把空串当最终
+            # 答案交付,点一下让它基于已有工具结果收口;只救一次防空转。线上用户同受益。
+            if not answer.strip() and trace and not empty_retry_used:
+                empty_retry_used = True
+                msg = ("[系统] 上一条生成为空。请基于已完成的工具结果直接给出最终回答;"
+                       "需要展示视频/表格就先调用对应的 show_ 工具。")
+                turns.append({"step": step, "nudge": msg})
+                continue
             # 自检 B(设计 self-check-critic.md):收口前插一个 critic 判"满足用户没";没满足且有
             # 下一步 → 把意见喂回再来一轮(至多 max_critic 次,防空转)。critic 抛错 → 视为满足(fail-open)。
             if critic is not None and critic_used < max_critic:
@@ -161,11 +178,16 @@ def run_loop(user_query: str, conversation, execute: Callable, *,
                     critic_used += 1
                     msg = (f"[自检] 你刚才的回答可能还没满足用户:{hint}。"
                            "请据此继续把它做到位;如果确实做不到,就诚实说清楚。")
+                    turns.append({"step": step, "nudge": msg})
                     continue
             if on_step:                     # SSE 线上事件同样过清洗(review 修:别让未清洗文本上网线)
                 on_step({"type": "answer",
                          "text": scrub_ids(answer, (er.value for er in ledger.values()))[0]})
-            return LoopResult(answer, step, "text", trace, ledger, llm_calls, step_walls)
+            return LoopResult(answer, step, "text", trace, ledger, llm_calls, step_walls, turns)
+
+        # 有工具调用 → 先把大脑这轮的"原话"(思考摘要 + 它随调用说的话)接住
+        turns.append({"step": step,
+                      "brain": "\n".join(x for x in (_thoughts, (text or "").strip()) if x)})
 
         # ① 准备(主线程):算 cid/sig/upstream;重复失败 → 即时终止
         prepared = []
@@ -175,7 +197,7 @@ def run_loop(user_query: str, conversation, execute: Callable, *,
                    json.dumps(call.inputs, sort_keys=True, ensure_ascii=False, default=str),
                    tuple(call.uses))
             if seen.get(sig, 0) >= repeat_limit:             # 重复失败 → 强制终止
-                return LoopResult(None, step, "repeat", trace, ledger, llm_calls, step_walls)
+                return LoopResult(None, step, "repeat", trace, ledger, llm_calls, step_walls, turns)
             upstream = {u: ledger[u].value for u in call.uses if u in ledger}
             prepared.append((cid, call, sig, upstream))
 
@@ -218,7 +240,7 @@ def run_loop(user_query: str, conversation, execute: Callable, *,
         if on_step:                                          # M6b:每步事件(供 SSE 流式)
             on_step({"type": "step", "step": step, "tools": step_tools})
         msg = responses
-    return LoopResult(None, max_steps, "max_steps", trace, ledger, llm_calls, step_walls)
+    return LoopResult(None, max_steps, "max_steps", trace, ledger, llm_calls, step_walls, turns)
 
 
 # ── 瞬时错误重试(429/503/超时等)——一次抖动不该让整轮硬崩成 error 卡片 ──
@@ -245,42 +267,6 @@ def _send_with_retry(send_fn, attempts: int = 3):
                 raise
             log.warning("loop send 瞬时错误,退避重试 %d/%d: %r", i + 1, attempts - 1, e)
             time.sleep(0.8 * (2 ** i))               # 0.8s, 1.6s
-
-
-# ── 空响应兜底 ────────────────────────────────
-def _blocked_fallback(reason, block) -> str:
-    """模型没吐任何内容(安全拦截 / 截断 / 背诵过滤等)时，给用户一句像样的话，
-    别返回一片空白。tag 取自 finish_reason 或 prompt_feedback.block_reason。"""
-    tag = str(block if block is not None else (reason if reason is not None else "")).upper()
-    if "SAFETY" in tag or "BLOCK" in tag or "PROHIBIT" in tag:
-        return "这个请求可能触发了内容安全限制，我这边没法处理。换个问法、或问视频库相关的问题，我再帮你。"
-    if "RECITATION" in tag:
-        return "抱歉，这条回答我没法给出。换个角度再问一次试试？"
-    if "MAX_TOKEN" in tag:
-        return "这次内容太长被截断了，麻烦把问题拆小一点再问我。"
-    return "抱歉，我这次没能生成回答。请再试一次，或者换个问法。"
-
-
-def _extract(resp):
-    """从 genai/vertex 响应里抽 (calls, text)。响应为空(安全拦截等)时不返回空白，
-    而是回一句兜底话——根因在 Gemini 偶发对正常请求误拦，别让用户吃一片空白。"""
-    cand = resp.candidates[0] if getattr(resp, "candidates", None) else None
-    parts = (cand.content.parts or []) if (cand and getattr(cand, "content", None)) else []
-    calls, texts = [], []
-    for p in parts:
-        fc = getattr(p, "function_call", None)
-        if fc and fc.name:
-            args = _to_py(dict(fc.args))
-            uses = [args.pop(h) for h in UPSTREAM_HANDLES.get(fc.name, []) if h in args]
-            calls.append(Call(fc.name, args, uses))
-        elif getattr(p, "text", ""):
-            texts.append(p.text)
-    if not calls and not texts:                # 整个响应是空的 = 异常，给兜底话而不是空白
-        reason = getattr(cand, "finish_reason", None) if cand else None
-        fb = getattr(resp, "prompt_feedback", None)
-        block = getattr(fb, "block_reason", None) if fb else None
-        return [], _blocked_fallback(reason, block)
-    return calls, ("".join(texts) if texts else None)
 
 
 # ── 真实适配器(live;M2 spike 已验)──────────────
@@ -315,7 +301,19 @@ class GeminiConversation:
             usage.add_usage(resp, self._model_name)        # loop 的 token 也记进 usage(审计 + 前端监控,之前漏了)
         except Exception:
             pass
-        return _extract(resp)                              # 空响应给兜底话，不返回空白
+        calls, texts = [], []
+        for p in resp.candidates[0].content.parts:
+            fc = getattr(p, "function_call", None)
+            if fc and fc.name:
+                args = _to_py(dict(fc.args))
+                uses = [args.pop(h) for h in UPSTREAM_HANDLES.get(fc.name, []) if h in args]
+                calls.append(Call(fc.name, args, uses))
+            elif getattr(p, "text", ""):
+                texts.append(p.text)
+        text = "".join(texts) if texts else None
+        if not calls and not (text or "").strip():
+            text = _blocked_text(resp) or text             # E2:安全拦截 → 体面拒答,不交空卷
+        return calls, text
 
 
 # ── U5:google-genai 后端(gemini-3.x 起【只】在新 SDK + global 端点可用;spike 已验函数调用往返)──
@@ -327,12 +325,19 @@ class GenAIConversation:
         from google.genai import types
         from pipeline.genai_client import get_client
         self._types = types
+        # 思考摘要(Console 决策对话流的"大脑原话"来源):模型真实的内部推理摘要,
+        # 不是让它表演一句理由 —— 零 prompt 改动。LOOP_THOUGHTS=0 一键回滚。
+        # budget=-1 = 动态思考(与不设时的默认行为一致);实测光 include_thoughts 不吐摘要,必须显式给 budget。
+        think = (types.ThinkingConfig(include_thoughts=True, thinking_budget=-1)
+                 if os.environ.get("LOOP_THOUGHTS", "1") == "1" else None)
         cfg = types.GenerateContentConfig(
             temperature=0.0, system_instruction=system,
-            tools=[types.Tool(function_declarations=declarations)])
+            tools=[types.Tool(function_declarations=declarations)],
+            thinking_config=think)
         self._chat = get_client().chats.create(model=model_name, config=cfg)
         self._model_name = model_name
         self.tokens = 0
+        self.last_thoughts = ""              # 最近一轮的思考摘要(send() 每轮覆写)
         self._pending_image = image          # (bytes, mime):粘贴的截图,首轮附在用户消息里
 
     def send(self, msg):
@@ -352,7 +357,48 @@ class GenAIConversation:
             usage.add_usage(resp, self._model_name)
         except Exception:
             pass
-        return _extract(resp)                              # 空响应给兜底话，不返回空白
+        cand = resp.candidates[0] if resp.candidates else None
+        parts = (cand.content.parts or []) if (cand and cand.content) else []
+        calls, texts, thoughts = [], [], []
+        for p in parts:
+            fc = getattr(p, "function_call", None)
+            if fc and fc.name:
+                args = _to_py(dict(fc.args))
+                uses = [args.pop(h) for h in UPSTREAM_HANDLES.get(fc.name, []) if h in args]
+                calls.append(Call(fc.name, args, uses))
+            elif getattr(p, "text", ""):
+                # 思考摘要与正文分流:摘要只进 Console 的"大脑原话",绝不混进最终答案
+                (thoughts if getattr(p, "thought", False) else texts).append(p.text)
+        self.last_thoughts = "\n".join(thoughts)
+        text = "".join(texts) if texts else None
+        if not calls and not (text or "").strip():
+            text = _blocked_text(resp) or text             # E2:安全拦截 → 体面拒答,不交空卷
+        return calls, text
+
+
+# E2(eval selfknow-safety-porn-search-26 暴露):模型被安全策略拦掉生成 → 候选无 parts /
+# finish_reason=SAFETY → 旧逻辑把 None/空串当"纯文本收口"交卷,用户看到空答案。
+# 这里识别"被拦"并换成一句体面拒答;识别不出的空答案由 orchestrator 的空答网兜住(重试提示)。
+_BLOCKED_REFUSAL = ("这个请求我无法协助:本系统不提供此类内容的检索或展示。"
+                    "换一个与视频库相关的问题吧。")
+
+
+def _blocked_text(resp) -> "str | None":
+    """resp 被安全策略拦截(生成为空)→ 返回体面拒答;否则 None。全程 fail-open。"""
+    try:
+        parts = []
+        cand = resp.candidates[0] if getattr(resp, "candidates", None) else None
+        if cand is not None:
+            parts.append(str(getattr(cand, "finish_reason", "") or ""))
+        pf = getattr(resp, "prompt_feedback", None)
+        if pf is not None:
+            parts.append(str(getattr(pf, "block_reason", "") or ""))
+        sig = " ".join(parts).upper()
+        if any(k in sig for k in ("SAFETY", "BLOCK", "PROHIBITED", "SPII")):
+            return _BLOCKED_REFUSAL
+    except Exception:
+        pass
+    return None
 
 
 class OpenAICompatConversation:
@@ -423,7 +469,7 @@ class OpenAICompatConversation:
             usage.add_usage(resp_shim, self._model_name)
         except Exception:
             pass
-        # (calls, text) 抽取:与 _extract 同一契约(uses 从 inputs 里 pop 出句柄)
+        # (calls, text) 抽取:与 Gemini 两适配器同一契约(uses 从 inputs 里 pop 出句柄)
         calls, self._last_tool_ids = [], []
         for tc in (m.get("tool_calls") or []):
             fn = tc.get("function") or {}
@@ -438,7 +484,10 @@ class OpenAICompatConversation:
             self._last_tool_ids.append(tc.get("id") or f"call_{len(self._last_tool_ids)}")
         text = m.get("content") or None
         if not calls and not (text and text.strip()):
-            return [], _blocked_fallback(choice.get("finish_reason"), None)
+            # E2 语义对齐:安全拦截 → 体面拒答;其余空生成 → None,上游按瞬时波动给重试提示
+            if "content_filter" in str(choice.get("finish_reason") or "").lower():
+                return [], _BLOCKED_REFUSAL
+            return [], None
         return calls, text
 
 
@@ -548,6 +597,7 @@ class LoopOutcome:
     trace: list                              # [{cid,tool,inputs,uses,ok,ms,cache_hit}] —— 供 M5 记 transcript
     step_walls: list = field(default_factory=list)   # M4.2:每步墙钟(ms)→ loop_metrics 算并行加速
     id_scrub_hits: int = 0                   # L1:answer_guard 清洗命中数(退役闭环的观测量)
+    turns: list = field(default_factory=list)        # Console:每轮大脑原话(决策对话流)
 
 
 # ── 程序记忆三层(设计 prompt-constitution-lessons.md):
@@ -627,12 +677,27 @@ _DATA_FACTS = (
 )
 
 # 拼装(模块级一次,字节稳定 —— L3 context caching 的前提)
-_LOOP_SYSTEM = (
-    _CONSTITUTION
-    + "\n# 经验教训(每条都有来历;部分有代码兜底,但你第一时间做对,答案才自然)\n"
-    + lessons.render()
-    + "\n\n# 关键数据说明\n" + _DATA_FACTS
-)
+def _build_loop_system() -> str:
+    """拼静态前缀(宪法+教训+数据事实)。生产路径只在 import 时调一次 → byte-stable,
+    L3 缓存前提不变;GD-0 抽成函数是给 refresh_loop_system 用的(GEPA 候选评估)。"""
+    return (
+        _CONSTITUTION
+        + "\n# 经验教训(每条都有来历;部分有代码兜底,但你第一时间做对,答案才自然)\n"
+        + lessons.render()
+        + "\n\n# 关键数据说明\n" + _DATA_FACTS
+    )
+
+
+_LOOP_SYSTEM = _build_loop_system()
+
+
+def refresh_loop_system() -> None:
+    """GD-0(GEPA 候选评估用):同进程内改了 lessons.LESSONS / 声明后,重拼静态前缀。
+    生产【绝不调用】—— _LOOP_SYSTEM 在 import 时冻结才有 byte-stable 缓存;本函数只给
+    评测/进化循环在两次候选评估之间刷新 prompt(免开新进程)。需配合 importlib.reload(lessons)
+    或直接改 lessons.LESSONS 后调用。"""
+    global _LOOP_SYSTEM
+    _LOOP_SYSTEM = _build_loop_system()
 
 
 def _detect_lang(nl: "str | None") -> str:
@@ -699,19 +764,24 @@ def run_query_loop(nl: str, *, schema: dict, replay_context: "str | None", sandb
                    session_id: "str | None", on_step=None,
                    runtime_facts: "str | None" = None, owner: str = "anon",
                    image: "tuple[bytes, str] | None" = None,
+                   use_critic: "bool | None" = None,
                    model: "str | None" = None) -> LoopOutcome:
     """orchestrator 的 loop 入口:建会话 + 执行器 → run_loop → 收产物(纯 handle,无合成 DAG)。
     replay_context(M5)= 从 transcript 回放出的多轮上下文(取代旧 recipe 块)。
     on_step(M6b)= 每步回调,供 SSE 流式。runtime_facts(U3)= 运行时状态注入节(自我认知)。
     owner(L2)= 认证身份,供 update_memory 等按 owner 作用域的工具。
     image(粘贴截图,bytes+mime)= 附在首轮用户消息作多模态输入。
+    use_critic = 请求级 critic 模式(None=跟随 USE_SELF_CHECK_CRITIC 全局默认;True/False=本请求强制)。
     model(阶段A)= 本请求的大脑模型;None = config.LOOP_MODEL。白名单校验在 API 层,这里不重复。
     注:子代理(subagents)仍走 SUBAGENT_MODEL/LOOP_MODEL 默认,不随本参数切换。"""
     conv = make_conversation(model or config.LOOP_MODEL, loop_function_declarations(),
                              _loop_system(schema, replay_context, runtime_facts), image=image)
     execute = _make_executor(sandbox, trace, schema, session_id, owner=owner)
-    critic = make_self_check_critic() if config.USE_SELF_CHECK_CRITIC else None   # 自检 B:opt-in
+    _critic_on = config.USE_SELF_CHECK_CRITIC if use_critic is None else use_critic
+    critic = make_self_check_critic() if _critic_on else None   # 自检 B:请求级模式(默认跟全局)
+    _t0 = time.perf_counter()
     r = run_loop(nl, conv, execute, on_step=on_step, critic=critic)
+    _total_ms = (time.perf_counter() - _t0) * 1000
     # L1 机械兜底:答案里的裸 id 清洗(能映射「第N个」就换,不能就删);命中数进指标 →
     # 长期为 0 说明模型已自觉,教训 L01 可退役(prompt-constitution-lessons.md §5 闭环)。
     answer, scrub_hits = r.answer, 0
@@ -733,6 +803,18 @@ def run_query_loop(nl: str, *, schema: dict, replay_context: "str | None", sandb
     lo = LoopOutcome(answer, r.steps, r.terminated, final_tool, final_value,
                      preview_value, r.ledger, r.trace, r.step_walls)
     lo.id_scrub_hits = scrub_hits
+    lo.turns = r.turns
+    # Loop Console(旁路观测,fail-open):记录这一轮的决策全息供 /console 查看
+    try:
+        from pipeline import loop_console
+        loop_console.record(query=nl, owner=owner, lo=lo, ledger=r.ledger,
+                            runtime_facts=runtime_facts,
+                            replay_chars=len(replay_context or ""),
+                            system_chars=len(_LOOP_SYSTEM),
+                            schema_chars=len(json.dumps(schema, ensure_ascii=False)),
+                            total_ms=_total_ms)
+    except Exception:
+        pass
     return lo
 
 
