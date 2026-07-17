@@ -287,6 +287,8 @@
         <div class="cfoot">
           <button id="proPill" class="propill" type="button" aria-pressed="false"
                   title="Pro video analysis: watch-the-content questions use a stronger pro model (more accurate, slower). DB queries and counts are unaffected."><i class="ti ti-sparkles" aria-hidden="true"></i><span id="proLbl">Flash</span></button>
+          <button id="criticPill" class="propill" type="button" aria-pressed="false"
+                  title="Self-check: before finalizing, an extra reviewer pass checks the answer against your question and retries once if unsatisfied (slightly slower)."><i class="ti ti-checkbox" aria-hidden="true"></i><span id="criticLbl">Check</span></button>
           <span class="cmon" title="Session cost so far ($) and cumulative tokens as a share of the context window (≈1M)">
             <span class="costtip" id="costtip"></span>
             <span class="cm-txt" id="cmtxt"></span>
@@ -953,7 +955,7 @@ function deleteChat(id, ev){
 // SSE 流式消费(M6b):POST → 读 ReadableStream → 逐条 data: 事件;step/answer 给进度,result 给最终。
 // dag 路径不发 step 事件,只收 result —— 自动降级为"转圈到出结果"。
 async function streamQuery(q, sentSid, onEvent, image, signal){
-  const body={query:q, session_id:sentSid, pro_video:proOn};
+  const body={query:q, session_id:sentSid, pro_video:proOn, critic:criticOn};
   if(image) body.image=image;
   const r=await fetch('/v1/video_vibe_query/stream',{method:'POST',
     headers:{'Content-Type':'application/json'}, body:JSON.stringify(body), signal});
@@ -1084,6 +1086,9 @@ $('#q').addEventListener('paste',e=>{
 let proOn=false;
 $('#proPill').onclick=()=>{ proOn=!proOn; const p=$('#proPill'); p.classList.toggle('on',proOn);
   p.setAttribute('aria-pressed',proOn?'true':'false'); $('#proLbl').textContent=proOn?'Pro':'Flash'; };
+let criticOn=false;   // 复核模式(判决:默认无收益,故默认关;想要双保险的问题手动开)
+$('#criticPill').onclick=()=>{ criticOn=!criticOn; const p=$('#criticPill'); p.classList.toggle('on',criticOn);
+  p.setAttribute('aria-pressed',criticOn?'true':'false'); };
 
 // M5:上传自己的视频 → 拿 PUT 签名 URL 直传 GCS → 把临时 video_id 填进输入框,可直接提问
 $('#upFile').onchange=async(e)=>{

@@ -123,6 +123,8 @@ class VibeQueryRequest(BaseModel):
         None, description="多轮会话 id;省略则开新会话,响应会回传一个 session_id 供下一轮带上")
     pro_video: bool = Field(
         False, description="Pro 视频分析:本请求的 analyze_video 用更强的 pro 模型(更准、更慢)")
+    critic: bool = Field(
+        False, description="复核模式:收口前多一道自检判'满足用户没',不满足自动补一轮(略慢)")
     image: str | None = Field(
         None, description="可选:粘贴的截图,data URL(data:image/png;base64,...)。作多模态输入附在本轮。")
 
@@ -278,7 +280,8 @@ def video_vibe_query(req: VibeQueryRequest, request: Request):
     with _session_lock(f"{owner}:{sid}"):           # 同会话 read-modify-write 串行,防丢轮
         session = STORE.get_or_create(sid, owner=owner)
         result = run_query(req.query, quiet_trace=True, session=session, owner=owner,
-                           pro_video=req.pro_video, image=_parse_image(req.image))
+                           pro_video=req.pro_video, image=_parse_image(req.image),
+                           critic=req.critic)
         STORE.save(session, owner=owner)            # 写时机:每请求一次(纯内存模式无操作)
     result["session_id"] = sid                      # 回传,客户端下一轮带上即可续聊
     usage = result.pop("usage", {}) or {}           # token/成本:内部审计用,不回传给前端
@@ -403,7 +406,7 @@ def video_vibe_query_stream(req: VibeQueryRequest, request: Request):
             with _session_lock(f"{owner}:{sid}"):
                 session = STORE.get_or_create(sid, owner=owner)
                 result = run_query(req.query, quiet_trace=True, session=session, owner=owner,
-                                   on_step=lambda ev: q.put(ev), pro_video=req.pro_video,
+                                   on_step=lambda ev: q.put(ev), pro_video=req.pro_video, critic=req.critic,
                                    image=_parse_image(req.image))
                 STORE.save(session, owner=owner)
             result["session_id"] = sid
