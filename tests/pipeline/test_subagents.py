@@ -211,7 +211,7 @@ def test_end_to_end_dispatch_and_preview(monkeypatch):
     """真接线(除 LLM 外):execute_node 分发 → run_fanout;父 execute 闭包 → 大格预览不砍子 agent 结论。"""
     from pipeline import loop_driver, node_executor
     from pipeline.dag_schema import Node
-    from pipeline.trace import Trace
+    from pipeline.agentops.trace import Trace
     monkeypatch.setattr(config, "USE_SUBAGENTS", True)
     _stub_loop(monkeypatch)
     long_ans = "X" * 500                                 # >80,用来验预览没被砍

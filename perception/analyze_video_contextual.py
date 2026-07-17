@@ -139,7 +139,7 @@ def _gemini_generate(gcs_uri: str, prompt: str, time_range=None) -> str:
     global 端点)。M4.5 的硬裁剪不再走 _raw_part proto hack —— genai 的 VideoMetadata 原生支持
     start/end offset(行为等价,真视频回归验过 token 数)。"""
     from google.genai import types
-    from pipeline import usage
+    from pipeline.agentops import usage
     from pipeline.genai_client import get_client
     name = MODEL_OVERRIDE.get() or PERCEPTION_MODEL   # 本请求选了 Pro 就用 pro,否则默认 flash
     low = gcs_uri.lower()                              # mime 跟扩展名走(上传的 .mov/.webm 别被当 mp4)

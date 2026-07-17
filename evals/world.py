@@ -238,7 +238,7 @@ class LiveWorld:
 
     def run(self, user_query, max_steps: int = 16):
         from pipeline import config, loop_driver, mcp_client
-        from pipeline.trace import Trace
+        from pipeline.agentops.trace import Trace
         from sandbox.client import SandboxClient
 
         schema = mcp_client.get_schema()

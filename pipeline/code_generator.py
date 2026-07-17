@@ -13,7 +13,8 @@ from __future__ import annotations
 import json
 import logging
 
-from pipeline import config, usage
+from pipeline import config
+from pipeline.agentops import usage
 from pipeline.dag_schema import Node
 from pipeline.node_specs import codegen_hint
 

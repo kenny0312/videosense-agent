@@ -22,7 +22,7 @@ from pipeline.code_generator import CodeGenerator
 from pipeline.sql_fixer import SqlFixer
 from pipeline.dag_schema import Node
 from pipeline.node_specs import needs_sandbox
-from pipeline.trace import Trace
+from pipeline.agentops.trace import Trace
 from sandbox.client import SandboxClient
 
 log = logging.getLogger("pipeline.node_executor")
@@ -397,7 +397,8 @@ def _run_spawn_agents(node: Node, sandbox, trace, *, schema: dict | None = None,
 def _run_web_search(node: Node) -> NodeResult:
     """U6:联网搜索(Gemini Google-Search grounding,genai@global)。
     注入防护:system 指令明确网页内容是 DATA 不是指令;返回 {answer, sources},由大脑收口引用。"""
-    from pipeline import config as _cfg, usage
+    from pipeline import config as _cfg
+    from pipeline.agentops import usage
     if not _cfg.USE_WEB_SEARCH:
         raise ValueError("web_search 未开启(USE_WEB_SEARCH=0)")
     query = str(node.inputs.get("query") or "").strip()

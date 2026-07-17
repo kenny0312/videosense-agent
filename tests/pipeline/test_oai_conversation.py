@@ -7,7 +7,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
-from pipeline import config, usage
+from pipeline import config
+from pipeline.agentops import usage
 from pipeline.loop_driver import OpenAICompatConversation, make_conversation
 
 

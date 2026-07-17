@@ -48,7 +48,7 @@ class DualControlSession:
 
     def run(self):
         from pipeline import config, loop_driver, mcp_client
-        from pipeline.trace import Trace
+        from pipeline.agentops.trace import Trace
         from sandbox.client import SandboxClient
 
         backend = EvalBackend(self.owner).install()

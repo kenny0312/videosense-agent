@@ -299,7 +299,7 @@ class GeminiConversation:
 
     def send(self, msg):
         from vertexai.generative_models import Part
-        from pipeline import usage
+        from pipeline.agentops import usage
         if isinstance(msg, str):
             payload = msg
             if self._pending_image is not None:   # 首次发送:图作多模态 part 附在文本前
@@ -336,7 +336,7 @@ class GenAIConversation:
         self._pending_image = image          # (bytes, mime):粘贴的截图,首轮附在用户消息里
 
     def send(self, msg):
-        from pipeline import usage
+        from pipeline.agentops import usage
         t = self._types
         if isinstance(msg, str):
             payload: Any = msg
@@ -383,7 +383,7 @@ class OpenAICompatConversation:
 
     def send(self, msg):
         import base64
-        from pipeline import usage
+        from pipeline.agentops import usage
         if isinstance(msg, str):
             content: Any = msg
             if self._pending_image is not None:   # 首次发送:图作多模态 part 附在文本前
@@ -470,7 +470,7 @@ def make_self_check_critic():
             "判 satisfied=true:用户只问有无/数量/简单事实且已答到;或助手已诚实说明做不到/超范围;或要求已完整达成。"
             "【别强求、别为难】。只有【明显答偏、漏了用户明确要的、或半途而废】才 false。")
         try:
-            from pipeline import usage
+            from pipeline.agentops import usage
             import json as _json
             resp = model.generate_content(
                 prompt, generation_config={"temperature": 0.0, "max_output_tokens": 256,

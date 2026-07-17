@@ -224,8 +224,9 @@ def test_parallel_serial_fallback_when_cap_is_one(monkeypatch):
 def test_parallel_quota_exact_and_model_and_usage(monkeypatch):
     """真 _make_executor:6 个并发 analyze、配额=3 → 恰好 3 个真分析(不漏/不超);
     每个 worker 都读到主线程设的 Pro(没降级);3 次 usage 都合回主 context(没丢)。"""
-    from pipeline import config, analyze_cache, usage, mcp_client as mc
-    from pipeline.trace import Trace
+    from pipeline import config, analyze_cache, mcp_client as mc
+    from pipeline.agentops import usage
+    from pipeline.agentops.trace import Trace
     import perception.analyze_video_contextual as avc
 
     monkeypatch.setattr(config, "MAX_VIDEOS_PER_REQUEST", 3)
@@ -272,7 +273,7 @@ def test_parallel_quota_exact_and_model_and_usage(monkeypatch):
 def test_cache_hit_does_not_consume_quota(monkeypatch):
     """配额=1,同一视频分析两次:第一次真调(吃掉配额),第二次命中缓存=免费,不该被上限挡。"""
     from pipeline import config, analyze_cache, mcp_client as mc
-    from pipeline.trace import Trace
+    from pipeline.agentops.trace import Trace
     import perception.analyze_video_contextual as avc
 
     monkeypatch.setattr(config, "MAX_VIDEOS_PER_REQUEST", 1)
@@ -444,7 +445,7 @@ def test_make_conversation_backend_choice(monkeypatch):
 
 
 def test_price_table_covers_35flash():
-    from pipeline import usage as u
+    from pipeline.agentops import usage as u
     s = u.summarize({"gemini-3.5-flash": {"in": 1_000_000, "out": 100_000,
                                           "total": 1_100_000, "calls": 2}})
     assert abs(s["cost_usd"] - (1.50 + 0.90)) < 1e-9      # $1.5/M in + $9/M out
@@ -453,7 +454,7 @@ def test_price_table_covers_35flash():
 
 def test_cached_tokens_discounted():
     """L3:命中隐式缓存的输入按折扣价计;cached ⊂ in,防负数。"""
-    from pipeline import usage as u
+    from pipeline.agentops import usage as u
     s = u.summarize({"gemini-3.5-flash": {"in": 1_000_000, "out": 0, "total": 1_000_000,
                                           "calls": 1, "cached": 600_000}})
     expect = 0.4 * 1.50 + 0.6 * 0.15                      # 40% 全价 + 60% 缓存价

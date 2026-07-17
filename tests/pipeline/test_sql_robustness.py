@@ -18,7 +18,7 @@ except (AttributeError, OSError):
 
 import pipeline.node_executor as ne
 from pipeline.dag_schema import DAG, Node
-from pipeline.trace import Trace
+from pipeline.agentops.trace import Trace
 from pipeline.sql_validate import validate_sql_columns
 
 SCHEMA = {
