@@ -340,6 +340,7 @@ document.querySelector('meta[name="theme-color"]').content='#f4f6f9';}}catch(e){
               <button type="button" class="mopt" data-m="gemini-3.5-flash" role="menuitemradio"><i class="ti ti-bolt" aria-hidden="true"></i><span>Gemini 3.5 Flash<div class="sub">default · fast &amp; strong agentic</div></span><i class="ti ti-check mck" aria-hidden="true"></i></button>
               <button type="button" class="mopt" data-m="gemini-2.5-flash" role="menuitemradio"><i class="ti ti-feather" aria-hidden="true"></i><span>Gemini 2.5 Flash<div class="sub">cheapest · lighter reasoning</div></span><i class="ti ti-check mck" aria-hidden="true"></i></button>
               <button type="button" class="mopt" data-m="gemini-2.5-pro" role="menuitemradio"><i class="ti ti-diamond" aria-hidden="true"></i><span>Gemini 2.5 Pro<div class="sub">deepest reasoning · slower</div></span><i class="ti ti-check mck" aria-hidden="true"></i></button>
+              <button type="button" class="mopt" data-m="deepseek-v3.1" role="menuitemradio"><i class="ti ti-fish" aria-hidden="true"></i><span>DeepSeek V3.1<div class="sub">open model · experimental</div></span><i class="ti ti-check mck" aria-hidden="true"></i></button>
               <div class="msep" role="separator"></div>
               <button type="button" id="proVideoOpt" role="menuitemcheckbox"><i class="ti ti-sparkles" aria-hidden="true"></i><span>Pro video analysis<div class="sub">watch-the-content questions use the pro eyes</div></span><i class="ti ti-check mck" id="proCk" aria-hidden="true" style="visibility:hidden"></i></button>
             </div>
@@ -1170,7 +1171,7 @@ $('#q').addEventListener('paste',e=>{
 
 // ── 档位开关(Flash / Pro)+ 本会话累计监控(成本 $ + 累计 token 占窗口环)──
 // ── 阶段A:CC 式大脑模型切换 + Pro 视频眼开关(同一菜单;换脑不换眼)──
-const MODELS={'gemini-3.5-flash':'3.5 Flash','gemini-2.5-flash':'2.5 Flash','gemini-2.5-pro':'2.5 Pro'};
+const MODELS={'gemini-3.5-flash':'3.5 Flash','gemini-2.5-flash':'2.5 Flash','gemini-2.5-pro':'2.5 Pro','deepseek-v3.1':'DeepSeek V3.1'};
 const LS_MODEL='vs_model';
 const hasModel=(m)=>Object.prototype.hasOwnProperty.call(MODELS,m);
 let brainModel=(()=>{ try{ const m=localStorage.getItem(LS_MODEL); if(m&&hasModel(m)) return m; }catch(e){} return 'gemini-3.5-flash'; })();

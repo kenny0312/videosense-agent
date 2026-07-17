@@ -408,19 +408,25 @@ class OpenAICompatConversation:
     tool_call_id:loop 的 (name, result) 元组不带 id,按【顺序】和上一轮 assistant 的
     tool_calls 对位(prepared 顺序 = 模型吐出顺序,loop_driver 里从未重排)。"""
     def __init__(self, model_name: str, declarations: list[dict], system: str,
-                 image: "tuple[bytes, str] | None" = None):
+                 image: "tuple[bytes, str] | None" = None,
+                 base_url: "str | None" = None, token_provider=None):
         self._model_name = model_name
         self._tools = [{"type": "function", "function": d} for d in declarations]
         self._messages: list[dict] = [{"role": "system", "content": system}]
         self._pending_image = image
         self._last_tool_ids: list[str] = []
         self.tokens = 0
+        # 端点与鉴权可注入(Vertex MaaS 用):默认 = 阿里 DashScope + 固定 key;
+        # token_provider = 每次调用现取的动态凭证(ADC 短期 token,过期自动刷新)。
+        self._base_url = base_url or config.OAI_COMPAT_BASE_URL
+        self._token_provider = token_provider
 
     def _post(self, payload: dict) -> dict:
         import requests
-        r = requests.post(config.OAI_COMPAT_BASE_URL.rstrip("/") + "/chat/completions",
+        token = self._token_provider() if self._token_provider else config.OAI_COMPAT_API_KEY
+        r = requests.post(self._base_url.rstrip("/") + "/chat/completions",
                           json=payload, timeout=180,
-                          headers={"Authorization": "Bearer " + config.OAI_COMPAT_API_KEY})
+                          headers={"Authorization": "Bearer " + token})
         if r.status_code >= 400:
             e = RuntimeError(f"oai-compat HTTP {r.status_code}: {r.text[:200]}")
             e.response = r                     # 给 _is_transient 嗅 status_code(429/5xx 重试)
@@ -491,17 +497,48 @@ class OpenAICompatConversation:
         return calls, text
 
 
+_ADC_CREDS = {"c": None}          # Vertex MaaS 的 ADC 凭证缓存(token 过期时惰性刷新)
+
+
+def _vertex_access_token() -> str:
+    """Vertex MaaS 鉴权:用 ADC 换短期 access token(生产=Cloud Run SA,本地=gcloud 登录身份)。
+    凭证对象进程内缓存,requests 前检查有效性,过期自动 refresh —— 不需要任何 API key。"""
+    import google.auth
+    import google.auth.transport.requests
+    creds = _ADC_CREDS["c"]
+    if creds is None:
+        creds, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+        _ADC_CREDS["c"] = creds
+    if not creds.valid:
+        creds.refresh(google.auth.transport.requests.Request())
+    return creds.token
+
+
+def _vertex_maas_base_url() -> str:
+    loc = config.VERTEX_MAAS_LOCATION
+    host = "aiplatform.googleapis.com" if loc == "global" else f"{loc}-aiplatform.googleapis.com"
+    return (f"https://{host}/v1/projects/{config.GCP_PROJECT}"
+            f"/locations/{loc}/endpoints/openapi")
+
+
 def make_conversation(model_name: str, declarations: list[dict], system: str,
                       image: "tuple[bytes, str] | None" = None):
     """按模型选后端:gemini-1.x/2.x → 旧 vertexai SDK(不动);gemini 其余(3.x 起)→
-    google-genai;非 gemini(qwen 等)→ OpenAI 兼容端点(阶段B,需 OAI_COMPAT_API_KEY)。
+    google-genai;VERTEX_MAAS_MODELS 里的别名(deepseek-v3.1 等)→ Vertex 托管开源模型
+    (OpenAI 兼容端点 + ADC token,记账进 GCP_PROJECT 吃 credit);其余非 gemini(qwen 等)
+    → 阿里/自托管 OpenAI 兼容端点(阶段B,需 OAI_COMPAT_API_KEY)。
     回滚 = LOOP_MODEL 环境变量退回 gemini-2.5-flash,自动回到旧路径,零代码改动。
-    image(粘贴截图)三条路径都直通。"""
+    image(粘贴截图)各路径都直通。"""
     n = model_name or ""
     if n.startswith(("gemini-1", "gemini-2")):
         return GeminiConversation(model_name, declarations, system, image=image)
     if n.startswith("gemini"):
         return GenAIConversation(model_name, declarations, system, image=image)
+    maas = config.VERTEX_MAAS_MODELS.get(n)
+    if maas:                                   # 阶段B+:Vertex MaaS(publisher 全名替换别名)
+        return OpenAICompatConversation(maas, declarations, system, image=image,
+                                        base_url=_vertex_maas_base_url(),
+                                        token_provider=_vertex_access_token)
     return OpenAICompatConversation(model_name, declarations, system, image=image)
 
 
