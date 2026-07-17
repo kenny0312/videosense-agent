@@ -20,6 +20,7 @@ class _FakeOAI(BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         type(self).requests_seen.append(body)
+        type(self).last_headers = dict(self.headers)   # Vertex MaaS 测试要验 Authorization
         resp = type(self).scripts[min(len(type(self).requests_seen) - 1, len(type(self).scripts) - 1)]
         raw = json.dumps(resp).encode()
         self.send_response(200)
@@ -133,5 +134,33 @@ def test_bad_args_json_tolerated(monkeypatch):
         conv = OpenAICompatConversation("qwen3.7-plus", DECLS, "s")
         calls, _ = conv.send("hi")
         assert calls[0].inputs == {}                       # 烂 JSON 不炸,空参进 executor 报参数错
+    finally:
+        srv.shutdown()
+
+
+def test_make_conversation_routes_vertex_maas(monkeypatch):
+    """别名 deepseek-v3.1 → OpenAICompat 后端,但端点=Vertex、模型名=publisher 全名、
+    鉴权=动态 token(不吃 OAI_COMPAT_API_KEY)。"""
+    from pipeline import loop_driver as ld
+    monkeypatch.setattr(config, "GCP_PROJECT", "proj-x")
+    monkeypatch.setattr(config, "VERTEX_MAAS_LOCATION", "us-west2")
+    conv = make_conversation("deepseek-v3.1", DECLS, "s")
+    assert isinstance(conv, OpenAICompatConversation)
+    assert conv._model_name == "deepseek-ai/deepseek-v3.1-maas"      # 别名已换 publisher 全名
+    assert conv._base_url == ("https://us-west2-aiplatform.googleapis.com/v1/"
+                              "projects/proj-x/locations/us-west2/endpoints/openapi")
+    assert conv._token_provider is ld._vertex_access_token           # 动态 ADC token,非固定 key
+
+
+def test_vertex_maas_post_uses_token_provider(monkeypatch):
+    """_post 走注入的 token_provider(每次现取),Authorization 头带它的返回值。"""
+    srv, url = _mk([{"choices": [{"message": {"role": "assistant", "content": "ok"},
+                                  "finish_reason": "stop"}], "usage": _usage_msg()}])
+    try:
+        conv = OpenAICompatConversation("deepseek-ai/deepseek-v3.1-maas", DECLS, "s",
+                                        base_url=url, token_provider=lambda: "tok-live-123")
+        calls, text = conv.send("hi")
+        assert text == "ok" and calls == []
+        assert _FakeOAI.last_headers.get("Authorization") == "Bearer tok-live-123"
     finally:
         srv.shutdown()

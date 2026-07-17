@@ -56,7 +56,8 @@ LOOP_MODEL         = os.environ.get("LOOP_MODEL", "gemini-3.5-flash")
 # 阶段A(CC 式切换):每请求可选大脑模型。服务端白名单 —— 绝不信任客户端字符串,
 # 防任意模型名烧钱/打崩;guest* 账号锁便宜档(2.5-pro 输出单价 4x 于 2.5-flash)。
 LOOP_MODEL_CHOICES = [m.strip() for m in os.environ.get(
-    "LOOP_MODEL_CHOICES", "gemini-3.5-flash,gemini-2.5-flash,gemini-2.5-pro").split(",") if m.strip()]
+    "LOOP_MODEL_CHOICES",
+    "gemini-3.5-flash,gemini-2.5-flash,gemini-2.5-pro,deepseek-v3.1").split(",") if m.strip()]
 LOOP_MODEL_GUEST_CHOICES = [m.strip() for m in os.environ.get(
     "LOOP_MODEL_GUEST_CHOICES", "gemini-3.5-flash,gemini-2.5-flash").split(",") if m.strip()]
 # 阶段B:OpenAI 兼容大脑端点(Qwen/DashScope、OpenRouter、vLLM/Ollama 自托管同一套)。
@@ -66,6 +67,13 @@ OAI_COMPAT_BASE_URL = os.environ.get(
     "OAI_COMPAT_BASE_URL", "https://dashscope-us.aliyuncs.com/compatible-mode/v1")
 OAI_COMPAT_API_KEY  = os.environ.get("OAI_COMPAT_API_KEY", "")
 GENAI_LOCATION     = os.environ.get("GENAI_LOCATION", "global")     # genai 后端端点(3.x 需 global)
+# 阶段B+(Vertex MaaS):托管开源模型走 Vertex 的 OpenAI 兼容端点 —— 记账进 GCP_PROJECT
+# (吃 GCP credit),鉴权用 ADC 短期 token(不需要 API key)。菜单别名 → publisher 全名。
+# 2026-07 探针:deepseek-v3.1-maas 只在 us-west2 可用(us-central1/global 均 404/400)。
+VERTEX_MAAS_LOCATION = os.environ.get("VERTEX_MAAS_LOCATION", "us-west2")
+VERTEX_MAAS_MODELS = {
+    "deepseek-v3.1": "deepseek-ai/deepseek-v3.1-maas",
+}
 
 # U6:联网搜索工具(Gemini Google-Search grounding;spike 已验)。
 #   USE_WEB_SEARCH=0 → 工具从大脑的声明里消失(零残留);模型用 2.5-flash(grounding 够用且比 3.5 省 ~9x)。
