@@ -42,9 +42,6 @@ SPECS: dict[str, NodeSpec] = {
             "不要拆成多个节点。"
             "找「XX 类 / 在 XX 拍的」视频时,【标题也是证据】—— video_facts 谓词和 "
             "video_metadata.title 都要查(JOIN 后 title ILIKE),别只猜谓词词表。"
-            "【何时别只用我】:「说不清具体类别 / 宽类·上位词 / 按意思找」的检索"
-            "(如「健身运动类」「教程类」)别只靠我猜谓词 —— 先 semantic_search 按意思找,"
-            "再回来用我核实细节;按类别查询先对照数据说明里的大类词表。"
         ),
         parameters=_obj(
             {"sql": {"type": "string", "description": "完整只读 SELECT 语句"}},
