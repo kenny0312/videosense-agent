@@ -126,6 +126,12 @@ class UsageMeter:
         except ImportError:                      # 老布局兜底
             from pipeline import usage as _u
         self._u = _u
+        # 关键:_USAGE 是 ContextVar 默认 None,不 reset 一次 add_usage 全程空转记 $0
+        # (四跑事故:三条视频跑完闸门显示 $0.00)。dvd 脚本独占进程,reset 无副作用。
+        try:
+            self._u.reset_usage()
+        except Exception:
+            pass
         self._last = self._cost()
 
     def _cost(self) -> float:
