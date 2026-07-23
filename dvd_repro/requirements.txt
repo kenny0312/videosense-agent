@@ -1,0 +1,3 @@
+# 在主仓库依赖之上的增量(numpy 已在 anaconda base 2.1.3)
+yt-dlp>=2025.1     # LVBench 视频下载
+# opencv-python    # 不装:抽帧走 ffmpeg(方案 §4.2),Frame Inspect 默认方案B
