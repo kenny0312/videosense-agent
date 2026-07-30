@@ -675,3 +675,44 @@ def test_subagent_strip_does_not_fabricate_mark_claim(monkeypatch):
     assert out["output"].startswith("结论 B")
     assert "已标注" not in out["output"]                 # 原 note 没声称 → 替换文案也不许声称
     assert "未经完整核查" in out["output"]               # 反而要提醒主脑谨慎
+
+
+def test_analyze_reservation_scales_with_model_tier(monkeypatch):
+    """Phase 1 主跑实测的误触:analyze 一律按 pro 悲观估价($0.30)预留,而实跑是 flash
+    (单次约 $0.015)—— 一步内并行 3 个 analyze 就把 $0.80 的闸在实花 $0.13 时顶掉,
+    而且专挑"看视频多"的路径罚。预留必须跟着【实际生效的档位】走。"""
+    from perception import analyze_video_contextual as AV
+    monkeypatch.setattr(config, "TREE_CALL_ESTIMATE_USD", 0.05)
+    monkeypatch.setattr(config, "TREE_ANALYZE_ESTIMATE_USD", 0.30)
+    tok = AV.MODEL_OVERRIDE.set("gemini-2.5-flash")
+    try:
+        assert loop_driver._is_pro_analyze() is False
+    finally:
+        AV.MODEL_OVERRIDE.reset(tok)
+    tok = AV.MODEL_OVERRIDE.set("gemini-2.5-pro")
+    try:
+        assert loop_driver._is_pro_analyze() is True
+    finally:
+        AV.MODEL_OVERRIDE.reset(tok)
+
+    # flash 档:一步内 3 个并行 analyze 不该顶掉 $0.80 的闸(实花远低于预留)
+    seen = []
+    monkeypatch.setattr(loop_driver, "execute_node",
+                        lambda node, *a, **k: seen.append(node.tool) or _NRok())
+    g = TreeGuard(cost_cap=0.80, call_estimate=0.05)
+    _spend(0.13)
+    ex = _executor(g)
+    tok = AV.MODEL_OVERRIDE.set("gemini-2.5-flash")
+    try:
+        for i in range(3):
+            ex(f"c{i}", "analyze_video", {"video_id": f"v{i}"}, {}, [])
+    finally:
+        AV.MODEL_OVERRIDE.reset(tok)
+    assert g.tripped is None, "flash 档三个并行 analyze 不该触闸"
+    assert len(seen) == 3
+
+
+class _NRok:
+    ok, value, stderr, code, artifact, videos, table, stat, cache_hit = \
+        True, {"answer": "看了", "enough": "yes"}, "", None, {}, [], {}, {}, False
+    attempts = 1

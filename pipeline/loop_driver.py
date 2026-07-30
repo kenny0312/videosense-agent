@@ -197,6 +197,15 @@ def _attach_envelope(msg: Any, envelope: str) -> Any:
     return envelope
 
 
+def _is_pro_analyze() -> bool:
+    """本请求的 analyze 是否走 pro 档(决定熔断给它留多少钱)。fail-open 当 flash。"""
+    try:
+        from perception.analyze_video_contextual import MODEL_OVERRIDE, PERCEPTION_MODEL
+        return "pro" in str(MODEL_OVERRIDE.get() or PERCEPTION_MODEL or "").lower()
+    except Exception:
+        return False
+
+
 def _soft_note(note: str) -> "ExecResult":
     """把一段【必须被大脑读全】的系统指令包成工具软失败结果(ok=True → 回喂而非报错)。
 
@@ -756,9 +765,14 @@ def _make_executor(sandbox, trace, schema, session_id, owner: str = "anon",
         # 否则同一步 K 个并行 analyze 在钱落账前互相看不见,超冲 = K×单次成本(红队 B3,
         # review 变异验证:光加锁防不住)。触闸 → 软失败信封【全文】回喂,教大脑收口。
         if not name.startswith("show_"):
-            # analyze_video 用悲观口径估价:pro/长视频单次 $0.10~0.30,按通用 $0.05 预留会让
-            # 并行 analyze 把 cap 冲穿 80%+(review 验算)。缓存命中(免费)也按此预留 —— 保守方向。
-            est = config.TREE_ANALYZE_ESTIMATE_USD if name == "analyze_video" else None
+            # analyze_video 的预留按【本请求实际生效的档位】选:pro/长视频单次 $0.10~0.30
+            # (通用 $0.05 会让并行 analyze 冲穿 cap);但 flash 单次只要约 $0.015,
+            # 一律按 pro 估价会让【一步内并行 3 个 analyze】在实花 $0.13 时就把 $0.80 的闸
+            # 顶掉(Phase 1 主跑实测,20 倍高估),而且专挑"看视频多"的路径罚 —— 反了。
+            est = None
+            if name == "analyze_video":
+                est = (config.TREE_ANALYZE_ESTIMATE_USD if _is_pro_analyze()
+                       else config.TREE_CALL_ESTIMATE_USD)
             blocked = guard.admit(estimate=est, what=f"工具 {name}")
             if blocked:
                 res = _soft_note(blocked)   # 全文回喂(_preview 会把指令腰斩,见 _soft_note)

@@ -43,8 +43,14 @@ def _env(**kw):
 
 
 def _drive(task_id: str, max_waves: int = 8, log=None) -> list:
-    """同步推进整条波链(inline 驱动的确定性版本:自己循环调 advance,不起线程)。"""
-    from pipeline import task_runner, task_store
+    """同步推进整条波链(确定性版本:自己循环调 advance)。
+
+    【必须掐掉自动投递】:inline 驱动会为每一波起一个后台 daemon 线程去 advance,
+    那个线程先认领了租约,我这边再调同一波就撞 CAS 拿到 lease_busy —— 底座是对的
+    (重复执行被正确拦住),但测试就成了双驱动、不确定。这里把 enqueue 掐成 no-op,
+    让波链只由本循环推进。"""
+    from pipeline import task_queue, task_runner, task_store
+    task_queue.enqueue_advance = lambda *a, **k: None       # 只驱动一次,别双驱
     outs = []
     for _ in range(max_waves):
         st = task_store.status_of(task_id)
