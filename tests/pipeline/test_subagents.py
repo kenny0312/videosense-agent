@@ -174,11 +174,20 @@ def test_run_fanout_uses_parent_execute_not_fresh(monkeypatch):
         return _fake_lr("OUT")
     monkeypatch.setattr(loop_driver, "run_loop", fake_run_loop)
 
+    hits = []
+
     def sentinel(*a, **k):
+        hits.append(a)
         return None
+    sentinel.tree_guard = "G"                   # 闭包上的账本要随壳透传
     subagents.run_fanout([{"instruction": "A"}], sandbox=None, trace=None, execute=sentinel)
-    assert seen_ex == [sentinel]                # 复用父闭包
     assert made == []                           # 没有新建执行器
+    # P0-6 起 run_loop 拿到的是父闭包外的【薄计数壳】("先自己试"闸数成功工具用);
+    # 复用语义不变:壳内调的就是父闭包本体,guard 账本原样透传。
+    assert len(seen_ex) == 1
+    assert getattr(seen_ex[0], "tree_guard", None) == "G"
+    seen_ex[0]("c1", "sql_query", {}, {}, [])   # 穿透壳直达父闭包
+    assert len(hits) == 1
 
 
 # ── 注册 + 开关门(接线正确性)─────────────────────────────────

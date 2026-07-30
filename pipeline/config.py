@@ -118,6 +118,11 @@ USE_SUBAGENTS       = os.environ.get("USE_SUBAGENTS", "0").lower() in ("1", "tru
 SUBAGENT_MAX_FANOUT = int(os.environ.get("SUBAGENT_MAX_FANOUT", "6"))
 SUBAGENT_MAX_STEPS  = int(os.environ.get("SUBAGENT_MAX_STEPS", "4"))
 SUBAGENT_MODEL      = os.environ.get("SUBAGENT_MODEL", LOOP_MODEL)   # 默认同主脑;可单独覆盖(如子 agent 用更强/更省档,见 SA-0 spike)
+# ── P0-6 长程引擎:裸 depth-2(实验对象,默认关;依赖 USE_SUBAGENTS=1)──────────
+# 只做深度穿透,不带 DAG/蒸馏/分层(红队 C2:实验测单变量)。关 = 全部路径与现状逐字节一致。
+USE_DEPTH2          = os.environ.get("USE_DEPTH2", "0").lower() in ("1", "true", "yes")
+SUBAGENT_L2_FANOUT  = int(os.environ.get("SUBAGENT_L2_FANOUT", "3"))    # depth-1 再拆时的扇出顶
+MAX_TREE_NODES      = int(os.environ.get("MAX_TREE_NODES", "13"))       # 全树节点硬顶(防 6×6 乘法)
 # M5 记忆:loop 路径 transcript 回放 + 压缩(决策④)
 # CC 式「全量注入 + 临窗压缩」:默认把整段回放原文喂 loop,只在【逼近 context window】时才压缩。
 # 预算跟 LOOP_MODEL 的窗口挂钩(flash=1M),留头寸(FRACTION)给 system+schema+tools+本轮步骤+输出,

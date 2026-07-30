@@ -175,7 +175,10 @@ def _soft_note(note: str) -> "ExecResult":
     不知道"别再调工具 / 没查到的写【未核查】"—— 护栏文案本身就是护栏,不能被截。
     (P0-3 review 逮出;既有的 analyze 配额提示同病,一并治。)
     """
-    return ExecResult(ok=True, value={"answer": note, "enough": "no"},
+    # "gate" 是给代码看的专用标记(subagents 的"先自己试"计数壳靠它识别【闸门信封】,
+    # 不许复用 enough 判别 —— analyze 的真成功结果也合法地带 enough="no",如"视频里
+    # 没有狗",按 enough 判会把干过活的枝误判成没干活,review 确认)。
+    return ExecResult(ok=True, value={"answer": note, "enough": "no", "gate": "blocked"},
                       preview=[{"answer": note, "enough": "no"}], n=1)
 
 
@@ -728,6 +731,9 @@ def _make_executor(sandbox, trace, schema, session_id, owner: str = "anon",
     # P0-3:把 guard 挂在闭包对象上 —— 子 agent 拿到 execute 就能取到【同一本账】,
     # 不必给 run_fanout 加参数(它的签名是既有契约,改动面越小越好)。
     execute.tree_guard = guard
+    # P0-6:全树节点账(1 = 主脑自己)。挂闭包 = per-request 天然隔离,不吃服务器
+    # 线程复用的余温;只有 USE_DEPTH2 时 run_fanout 才启用它。
+    execute.tree_nodes = {"nodes": 1, "lock": threading.Lock()}
     return execute
 
 
