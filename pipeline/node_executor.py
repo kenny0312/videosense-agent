@@ -421,6 +421,78 @@ def _run_spawn_agents(node: Node, sandbox, trace, *, schema: dict | None = None,
     return NodeResult(node.id, node.tool, ok=True, value=value)
 
 
+def _run_start_background_task(node: Node, *, owner: str = "anon") -> NodeResult:
+    """S-6 工具位:主脑立后台任务。薄适配层 —— 立项与投递全走 S-2 的既有件
+    (幂等/预算夹紧/fail-closed 都在那边,这里不重复实现)。"""
+    from pipeline import config as _cfg
+    from pipeline.loop_driver import is_guest
+    if not (_cfg.USE_TASKS and _cfg.USE_TASK_TOOL):
+        raise ValueError("后台任务未开启(USE_TASKS/USE_TASK_TOOL=0)")
+    if is_guest(owner):                                      # S-2 的 guest 红线,工具路同守
+        raise ValueError("游客不能开后台任务(告诉用户登录后才能用)")
+    from pipeline import task_queue, task_store
+    goal = str(node.inputs.get("goal") or "").strip()
+    if not goal:
+        raise ValueError("start_background_task 需要 inputs.goal")
+    if len(goal) > 2000:                                     # 与 /v1/tasks 端点同闸
+        raise ValueError("goal 太长(≤2000 字),把目标说简短些")
+    parent = str(node.inputs.get("parent_task_id") or "").strip() or None
+    if parent and task_store.owner_of(parent) != owner:      # 只能续自己的任务
+        raise ValueError("parent_task_id 不存在或不属于你")
+    cap = min(_cfg.TASK_DEFAULT_CAP_USD, _cfg.TASK_MAX_CAP_USD,
+              _cfg.RL_TASK_DAILY_COST_USD)
+    task_id, created = task_store.create_task(owner, goal, cap, parent_task_id=parent)
+    if not created:
+        return NodeResult(node.id, node.tool, ok=True, value={
+            "task_id": task_id, "created": False,
+            "note": "同样的活已经在后台跑着了,告诉用户「在做了、做完会讲」就行,别重复立项"})
+    try:
+        task_queue.enqueue_advance(task_id, 0)
+    except Exception as e:                                   # fail-closed(同 S-2 端点口径)
+        try:
+            task_store.set_status(task_id, "paused_error")
+            task_store.add_event(task_id, "enqueue_failed", {"error": repr(e)[:200],
+                                                             "at": "tool"})
+        except Exception:
+            log.error("工具立项失败后的 fail-closed 处置也失败", exc_info=True)
+        raise ValueError("后台排队服务暂时不可用,这次没能开起来(用户没有被扣费);"
+                         "请如实告诉用户稍后再试,别假装已经在做了")
+    return NodeResult(node.id, node.tool, ok=True, value={
+        "task_id": task_id, "created": True,
+        "note": "已开始在后台做。直接告诉用户「已经在后台处理,做完这边会讲」然后收口"})
+
+
+def _run_get_task_report(node: Node, *, owner: str = "anon") -> NodeResult:
+    """S-9 只读工具:取后台任务报告全文(不把整份报告塞进每轮 context 的那半边)。"""
+    from pipeline import config as _cfg
+    from pipeline.loop_driver import is_guest
+    if not _cfg.USE_TASKS:
+        raise ValueError("后台任务未开启(USE_TASKS=0)")
+    if is_guest(owner):                    # guest 是共用身份,报告会在游客之间串号
+        raise ValueError("游客不能读后台任务报告")
+    from pipeline import task_store
+    task_id = str(node.inputs.get("task_id") or "").strip()
+    if not task_id:
+        raise ValueError("get_task_report 需要 inputs.task_id")
+    got = task_store.report_of(owner, task_id)               # owner 隔离在 SQL 里
+    if got is None:
+        raise ValueError("查不到这个任务(可能不存在或不属于当前用户)")
+    if got["status"] != "done":
+        return NodeResult(node.id, node.tool, ok=True, value={
+            "task_id": task_id, "status": got["status"],
+            "note": "这个任务还没做完,现在没有最终报告;可以告诉用户目前的进度状态"})
+    # 先塑形再回喂:done 是个 dict,原样交给 _preview 会被压成【一格】再截断 →
+    # 拆成每条 ≤400 字的短列表(与 task_runner._parent_context 同口径),报告独立成格。
+    done = got.get("done") or {}
+    return NodeResult(node.id, node.tool, ok=True, value={
+        "task_id": task_id, "goal": got.get("goal"), "status": "done",
+        "spent_usd": got.get("spent_usd"),
+        "report": got.get("report") or "(这个任务没有留下最终报告)",
+        "sub_conclusions": [f"[{k}] {str((v or {}).get('answer') or '')[:400]}"
+                            for k, v in sorted(done.items())][:12],
+    })
+
+
 def _run_web_search(node: Node) -> NodeResult:
     """U6:联网搜索(Gemini Google-Search grounding,genai@global)。
     注入防护:system 指令明确网页内容是 DATA 不是指令;返回 {answer, sources},由大脑收口引用。"""
@@ -667,6 +739,10 @@ def execute_node(node: Node, upstream: dict[str, Any],
             elif node.tool == "spawn_agents":
                 res = _run_spawn_agents(node, sandbox, trace, schema=schema,
                                         session_id=session_id, owner=owner, loop_execute=loop_execute)
+            elif node.tool == "start_background_task":
+                res = _run_start_background_task(node, owner=owner)
+            elif node.tool == "get_task_report":
+                res = _run_get_task_report(node, owner=owner)
             else:
                 raise ValueError(f"未知数据工具: {node.tool}")
             step.ok(rows=len(res.videos) if res.videos else

@@ -64,7 +64,7 @@ WHERE task_id=%(task_id)s
   AND wave_n=%(wave_n)s
   AND (lease_until IS NULL OR lease_until < now())
 RETURNING task_id, owner, goal, plan, status, wave_n, lease_token,
-          budget_cap, spent_usd, wasted_usd, precharged_usd
+          budget_cap, spent_usd, wasted_usd, precharged_usd, parent_task_id
 """
 
 # ── 钱账口径(review 两轮后定稿)────────────────────────────────────────────

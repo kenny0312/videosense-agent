@@ -41,9 +41,17 @@ _OPTIONAL_HANDLE = {"show_video", "python"}   # 句柄非必填:python 逃生舱
 ANALYZE_PREVIEW_CELL = 1200               # #2:analyze_video 结果给大预览(答案含完整理由,默认 80 会砍掉)
 SQL_PREVIEW_ROWS = 30                      # sql_query 列举类:大脑看到更多行(默认 3 行 → 让它列 14 个就会编/重复)
 SUBAGENT_PREVIEW_CELL = 4000              # spawn_agents:每个子 agent 的结论要基本完整回到主脑(供综合),别砍成 80 字
+TASK_REPORT_PREVIEW_CELL = 6000           # get_task_report:后台任务报告全文要真进大脑(S-9「按需取全文」)
 
 
-def loop_function_declarations() -> list[dict]:
+def is_guest(owner: str) -> bool:
+    """游客身份判据(与 api.server._is_guest 同口径:guest 是【多人共用】的公开钥匙)。
+    放在这里是为了让工具层也能判 —— 端点的 guest 403 红线不能只挡 HTTP 那一路
+    (review-HIGH:工具路绕过后,游客不仅能立后台任务,还能读到别的游客的报告)。"""
+    return str(owner or "").lower().startswith("guest")
+
+
+def loop_function_declarations(owner: str = "") -> list[dict]:
     """M1 工具声明 + 叠加上游句柄参数(loop 专用)。深拷贝,绝不污染 SPECS。
     U6:web_search 只在 USE_WEB_SEARCH 开启时对大脑可见(关掉 = 工具消失,零残留)。"""
     out = []
@@ -55,6 +63,15 @@ def loop_function_declarations() -> list[dict]:
         if d["name"] == "semantic_search" and not config.USE_SEMANTIC_SEARCH:
             continue
         if d["name"] == "spawn_agents" and not config.USE_SUBAGENTS:
+            continue
+        # S-6/S-9:后台任务两工具 —— 关掉 = 工具消失(零残留)。立项工具还有独立开关。
+        # 游客一律看不见(S-2 的 guest 403 红线;guest 是多人共用身份,任务与报告会串号)。
+        if d["name"] in ("start_background_task", "get_task_report") and is_guest(owner):
+            continue
+        if d["name"] == "start_background_task" and not (config.USE_TASKS
+                                                        and config.USE_TASK_TOOL):
+            continue
+        if d["name"] == "get_task_report" and not config.USE_TASKS:
             continue
         d = copy.deepcopy(d)
         # P0-5:视频内下钻开关关闭 → video_ids 参数从声明里消失(大脑不可见,零残留),
@@ -695,6 +712,11 @@ def _make_executor(sandbox, trace, schema, session_id, owner: str = "anon",
         elif name == "spawn_agents":
             # 每个子 agent 的结论要基本完整回到主脑供综合 → 大格 + 覆盖全部子 agent(含末尾截断提示行)
             pv, n = _preview(nr.value, rows=config.SUBAGENT_MAX_FANOUT + 1, cell=SUBAGENT_PREVIEW_CELL)
+        elif name == "get_task_report":
+            # S-9「按需取全文」:默认 80 字/格会把整份报告砍成半句,大脑拿着残句自信作答
+            # (review-HIGH:P0-3 的同一个坑换了载体)。_run_get_task_report 已把 value
+            # 塑形成"报告 + 每条 ≤400 字的结论列表",这里给足够的格子让它完整进 prompt。
+            pv, n = _preview(nr.value, rows=8, cell=TASK_REPORT_PREVIEW_CELL)
         elif name == "semantic_search":
             pv, n = _preview(nr.value, rows=20, cell=300)               # k≤20 行全给,snippet 别砍太狠
         elif name == "sql_query":
@@ -902,11 +924,43 @@ def runtime_facts_line(usage_cum: "dict | None", nl: "str | None" = None,
     return "\n".join(lines)
 
 
+NOTICE_LIMIT = 2                 # 每轮最多通报几条(注入行是每轮常驻税,规格 ≤120 字)
+NOTICE_GOAL_CHARS = 14
+
+
+def task_done_notice(owner: str) -> "tuple[str, list]":
+    """S-9 完成回流:把"该 owner 已完成但还没通报过"的后台任务折成一行注入 context ——
+    CC 式体验的关键(任务完成后对话自己知道,不用用户去任务页拉)。
+    【不】把整份报告塞进每轮 context(重读税教训);主脑要细节时用 get_task_report 取。
+
+    返回 (注入行, 待销账 task_ids)。【销账不在这里做】—— review-HIGH:旧写法在 context
+    组装期就 mark_notified,之后请求崩了/答案为空/用户 Stop,通知就【永久丢失】且无兜底
+    (orchestrator 只会回一句"请再发一次",而那时主脑已经不知道任务做完了)。
+    改成两阶段:交付确认(answer 真的产出)之后才销账。全程 fail-open。"""
+    if not config.USE_TASKS:
+        return "", []
+    try:
+        from pipeline import task_store
+        rows = task_store.unnotified_done(owner, limit=NOTICE_LIMIT)
+        if not rows:
+            return "", []
+        bits = [f"『{(g or '')[:NOTICE_GOAL_CHARS]}』{t}" for t, g in rows]
+        return ("# 后台任务已完成(系统)\n"
+                f"{'、'.join(bits)}。相关时主动告知用户;要细节用 get_task_report。",
+                [t for t, _ in rows])
+    except Exception:
+        log.warning("后台任务完成回流查询失败(fail-open)", exc_info=True)
+        return "", []
+
+
 def _loop_system(schema: dict, replay_context: "str | None",
-                 runtime_facts: "str | None" = None) -> str:
+                 runtime_facts: "str | None" = None,
+                 task_notice: "str | None" = None) -> str:
     s = _LOOP_SYSTEM + "\n# 数据库结构\n" + json.dumps(schema, ensure_ascii=False)
     if runtime_facts:                                     # U3:运行时状态(自我认知)
         s += "\n\n" + runtime_facts
+    if task_notice:                                       # S-9:后台任务完成通知(一行)
+        s += "\n\n" + task_notice
     if replay_context:                                    # M5:transcript 回放(取代 recipe 块)
         s += "\n\n" + replay_context
     return s
@@ -926,8 +980,12 @@ def run_query_loop(nl: str, *, schema: dict, replay_context: "str | None", sandb
     use_critic = 请求级 critic 模式(None=跟随 USE_SELF_CHECK_CRITIC 全局默认;True/False=本请求强制)。
     model(阶段A)= 本请求的大脑模型;None = config.LOOP_MODEL。白名单校验在 API 层,这里不重复。
     注:子代理(subagents)仍走 SUBAGENT_MODEL/LOOP_MODEL 默认,不随本参数切换。"""
-    conv = make_conversation(model or config.LOOP_MODEL, loop_function_declarations(),
-                             _loop_system(schema, replay_context, runtime_facts), image=image)
+    notice, notice_ids = task_done_notice(owner)          # S-9:销账等交付确认(见下方)
+    conv = make_conversation(model or config.LOOP_MODEL,
+                             loop_function_declarations(owner=owner),
+                             _loop_system(schema, replay_context, runtime_facts,
+                                          task_notice=notice),
+                             image=image)
     # P0-3:一次请求 = 一棵树 = 一本账。同一个 guard 同时喂给两个挂点(工具闸 + 每步 generate 闸);
     # 子 agent 复用本 execute 闭包 → 工具闸天然共享,run_loop 侧由 subagents 显式传同一实例。
     from pipeline.agentops.treeguard import TreeGuard
@@ -943,6 +1001,14 @@ def run_query_loop(nl: str, *, schema: dict, replay_context: "str | None", sandb
     answer, scrub_hits = r.answer, 0
     if r.answer:
         answer, scrub_hits = scrub_ids(r.answer, (er.value for er in r.ledger.values()))
+    # S-9 销账:答案【确实产出】了才把通知记为已通报 —— 崩了/空答/用户 Stop 的请求
+    # 不销账,下一轮还会再通知一次(review-HIGH:旧写法丢了就永远丢)。
+    if notice_ids and answer and answer.strip():
+        try:
+            from pipeline import task_store
+            task_store.mark_notified(notice_ids)
+        except Exception:
+            log.warning("后台任务通知销账失败(下轮会重通知,无害)", exc_info=True)
     # 最终成功步 → artifact 的 kind/value;preview_value:plot-final 取上游数据
     # (plot 自身 value 只有 {n_points},无复用价值),其余 = final_value。
     final_tool = final_value = preview_value = None

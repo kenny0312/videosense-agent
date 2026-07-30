@@ -129,6 +129,7 @@ TASK_DEFAULT_CAP_USD = float(os.environ.get("TASK_DEFAULT_CAP_USD", "0.5"))     
 # 收尾额度:已花钱买到的战果必须能变成交付物 —— 收口波(一次 LLM 调用)在 cap 之上额外
 # 允许这一点点,否则花满预算的任务会因差几分钱的收尾费永远出不了报告(review 实测的死锁)。
 TASK_FINALIZE_GRACE_USD = float(os.environ.get("TASK_FINALIZE_GRACE_USD", "0.10"))
+USE_TASK_TOOL       = os.environ.get("USE_TASK_TOOL", "0").lower() in ("1", "true", "yes")  # S-6 主脑立项工具位(独立开关)
 TASKS_DRIVER        = os.environ.get("TASKS_DRIVER", "inline")                   # inline|cloudtasks(同一代码路径)
 TASKS_QUEUE         = os.environ.get("TASKS_QUEUE", "agent-tasks")
 TASKS_REGION        = os.environ.get("TASKS_REGION", "us-central1")

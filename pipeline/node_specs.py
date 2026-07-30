@@ -190,6 +190,45 @@ SPECS: dict[str, NodeSpec] = {
             ["text"],
         ),
     ),
+    "start_background_task": NodeSpec(
+        tool="start_background_task",
+        needs_sandbox=False,
+        planner_desc=(
+            "【开一个后台任务】把一件【当场做不完】的活立项成后台任务:它会在后台分批推进,"
+            "做完之后【下一次对话你会自动收到通知】,那时你可以告诉用户、也可以用 "
+            "get_task_report 取报告全文。"
+            "【什么时候用】① 要深看的视频【数量超过一次请求装得下的量】(约十来个以上,"
+            "一口气看不完);② 用户明说「慢慢做 / 做完叫我 / 我先去忙别的」。"
+            "【什么时候【别】用】能当场答完的一律别立项 —— 查库统计、找几段视频、看一两个"
+            "视频、语义检索,这些直接做完给答案,别甩给后台让用户等。"
+            "inputs.goal = 一句话把这件活说清楚(后台会自己把它拆成子任务);"
+            "inputs.parent_task_id = 可选:要【基于之前某个任务的报告再做一版】时填它的 "
+            "task_id(后台规划时会读到那份报告,不用从零开始)。"
+            "【立项成功后就直接告诉用户「已经在后台做了、做完会讲」然后收口】—— "
+            "不要重复立项、也不要再当场自己做一遍。"
+        ),
+        parameters=_obj(
+            {"goal": {"type": "string", "description": "这个后台任务要完成什么(一句话)"},
+             "parent_task_id": {"type": "string",
+                                "description": "可选:基于哪个已完成任务的报告再做一版"}},
+            ["goal"],
+        ),
+    ),
+    "get_task_report": NodeSpec(
+        tool="get_task_report",
+        needs_sandbox=False,
+        planner_desc=(
+            "【取后台任务的报告】读一个已完成后台任务的最终报告与各子任务结论。"
+            "用户问起某个后台任务的结果、或你收到「任务已完成」的系统通知需要展开细节时用它。"
+            "inputs.task_id = 任务 id(系统通知里带、用户也可能直接给)。"
+            "返回 {goal, status, report, done, spent_usd};报告是纯文本,直接据它回答用户,"
+            "别把 task_id 之类的内部 id 抄给用户看。"
+        ),
+        parameters=_obj(
+            {"task_id": {"type": "string", "description": "后台任务 id"}},
+            ["task_id"],
+        ),
+    ),
     "spawn_agents": NodeSpec(
         tool="spawn_agents",
         needs_sandbox=False,

@@ -93,7 +93,7 @@ def test_create_enqueues_wave0_and_caps_budget(client, monkeypatch):
     from pipeline import task_queue
     seen = {}
     monkeypatch.setattr(task_store, "create_task",
-                        lambda owner, goal, cap: seen.update(owner=owner, cap=cap) or ("tk_1", True))
+                        lambda owner, goal, cap, **k: seen.update(owner=owner, cap=cap) or ("tk_1", True))
     monkeypatch.setattr(task_queue, "enqueue_advance",
                         lambda tid, w: seen.update(enq=(tid, w)))
     r = c.post("/v1/tasks", json={"goal": "把滑雪视频都整理一遍", "budget_cap": 99.0},
@@ -107,7 +107,7 @@ def test_create_idempotent_double_click(client, monkeypatch):
     c, _ = client
     from pipeline import task_queue
     enq = []
-    monkeypatch.setattr(task_store, "create_task", lambda *a: ("tk_dup", False))
+    monkeypatch.setattr(task_store, "create_task", lambda *a, **k: ("tk_dup", False))
     monkeypatch.setattr(task_store, "status_of", lambda tid: ("running", 1))   # 正常在跑,非幽灵
     monkeypatch.setattr(task_queue, "enqueue_advance", lambda *a: enq.append(a))
     r = c.post("/v1/tasks", json={"goal": "双击目标"}, headers=_auth())
@@ -121,7 +121,7 @@ def test_create_enqueue_failure_leaves_no_ghost(client, monkeypatch):
     c, _ = client
     from pipeline import task_queue
     ops = []
-    monkeypatch.setattr(task_store, "create_task", lambda *a: ("tk_boom", True))
+    monkeypatch.setattr(task_store, "create_task", lambda *a, **k: ("tk_boom", True))
     monkeypatch.setattr(task_store, "set_status",
                         lambda tid, st: ops.append(("status", tid, st)) or True)
     monkeypatch.setattr(task_store, "add_event",
@@ -178,7 +178,7 @@ def test_create_rejects_nan_and_zero_budget(client, monkeypatch):
     两者都必须 422。"""
     c, _ = client
     from pipeline import task_queue
-    monkeypatch.setattr(task_store, "create_task", lambda *a: ("tk_x", True))
+    monkeypatch.setattr(task_store, "create_task", lambda *a, **k: ("tk_x", True))
     monkeypatch.setattr(task_queue, "enqueue_advance", lambda *a: None)
     r = c.post("/v1/tasks", content='{"goal": "x", "budget_cap": NaN}',
                headers={**_auth(), "Content-Type": "application/json"})
@@ -200,7 +200,7 @@ def test_create_ratelimit_uses_no_session_bucket(client, monkeypatch):
     seen = {}
     monkeypatch.setattr(ratelimit, "precheck",
                         lambda owner, ip, sid: seen.update(sid=sid) or None)
-    monkeypatch.setattr(task_store, "create_task", lambda *a: ("tk_x", True))
+    monkeypatch.setattr(task_store, "create_task", lambda *a, **k: ("tk_x", True))
     monkeypatch.setattr(task_queue, "enqueue_advance", lambda *a: None)
     assert c.post("/v1/tasks", json={"goal": "x"}, headers=_auth()).status_code == 200
     assert seen["sid"] is None
@@ -212,7 +212,7 @@ def test_idempotent_hit_repairs_pending_ghost(client, monkeypatch):
     c, _ = client
     from pipeline import task_queue
     enq = []
-    monkeypatch.setattr(task_store, "create_task", lambda *a: ("tk_ghost", False))
+    monkeypatch.setattr(task_store, "create_task", lambda *a, **k: ("tk_ghost", False))
     monkeypatch.setattr(task_store, "status_of", lambda tid: ("pending", 0))
     monkeypatch.setattr(task_queue, "enqueue_advance", lambda tid, w: enq.append((tid, w)))
     r = c.post("/v1/tasks", json={"goal": "x"}, headers=_auth())

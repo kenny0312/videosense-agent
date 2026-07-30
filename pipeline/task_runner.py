@@ -35,13 +35,14 @@ _REREAD_SQL = ("SELECT status, wave_n, lease_until IS NOT NULL AND lease_until >
 OK, RETRY = "ok", "retry"
 
 
-def plan_goal(goal: str, notes: list) -> list:
-    """规划波(wave 0):goal(+用户追加指示)→ remaining 子任务清单(带稳定 id)。
+def plan_goal(goal: str, notes: list, parent_ctx: "str | None" = None) -> list:
+    """规划波(wave 0):goal(+用户追加指示 + S-10 父任务报告快照)→ remaining 子任务清单。
     live 实现:一次无状态 LLM 分解调用;单测 monkeypatch 本函数。"""
-    from pipeline import loop_driver
     from google.genai import types
     from pipeline.genai_client import get_client
     note_txt = ("\n用户追加指示:" + " / ".join(notes)) if notes else ""
+    if parent_ctx:                                    # S-10:单向只读快照(不共享可变状态)
+        note_txt += "\n\n【上一版任务的产出(基于它继续做,别从零重来)】\n" + parent_ctx
     prompt = (
         "把下面这个视频库分析目标拆成若干个【彼此独立、可并行】的子任务,每个子任务"
         "至多针对 2 个候选视频(或不指定视频)。只输出 JSON 数组,每项 "
@@ -169,12 +170,41 @@ def finalize_report(goal: str, done: dict) -> str:
 
 def _row_to_task(row) -> dict:
     (task_id, owner, goal, plan, status, wave_n, lease_token,
-     budget_cap, spent_usd, wasted_usd, precharged_usd) = row
+     budget_cap, spent_usd, wasted_usd, precharged_usd, parent_task_id) = row
     plan = plan if isinstance(plan, dict) else json.loads(plan or "{}")
     return {"task_id": task_id, "owner": owner, "goal": goal, "plan": plan,
             "status": status, "wave_n": int(wave_n), "lease_token": lease_token,
             "budget_cap": float(budget_cap), "spent_usd": float(spent_usd),
-            "wasted_usd": float(wasted_usd), "precharged_usd": float(precharged_usd)}
+            "wasted_usd": float(wasted_usd), "precharged_usd": float(precharged_usd),
+            "parent_task_id": parent_task_id}
+
+
+PARENT_CTX_MAX = 6000           # 父报告注入上限(单向只读快照,别把上下文吃光)
+
+
+def _parent_context(task: dict) -> "str | None":
+    """S-10 续作:父任务的最终报告 + 子任务结论摘要,作只读快照注入规划波。
+    fail-open:取不到就当首作跑(不因为续作上下文缺失卡住整个任务)。"""
+    pid = task.get("parent_task_id")
+    if not pid:
+        return None
+    try:
+        from pipeline import task_store
+        got = task_store.report_of(task["owner"], pid)
+        if not got:
+            return None
+        parts = [f"上一版的目标:{got.get('goal') or ''}"]
+        if got.get("report"):
+            parts.append("上一版的报告:\n" + str(got["report"]))
+        done = got.get("done") or {}
+        if done:
+            parts.append("上一版各子任务结论摘要:\n" + "\n".join(
+                f"- [{k}] {str((v or {}).get('answer') or '')[:400]}"
+                for k, v in sorted(done.items())))
+        return "\n\n".join(parts)[:PARENT_CTX_MAX]
+    except Exception:
+        log.warning("父任务上下文取用失败(fail-open,按首作跑)", exc_info=True)
+        return None
 
 
 def _user_notes(task_id: str) -> list:
@@ -273,7 +303,8 @@ def advance(task_id: str, wave_n: int) -> dict:
 
         usage.reset_usage()                                # 显式 reset(红队 HIGH:不 reset 记账为零)
         if planning:
-            remaining = plan_goal(task["goal"], _user_notes(task_id))
+            remaining = plan_goal(task["goal"], _user_notes(task_id),
+                                  parent_ctx=_parent_context(task))
             task_store.add_event(task_id, "planned", {"n": len(remaining)})
             wave_results = {}
         elif finalizing:                                   # 收口 = 零 batch 轻波:崩了只重跑

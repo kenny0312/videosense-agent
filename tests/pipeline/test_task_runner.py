@@ -28,7 +28,8 @@ class FakeDB:
                 r["status"], r["lease_token"], r["lease_live"] = "running", params["token"], True
                 return [(r["task_id"], r["owner"], r["goal"], json.dumps(r["plan"]),
                          r["status"], r["wave_n"], r["lease_token"], r["budget_cap"],
-                         r["spent_usd"], r["wasted_usd"], r.get("precharged_usd", 0.0))]
+                         r["spent_usd"], r["wasted_usd"], r.get("precharged_usd", 0.0),
+                         r.get("parent_task_id"))]
             return []
         if s.startswith("SELECT status, wave_n"):                        # REREAD
             if not r:
@@ -85,7 +86,8 @@ def _row(**kw):
                 plan={"remaining": [{"id": 1, "instruction": "看 v1", "video_ids": ["v1"]}],
                       "done": {}},
                 status="running", wave_n=1, lease_token=None, lease_live=False,
-                budget_cap=0.5, spent_usd=0.0, wasted_usd=0.0, precharged_usd=0.0)
+                budget_cap=0.5, spent_usd=0.0, wasted_usd=0.0, precharged_usd=0.0,
+                parent_task_id=None)
     base.update(kw)
     return base
 
@@ -101,7 +103,7 @@ def wired(monkeypatch):
     monkeypatch.setattr(TR, "run_wave",
                         lambda task, batch: calls["waves"].append([b["id"] for b in batch])
                         or {str(b["id"]): {"answer": f"done-{b['id']}"} for b in batch})
-    monkeypatch.setattr(TR, "plan_goal", lambda goal, notes: [
+    monkeypatch.setattr(TR, "plan_goal", lambda goal, notes, parent_ctx=None: [
         {"id": 1, "instruction": "看 v1", "video_ids": ["v1"]},
         {"id": 2, "instruction": "看 v2", "video_ids": ["v2"]}])
     monkeypatch.setattr(TR, "finalize_report", lambda goal, done: "最终报告")

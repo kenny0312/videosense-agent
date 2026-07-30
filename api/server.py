@@ -240,6 +240,7 @@ def health():
 class TaskCreateRequest(BaseModel):
     goal: str
     budget_cap: "float | None" = None
+    parent_task_id: "str | None" = None       # S-10 续作:基于哪个已完成任务的报告再做一版
 
 
 def _tasks_gate(request: Request) -> "Response | None":
@@ -277,7 +278,10 @@ def task_create(req: TaskCreateRequest, request: Request):
                         status_code=422, media_type="application/json")
     cap = min(cap_in, config.TASK_MAX_CAP_USD, config.RL_TASK_DAILY_COST_USD)
     from pipeline import task_queue, task_store
-    task_id, created = task_store.create_task(owner, goal, cap)
+    parent = (req.parent_task_id or "").strip() or None
+    if parent and task_store.owner_of(parent) != owner:    # 只能续自己的任务
+        return Response(status_code=404)
+    task_id, created = task_store.create_task(owner, goal, cap, parent_task_id=parent)
     if not created:                                       # 幂等命中(含前端双击)
         # pending 幽灵自愈(review 确认两个触发器:commit→enqueue 窗口进程死 / _execute
         # 盲重试撞自己刚插的行把 created 翻成 False)—— 命中的行若还停在 pending,
