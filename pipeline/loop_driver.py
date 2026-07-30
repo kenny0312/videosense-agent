@@ -134,9 +134,51 @@ class LoopResult:
 
 
 # ── 纯控制流(注入 conversation + execute,离线可测)──────────────
+_TRIP_GRACE_STEPS = 2      # P0-3:触闸后给几步收口机会;用尽即强制终止(terminated="tree_guard")
+
+# 护栏触发且模型在宽限内仍不收口 → 交这句(【绝不能返回 None】:orchestrator 把 answer=None
+# 当"瞬时波动"给用户"请再发一次"的重试提示 —— 那等于把熔断刚省下的钱请回来重烧一遍)。
+_GUARD_STOP_ANSWER = ("这次没能完成:系统在中途触发了成本护栏并停止了继续调用工具,"
+                      "而模型在给出的收口机会内没有基于已有证据作答,所以本次没有可交付的结论。"
+                      "建议把问题缩小(指定视频或时间段)后再问,或调高本次请求的成本上限。")
+
+
+def _attach_envelope(msg: Any, envelope: str) -> Any:
+    """把成本护栏的软收口指令【并入】本轮输入,而不是顶掉它。
+
+    msg 有两种形状(见各 Conversation.send):str = 文本轮;list[(name, result)] = 上一步
+    工具结果的 function_response。早先这里直接 `msg = envelope`,两个后果都致命:
+      ① 上一步刚拿到的工具结果被整批扔掉 —— 正好删掉了"用已有证据收口"里的证据;
+      ② function_call 轮没有配对的 function_response(Gemini 协议要求配对)→ 400 硬崩,
+         熔断反而把请求炸了。
+    所以列表形状时,把指令挂进最后一条结果里(协议合法、零后端改动、大脑必读)。
+    """
+    if isinstance(msg, str):
+        return f"{msg}\n\n{envelope}" if msg.strip() else envelope
+    if isinstance(msg, list) and msg:
+        name, result = msg[-1]
+        merged = dict(result) if isinstance(result, dict) else {"result": result}
+        merged["_system_notice"] = envelope
+        return list(msg[:-1]) + [(name, merged)]
+    return envelope
+
+
+def _soft_note(note: str) -> "ExecResult":
+    """把一段【必须被大脑读全】的系统指令包成工具软失败结果(ok=True → 回喂而非报错)。
+
+    刻意不用 _preview:它把每个字段截到 80 字符,会把收口指令腰斩在半句
+    ("…这个【没分析】。请【就已分析过的" 之后全丢),于是大脑只知道"这次没成",
+    不知道"别再调工具 / 没查到的写【未核查】"—— 护栏文案本身就是护栏,不能被截。
+    (P0-3 review 逮出;既有的 analyze 配额提示同病,一并治。)
+    """
+    return ExecResult(ok=True, value={"answer": note, "enough": "no"},
+                      preview=[{"answer": note, "enough": "no"}], n=1)
+
+
 def run_loop(user_query: str, conversation, execute: Callable, *,
              max_steps: int | None = None, repeat_limit: int | None = None,
-             on_step=None, critic=None, max_critic: int | None = None) -> LoopResult:
+             on_step=None, critic=None, max_critic: int | None = None,
+             guard=None) -> LoopResult:
     max_steps = config.MAX_LOOP_STEPS if max_steps is None else max_steps
     repeat_limit = config.LOOP_REPEAT_LIMIT if repeat_limit is None else repeat_limit
     max_critic = config.SELF_CHECK_MAX_ROUNDS if max_critic is None else max_critic
@@ -149,8 +191,45 @@ def run_loop(user_query: str, conversation, execute: Callable, *,
     llm_calls = 0
     critic_used = 0
     empty_retry_used = False
+    steps_after_trip = 0                     # 触闸后的宽限步数(有界,防继续空转烧钱)
+    envelope_seen = False                    # 收口信封是否已进过【本】conversation
     for step in range(max_steps):
-        calls, text = conversation.send(msg)
+        # P0-3 挂点②(红队 B1):每步 generate 【之前】过一次闸。只挂工具闸挡不住
+        # "进入 Trap 循环只思考不调工具"的烧钱 —— 那条路径永远不经过 execute。
+        # admit 放行即预留(K 个并行子 loop 的 generate 在钱落账前互相可见),settle 释放;
+        # 触闸 → 把软收口指令并入本轮输入,让它用已有证据交货(不 kill,半途 kill = 全额浪费)。
+        reserved = False
+        if guard is not None and guard.enabled:
+            if not guard.tripped:
+                blocked = guard.admit(what=f"第 {step + 1} 轮思考")
+                if blocked:
+                    msg = _attach_envelope(msg, blocked)     # 并入,不顶掉(否则丢证据 + 协议 400)
+                    envelope_seen = True
+                    turns.append({"step": step, "nudge": blocked})
+                else:
+                    reserved = True
+            else:
+                steps_after_trip += 1
+                # 触闸可能发生在子 agent/工具闸里 —— 【本】对话还没收到收口指令的话,
+                # 第一宽限步补喂(否则主脑不知道要标【未核查】,"已标注"声称变假;review 确认)。
+                if not envelope_seen:
+                    env = guard.grace_envelope()
+                    if env:
+                        msg = _attach_envelope(msg, env)
+                        envelope_seen = True
+                        turns.append({"step": step, "nudge": env})
+                # 宽限用尽仍不收口(硬调工具/继续思考)→ 强制终止,别把剩余步数烧光。
+                # final_note 在【此刻】现算(触闸瞬间的快照会把宽限烧的钱漏在披露外);
+                # mark_claim=False:答案是系统占位文案,没有【未核查】标注可言。
+                if steps_after_trip > _TRIP_GRACE_STEPS:
+                    return LoopResult(_GUARD_STOP_ANSWER + guard.final_note(mark_claim=False),
+                                      step, "tree_guard", trace, ledger, llm_calls,
+                                      step_walls, turns)
+        try:
+            calls, text = conversation.send(msg)
+        finally:
+            if reserved:                     # 异常也要释放在飞预留(实测已由 add_usage 落账)
+                guard.settle()
         llm_calls += 1
         # 大脑这轮的"原话" = 思考摘要(genai include_thoughts)+ 随调用说的话;以前被丢弃
         _thoughts = (getattr(conversation, "last_thoughts", "") or "").strip()
@@ -167,9 +246,17 @@ def run_loop(user_query: str, conversation, execute: Callable, *,
                        "需要展示视频/表格就先调用对应的 show_ 工具。")
                 turns.append({"step": step, "nudge": msg})
                 continue
+            # P0-3:先补记账再决定要不要 critic —— 预算可能正好在最后一次 generate 上烧穿,
+            # 不先 reconcile 的话 critic 会拿着已烧穿的预算再追加一轮工作。
+            if guard is not None and guard.enabled:
+                guard.reconcile()
             # 自检 B(设计 self-check-critic.md):收口前插一个 critic 判"满足用户没";没满足且有
             # 下一步 → 把意见喂回再来一轮(至多 max_critic 次,防空转)。critic 抛错 → 视为满足(fail-open)。
-            if critic is not None and critic_used < max_critic:
+            # P0-3:触闸后跳过 critic —— 触闸态下"部分答案+【未核查】标注"就是合格交付;
+            # critic 的"请继续做到位"会跟护栏信封"不要再调工具"打架,把已产出的部分答案
+            # 逼进宽限耗尽的硬终止(钱全浪费,review 确认),还多烧一次 critic 调用。
+            if (critic is not None and critic_used < max_critic
+                    and not (guard is not None and guard.tripped)):
                 try:
                     satisfied, hint = critic(user_query, answer)
                 except Exception:
@@ -180,6 +267,21 @@ def run_loop(user_query: str, conversation, execute: Callable, *,
                            "请据此继续把它做到位;如果确实做不到,就诚实说清楚。")
                     turns.append({"step": step, "nudge": msg})
                     continue
+            # P0-3:披露【现算】—— 触闸瞬间的快照会把宽限期烧的钱漏在披露外
+            # (review 确认:旧写法 wasted 几乎恒 $0.0000)。
+            if guard is not None and guard.enabled:
+                # critic 自己的 LLM 调用在闸外落账(不经两个挂点)—— satisfied 终路若不再
+                # reconcile 一次,最后那笔 critic 钱可以无披露越线(review 实测确认;幂等)。
+                guard.reconcile("critic 后")
+                # 触闸 + 最终生成为空:不得交付"只有一行记账"的答案(还会绕过 orchestrator
+                # 的空答重试网)→ 改走硬终止形状,给用户诚实说明(review 实测确认)。
+                if guard.tripped and not (answer or "").strip():
+                    return LoopResult(_GUARD_STOP_ANSWER + guard.final_note(mark_claim=False),
+                                      step, "tree_guard", trace, ledger, llm_calls,
+                                      step_walls, turns)
+                note = guard.final_note()   # mark_claim 默认跟随"信封是否真喂过大脑"
+                if note:                    # 触闸则对用户透明(钱为何停、浪费多少)
+                    answer = (answer or "") + note
             if on_step:                     # SSE 线上事件同样过清洗(review 修:别让未清洗文本上网线)
                 on_step({"type": "answer",
                          "text": scrub_ids(answer, (er.value for er in ledger.values()))[0]})
@@ -197,6 +299,12 @@ def run_loop(user_query: str, conversation, execute: Callable, *,
                    json.dumps(call.inputs, sort_keys=True, ensure_ascii=False, default=str),
                    tuple(call.uses))
             if seen.get(sig, 0) >= repeat_limit:             # 重复失败 → 强制终止
+                # P0-3:已触闸时不得回 answer=None —— orchestrator 会把它当"瞬时波动"
+                # 劝用户"再发一次"重烧(review 复现:宽限期内模型重发同一失败调用即中招)。
+                if guard is not None and guard.enabled and guard.tripped:
+                    return LoopResult(_GUARD_STOP_ANSWER + guard.final_note(mark_claim=False),
+                                      step, "tree_guard", trace, ledger, llm_calls,
+                                      step_walls, turns)
                 return LoopResult(None, step, "repeat", trace, ledger, llm_calls, step_walls, turns)
             upstream = {u: ledger[u].value for u in call.uses if u in ledger}
             prepared.append((cid, call, sig, upstream))
@@ -240,6 +348,15 @@ def run_loop(user_query: str, conversation, execute: Callable, *,
         if on_step:                                          # M6b:每步事件(供 SSE 流式)
             on_step({"type": "step", "step": step, "tools": step_tools})
         msg = responses
+    # P0-3:触闸落在最后 _TRIP_GRACE_STEPS+1 步内时,宽限没用尽 for 就先耗完 —— 从这里
+    # 漏出 answer=None 会让 orchestrator 劝用户"再发一次"重烧,且成本披露全丢(review 复现)。
+    # 步数耗尽本身也是交付点:补一次记账,触了就诚实交代。
+    if guard is not None and guard.enabled:
+        guard.reconcile("步数耗尽")
+        if guard.tripped:
+            return LoopResult(_GUARD_STOP_ANSWER + guard.final_note(mark_claim=False),
+                              max_steps, "tree_guard", trace, ledger, llm_calls,
+                              step_walls, turns)
     return LoopResult(None, max_steps, "max_steps", trace, ledger, llm_calls, step_walls, turns)
 
 
@@ -532,9 +649,14 @@ def make_self_check_critic():
     return critic
 
 
-def _make_executor(sandbox, trace, schema, session_id, owner: str = "anon") -> Callable:
+def _make_executor(sandbox, trace, schema, session_id, owner: str = "anon",
+                   guard=None) -> Callable:
     quota = {"analyzed": 0}                               # 配额:本请求 analyze_video 调用计数
     quota_lock = threading.Lock()                         # M4.3:并行 analyze 组下保护 quota 读-改-写(串行也无害)
+    # P0-3 挂点①:per-tree 熔断。子 agent 复用【本】闭包 → 天然共享同一个 guard(全树一本账)。
+    if guard is None:
+        from pipeline.agentops.treeguard import TreeGuard
+        guard = TreeGuard(trace=trace)
 
     def _do(cid, name, inputs, upstream, uses) -> ExecResult:
         if name not in ALL_TOOLS:
@@ -551,8 +673,7 @@ def _make_executor(sandbox, trace, schema, session_id, owner: str = "anon") -> C
                         note = (f"已达本请求视频分析上限({config.MAX_VIDEOS_PER_REQUEST} 个),这个【没分析】。"
                                 "请【就已分析过的那些视频】给出结论:不要再调 analyze_video,"
                                 "也不要把没分析的视频当成分析过了来说;要覆盖更多就让用户缩小候选或分批问。")
-                        pv, n = _preview({"answer": note, "enough": "no"})
-                        return ExecResult(ok=True, value={"answer": note, "enough": "no"}, preview=pv, n=n)
+                        return _soft_note(note)   # 全文回喂:配额指令被 _preview 截断同病(见 _soft_note)
                     quota["analyzed"] += 1
         # loop_execute=execute:spawn_agents 的子 agent 复用【本】execute 闭包 → analyze 计入同一
         # 配额(不绕过成本闸),token 也折进同一 usage 审计。execute 在下方定义,运行时已绑定(闭包)。
@@ -579,9 +700,30 @@ def _make_executor(sandbox, trace, schema, session_id, owner: str = "anon") -> C
 
     def execute(cid, name, inputs, upstream, uses) -> ExecResult:
         t0 = time.perf_counter()                          # M4.2:per-tool 墙钟
-        res = _do(cid, name, inputs, upstream, uses)
+        # P0-3 挂点①:熔断在最前(钱比配额更硬)。show_* 交付类放行:不烧 LLM 钱,
+        # 且触闸后仍要能把已有结果交付给用户。admit 放行即预留、settle 释放 ——
+        # 否则同一步 K 个并行 analyze 在钱落账前互相看不见,超冲 = K×单次成本(红队 B3,
+        # review 变异验证:光加锁防不住)。触闸 → 软失败信封【全文】回喂,教大脑收口。
+        if not name.startswith("show_"):
+            # analyze_video 用悲观口径估价:pro/长视频单次 $0.10~0.30,按通用 $0.05 预留会让
+            # 并行 analyze 把 cap 冲穿 80%+(review 验算)。缓存命中(免费)也按此预留 —— 保守方向。
+            est = config.TREE_ANALYZE_ESTIMATE_USD if name == "analyze_video" else None
+            blocked = guard.admit(estimate=est, what=f"工具 {name}")
+            if blocked:
+                res = _soft_note(blocked)   # 全文回喂(_preview 会把指令腰斩,见 _soft_note)
+                res.ms = (time.perf_counter() - t0) * 1000.0
+                return res
+            try:
+                res = _do(cid, name, inputs, upstream, uses)
+            finally:
+                guard.settle(est)           # 与 admit 同一估价;异常也要释放(实测已落账)
+        else:
+            res = _do(cid, name, inputs, upstream, uses)
         res.ms = (time.perf_counter() - t0) * 1000.0
         return res
+    # P0-3:把 guard 挂在闭包对象上 —— 子 agent 拿到 execute 就能取到【同一本账】,
+    # 不必给 run_fanout 加参数(它的签名是既有契约,改动面越小越好)。
+    execute.tree_guard = guard
     return execute
 
 
@@ -776,11 +918,15 @@ def run_query_loop(nl: str, *, schema: dict, replay_context: "str | None", sandb
     注:子代理(subagents)仍走 SUBAGENT_MODEL/LOOP_MODEL 默认,不随本参数切换。"""
     conv = make_conversation(model or config.LOOP_MODEL, loop_function_declarations(),
                              _loop_system(schema, replay_context, runtime_facts), image=image)
-    execute = _make_executor(sandbox, trace, schema, session_id, owner=owner)
+    # P0-3:一次请求 = 一棵树 = 一本账。同一个 guard 同时喂给两个挂点(工具闸 + 每步 generate 闸);
+    # 子 agent 复用本 execute 闭包 → 工具闸天然共享,run_loop 侧由 subagents 显式传同一实例。
+    from pipeline.agentops.treeguard import TreeGuard
+    guard = TreeGuard(trace=trace)
+    execute = _make_executor(sandbox, trace, schema, session_id, owner=owner, guard=guard)
     _critic_on = config.USE_SELF_CHECK_CRITIC if use_critic is None else use_critic
     critic = make_self_check_critic() if _critic_on else None   # 自检 B:请求级模式(默认跟全局)
     _t0 = time.perf_counter()
-    r = run_loop(nl, conv, execute, on_step=on_step, critic=critic)
+    r = run_loop(nl, conv, execute, on_step=on_step, critic=critic, guard=guard)
     _total_ms = (time.perf_counter() - _t0) * 1000
     # L1 机械兜底:答案里的裸 id 清洗(能映射「第N个」就换,不能就删);命中数进指标 →
     # 长期为 0 说明模型已自觉,教训 L01 可退役(prompt-constitution-lessons.md §5 闭环)。

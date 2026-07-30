@@ -116,8 +116,16 @@ def get_usage() -> dict:
 
 
 def summarize(usage: dict | None = None) -> dict:
-    """{model:{in,out,total,calls}} → 扁平总计 + 按模型单价估算的成本。"""
-    usage = usage if usage is not None else get_usage()
+    """{model:{in,out,total,calls}} → 扁平总计 + 按模型单价估算的成本。
+
+    并发安全:P0-3 让本函数进了热路径(treeguard 每次放行判定都读),而并行 worker 的
+    add_usage 可能同时 setdefault 一个【新】模型键(analyze/子 agent 模型首调即插键)——
+    无锁遍历活 dict 会 RuntimeError(dictionary changed size during iteration),被
+    treeguard.spent() 吞掉后,闸门恰在新钱落账的那一刻读到陈旧值多放行一次(review 确认)。
+    锁内浅拷贝一次,开销可忽略。"""
+    if usage is None:
+        with _LOCK:
+            usage = {k: dict(v) for k, v in get_usage().items()}
     tin   = sum(d["in"]    for d in usage.values())
     tout  = sum(d["out"]   for d in usage.values())
     ttot  = sum(d["total"] for d in usage.values())

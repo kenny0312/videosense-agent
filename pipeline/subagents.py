@@ -98,9 +98,33 @@ def _run_one(task: dict, *, execute, sandbox, trace, schema, session_id, owner,
         conv = loop_driver.make_conversation(model, decls, system)
         # 复用父 execute 闭包 → 共享 analyze 配额与 usage;无父闭包(离线单测)→ 现建一个(独立配额)。
         ex = execute or loop_driver._make_executor(sandbox, trace, schema, session_id, owner=owner)
-        r = loop_driver.run_loop(instruction, conv, ex, max_steps=max_steps, critic=None)
-        if r.answer is not None:
+        # P0-3:子 agent 的 mini-loop 也要过每步 generate 闸 —— 否则一个进入 Trap 的子 agent
+        # 可以在闸外只思考不调工具地烧钱。guard 从父 execute 闭包上取(全树一本账);
+        # 取不到(离线单测/无父闭包)则由 run_loop 侧按 None 处理 = 不闸。
+        r = loop_driver.run_loop(instruction, conv, ex, max_steps=max_steps, critic=None,
+                                 guard=getattr(ex, "tree_guard", None))
+        if getattr(r, "terminated", "") == "tree_guard":
+            # 被全树成本护栏硬终止:r.answer 是面向最终用户的系统占位话术("调高成本上限"
+            # 之类),不是子任务结论 —— 原样回流会被主脑当"证据"综合(K 个触闸 = K 份),
+            # 记 ok 则让静默失败在这条新路径复活(review 确认,两者都不行)。
+            out = "(子 agent 因成本护栏终止,本子任务无结论)"
+            if span:
+                span.soft("EXEC_NOT_CONVERGED", error="tree_guard")
+        elif r.answer is not None:
+            from pipeline.agentops.treeguard import GUARD_NOTE_PREFIX
             out = r.answer
+            k = out.find(GUARD_NOTE_PREFIX)
+            if k != -1:                    # 软收口:剥掉 (系统) 记账行 —— 钱账披露归主回答统一给,
+                body = out[:k].rstrip()    # 子 agent 的触闸时刻旧账回流只会跟主账互相矛盾(review 确认)
+                # "已标注"只能照抄被剥的那行原本的声称 —— 子 agent 若从没收到过信封
+                # (收口 reconcile 才首次发现超支),无条件写"已标注"= 假陈述换路复活(round2 确认)。
+                claimed = "已在上文标注" in out[k:]
+                if body:
+                    out = body + ("\n(注:本子任务因成本护栏提前收口,以上为部分结论,未核查处已标注)"
+                                  if claimed else
+                                  "\n(注:本子任务因成本护栏提前收口,以上结论未经完整核查)")
+                else:                      # 答案本体为空(防御:该形状通常已被硬终止路径接管)
+                    out = "(子 agent 因成本护栏终止,本子任务无结论)"
             if span:
                 span.ok(steps=getattr(r, "steps", None))
         else:                                             # 未收敛也是一种失败,要有码

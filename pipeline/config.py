@@ -83,6 +83,22 @@ SEMANTIC_SEARCH_K   = int(os.environ.get("SEMANTIC_SEARCH_K", "8"))
 MAX_LOOP_STEPS     = int(os.environ.get("MAX_LOOP_STEPS", "16"))    # 终止护栏:防死循环
 LOOP_REPEAT_LIMIT  = int(os.environ.get("LOOP_REPEAT_LIMIT", "2"))  # 同一(工具,参数)连续失败上限
 
+# ── P0-3 长程引擎护栏:per-tree(=per-request)美元熔断 + 墙钟 ────────────────
+# 与 RL_* 的分工:RL_* 是【跨请求】的日/会话顶(事后 record);这两条是【请求内】的实时闸,
+# 治的是"一次请求里一棵树把钱烧穿"—— DVD 实测 Trace 税 12× 成本方差正是这个形状。
+# 两处挂点(缺一不可,红队 B1):工具执行前 + 主循环每步 generate 前 —— 只闸工具挡不住
+# "进入 Trap 循环只思考不调工具"的烧钱。
+# 默认 0 = 关(Part 0 不变量①:开关全关时行为与升级前逐字节等价)。
+MAX_TREE_COST_USD  = float(os.environ.get("MAX_TREE_COST_USD", "0"))   # 0=关;实验建议 0.80
+MAX_TREE_WALL_S    = float(os.environ.get("MAX_TREE_WALL_S", "0"))     # 0=关;生产建议 900
+# 触闸判据是"预估后比 + 在飞预留":spent + pending + 本次估价 > cap 即拦(而非事后发现超了),
+# 否则最后一次调用总能越线、K 个并行调用在钱落账前互相看不见(超冲 K×,review 变异验证)。
+TREE_CALL_ESTIMATE_USD = float(os.environ.get("TREE_CALL_ESTIMATE_USD", "0.05"))
+# analyze_video 单独给悲观口径:pro/长视频单次 $0.10~0.30(60k tok × pro 价),按 $0.05 预留
+# 会让并行 analyze 把 cap 冲穿 80%+(review 验算)。代价是缓存命中(免费)也按此预留 ——
+# 保守方向,与"宁可早触闸"的设计一致。
+TREE_ANALYZE_ESTIMATE_USD = float(os.environ.get("TREE_ANALYZE_ESTIMATE_USD", "0.30"))
+
 # 自检 B(设计 self-check-critic.md):收口前插一个显式 critic 判"满足用户没",没满足喂回再来一轮。
 #   2026-07-16 判决:12 争议题×两臂×n=3,成功数 20 vs 20 完全打平(无功也无害)→ 默认关,
 #   不为零收益付每次收口的额外调用;保留为【请求级模式】(API critic=true / UI 开关)与本 env
