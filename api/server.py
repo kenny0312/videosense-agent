@@ -84,7 +84,7 @@ def _parse_access_keys(raw: str) -> tuple[list[str], dict[str, str]]:
 
 
 _ACCESS_KEYS, _KEY_TO_NAME = _parse_access_keys(os.environ.get("APP_ACCESS_KEYS", ""))
-_OPEN_PATHS = {"/health"}
+_OPEN_PATHS = {"/health", "/internal/tasks/advance"}   # advance 豁免口令墙,被 OIDC 罩住(S-3)
 
 # ── fail-closed:生产环境(APP_ENV=prod)必须设 APP_ACCESS_KEYS,否则拒绝启动 ──
 # 防"忘设/写错口令 = 全站裸奔"(videosense-pyai 就是这么死的:allUsers + 无口令 → 匿名可烧钱)。
@@ -334,6 +334,60 @@ def task_note(task_id: str, request: Request, body: dict):
         return Response(status_code=404)
     task_store.add_event(task_id, "user_note", {"note": note})   # 下一波组装注入(S-3)
     return {"ok": True}
+
+
+def _oidc_claims(token: str) -> dict:
+    """Google OIDC token → claims(单测打桩点;live 走 google-auth 验签)。"""
+    from google.auth.transport import requests as garequests
+    from google.oauth2 import id_token as gid
+    return gid.verify_oauth2_token(token, garequests.Request(),
+                                   audience=config.TASKS_ADVANCE_URL)
+
+
+def _verify_advance_auth(request: Request, authorization: "str | None",
+                         shared: "str | None") -> bool:
+    """S-3 鉴权:生产(K_SERVICE 在场)只认 Cloud Tasks 的 OIDC(audience 钉死 advance
+    完整 URL);共享密钥仅限本地(检测到 K_SERVICE 直接禁用 —— 红队:不留降级到生产)。
+    校验失败一律 False(端点回 403 fail-closed)。"""
+    on_cloudrun = bool(os.environ.get("K_SERVICE"))
+    if authorization and authorization.lower().startswith("bearer "):
+        try:
+            claims = _oidc_claims(authorization.split(None, 1)[1])
+            # 【必须钉调用者身份】(review-HIGH):verify 只校验 签名/exp/aud,而 SA 的
+            # ID token audience 谁都能自选 —— 任何 Google 账号都能铸出 aud=本服务的合法
+            # token。audience 之外必须比对 email == 我们配置的投递 SA,未配置 = fail-closed。
+            return (bool(config.TASKS_ADVANCE_URL) and bool(config.TASKS_INVOKER_SA)
+                    and claims.get("email") == config.TASKS_INVOKER_SA
+                    and claims.get("email_verified") is True)
+        except Exception:
+            log.warning("advance OIDC 校验失败", exc_info=True)
+            return False
+    if on_cloudrun:                                        # 云上无 OIDC = 拒,密钥路径禁用
+        return False
+    import hmac as _hmac
+    want = os.environ.get("TASKS_SHARED_SECRET", "")
+    return bool(want) and bool(shared) and _hmac.compare_digest(want, shared)
+
+
+@app.post("/internal/tasks/advance")
+def tasks_advance(request: Request, body: dict):
+    """Cloud Tasks 回调:推进一波。RETRY → 503(让队列退避重来,跨过租约期);其余 200。
+    inline 驱动不经这里(daemon 线程直调 task_runner.advance,同一代码路径)。"""
+    if not config.USE_TASKS:
+        return Response(status_code=404)
+    if not _verify_advance_auth(request, request.headers.get("Authorization"),
+                                request.headers.get("X-Tasks-Secret")):
+        return Response(status_code=403)
+    task_id = str((body or {}).get("task_id") or "")
+    wave_n = (body or {}).get("wave_n")
+    if not task_id or not isinstance(wave_n, int) or wave_n < 0:
+        return Response(json.dumps({"error": "需要 task_id 与 wave_n(int≥0)"}),
+                        status_code=422, media_type="application/json")
+    from pipeline import task_runner
+    out = task_runner.advance(task_id, wave_n)
+    if out.get("result") == task_runner.RETRY:
+        return Response(json.dumps(out), status_code=503, media_type="application/json")
+    return out
 
 
 @app.post("/v1/tasks/{task_id}/cancel")

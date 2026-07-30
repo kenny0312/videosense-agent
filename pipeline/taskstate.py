@@ -64,14 +64,37 @@ WHERE task_id=%(task_id)s
   AND wave_n=%(wave_n)s
   AND (lease_until IS NULL OR lease_until < now())
 RETURNING task_id, owner, goal, plan, status, wave_n, lease_token,
-          budget_cap, spent_usd, wasted_usd
+          budget_cap, spent_usd, wasted_usd, precharged_usd
 """
+
+# 记账先行(S-3 步3):本波保守预估悲观计入 spent —— 超时波也推高 spent,预算闸对重试
+# 风暴有视力。【同一条语句】把上一 attempt 未结算的预估滚转成 wasted(review-HIGH:
+# 没这步,每个失败 attempt 泄漏一份 est 永久滞留 spent,wasted_usd 变死列):
+#   spent  = spent - 上次预估 + 本次预估;wasted += 上次预估;precharged = 本次预估。
+# 提交时(CHECKPOINT)实测覆盖预估并清 precharged。
+PRECHARGE_SQL = """
+UPDATE agent_tasks
+SET spent_usd = spent_usd - precharged_usd + %(est)s,
+    wasted_usd = wasted_usd + precharged_usd,
+    precharged_usd = %(est)s, updated_at=now()
+WHERE task_id=%(task_id)s
+  AND lease_token=%(token)s
+  AND status='running'
+RETURNING spent_usd, wasted_usd
+"""
+
+
+def precharge_params(task_id: str, token: str, est: float) -> dict:
+    return {"task_id": task_id, "token": token, "est": float(est)}
+
 
 # 落检查点(CAS):0 行 = 本 attempt 是僵尸 → 整波战果丢弃,只记 wasted event。
 # status='running' 条件同时挡住 cancelled→done(裸 SQL 也绕不过状态守卫,S-1 验收③)。
+# precharged_usd 清零 = 本 attempt 的预估已由实测结清。
 CHECKPOINT_SQL = """
 UPDATE agent_tasks
 SET plan=%(plan)s, spent_usd=%(spent_usd)s, wasted_usd=%(wasted_usd)s,
+    precharged_usd = 0,
     wave_n=wave_n + 1, lease_until=NULL, lease_token=NULL, updated_at=now()
 WHERE task_id=%(task_id)s
   AND wave_n=%(wave_n)s

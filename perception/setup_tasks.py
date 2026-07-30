@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS agent_tasks (
     budget_cap   NUMERIC NOT NULL,
     spent_usd    NUMERIC NOT NULL DEFAULT 0,
     wasted_usd   NUMERIC NOT NULL DEFAULT 0,
+    precharged_usd NUMERIC NOT NULL DEFAULT 0,  -- 本 attempt 未结算的预估(重试时转 wasted)
     notified_at  TIMESTAMPTZ,
     parent_task_id TEXT,
     created_at   TIMESTAMPTZ DEFAULT now(),
