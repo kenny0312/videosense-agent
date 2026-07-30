@@ -156,6 +156,19 @@ class LoopResult:
 
 # ── 纯控制流(注入 conversation + execute,离线可测)──────────────
 _TRIP_GRACE_STEPS = 2      # P0-3:触闸后给几步收口机会;用尽即强制终止(terminated="tree_guard")
+RUNWAY_WARN_LEFT = 4       # 剩几步时提醒大脑"跑道快到头了"(0=关)
+
+
+def _runway_note(step: int, max_steps: int) -> str:
+    """跑道将尽提醒(Phase 1 试跑实测的真缺陷:大脑在【第 1 步】判断"我自己做得完",
+    然后逐个 analyze_video 烧光 16 步、零答案交付 —— 循环里没有任何机制在"步数将尽而活
+    还很多"时把它拉回来。这里补一句自省提示:要么并行拆、要么就现有证据收口标【未核查】,
+    别撞墙后什么都交不出来)。"""
+    left = max_steps - step
+    return (f"[系统] 提醒:本轮最多还能再做 {left} 步就必须交答案了。"
+            "如果剩下的活明显做不完 —— 要么把还没做的部分【并行拆出去】"
+            "(spawn_agents,一次给多个子任务),要么【立刻就已有证据收口】、"
+            "把没核实的部分写【未核查】。别把剩余步数全用在逐个细看上,那样会一无所获。")
 
 # 护栏触发且模型在宽限内仍不收口 → 交这句(【绝不能返回 None】:orchestrator 把 answer=None
 # 当"瞬时波动"给用户"请再发一次"的重试提示 —— 那等于把熔断刚省下的钱请回来重烧一遍)。
@@ -217,6 +230,7 @@ def run_loop(user_query: str, conversation, execute: Callable, *,
     empty_retry_used = False
     steps_after_trip = 0                     # 触闸后的宽限步数(有界,防继续空转烧钱)
     envelope_seen = False                    # 收口信封是否已进过【本】conversation
+    runway_warned = False                    # 跑道将尽提醒只发一次
     for step in range(max_steps):
         # P0-3 挂点②(红队 B1):每步 generate 【之前】过一次闸。只挂工具闸挡不住
         # "进入 Trap 循环只思考不调工具"的烧钱 —— 那条路径永远不经过 execute。
@@ -249,6 +263,14 @@ def run_loop(user_query: str, conversation, execute: Callable, *,
                     return LoopResult(_GUARD_STOP_ANSWER + guard.final_note(mark_claim=False),
                                       step, "tree_guard", trace, ledger, llm_calls,
                                       step_walls, turns)
+        # 跑道将尽:提醒一次(只在【还在调工具】时提醒 —— 已经在收口的不打扰)。
+        # 一次性:提醒完就关,免得每步都念。
+        if (RUNWAY_WARN_LEFT and not runway_warned
+                and max_steps - step <= RUNWAY_WARN_LEFT and step > 0):
+            runway_warned = True
+            note = _runway_note(step, max_steps)
+            msg = _attach_envelope(msg, note)
+            turns.append({"step": step, "nudge": note})
         try:
             calls, text = conversation.send(msg)
         finally:

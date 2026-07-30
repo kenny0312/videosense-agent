@@ -521,3 +521,46 @@ def test_genai_conversation_attaches_image_first_turn(monkeypatch):
     p1, p2 = sent["payloads"]
     assert isinstance(p1, list) and len(p1) == 2   # [image_part, text]
     assert p2 == "follow up"                        # 图只附一次
+
+
+def test_runway_warning_fires_once_before_wall():
+    """Phase 1 试跑实测的真缺陷:大脑第 1 步判"我做得完",逐个 analyze 烧光 16 步零答案。
+    剩几步时必须提醒一次(要么并行拆、要么收口标未核查),且只提醒一次。"""
+    from pipeline import loop_driver as LD
+
+    class _Conv:
+        last_thoughts = ""
+        def __init__(self): self.sent = []
+        def send(self, msg):
+            self.sent.append(msg)
+            return [LD.Call("analyze_video", {"video_id": f"v{len(self.sent)}"}, [])], None
+
+    def _exec(*a, **k):
+        return LD.ExecResult(ok=True, value={"answer": "看了"}, preview=[], n=1)
+    conv = _Conv()
+    r = LD.run_loop("看这一堆视频", conv, _exec, max_steps=10)
+    assert r.terminated == "max_steps"
+    hits = [m for m in conv.sent if "跑道" in str(m) or "还能再做" in str(m)]
+    assert len(hits) == 1, f"提醒应恰好一次,实际 {len(hits)}"
+    # 提醒落在最后 RUNWAY_WARN_LEFT 步内
+    idx = next(i for i, m in enumerate(conv.sent) if "还能再做" in str(m))
+    assert 10 - idx <= LD.RUNWAY_WARN_LEFT + 1
+    nudges = [t for t in r.turns if "还能再做" in str(t.get("nudge", ""))]
+    assert len(nudges) == 1                       # trace 上也留痕
+
+
+def test_runway_warning_can_be_disabled(monkeypatch):
+    """开关为 0 时行为与升级前逐字节一致(不变量①)。"""
+    from pipeline import loop_driver as LD
+    monkeypatch.setattr(LD, "RUNWAY_WARN_LEFT", 0)
+
+    class _Conv:
+        last_thoughts = ""
+        def __init__(self): self.sent = []
+        def send(self, msg):
+            self.sent.append(msg)
+            return [LD.Call("sql_query", {"sql": "s"}, [])], None
+    conv = _Conv()
+    LD.run_loop("q", conv, lambda *a, **k: LD.ExecResult(ok=True, value={}, preview=[], n=1),
+                max_steps=6)
+    assert not any("还能再做" in str(m) for m in conv.sent)

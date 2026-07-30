@@ -13,6 +13,7 @@ from __future__ import annotations
 import collections
 import hashlib
 import json
+import os
 import threading
 
 from pipeline import config
@@ -27,12 +28,17 @@ _REDIS_LOCK = threading.Lock()
 
 
 def make_key(video_id: str, *, question: str, context, rubric, time_range, model: str) -> str:
-    """稳定缓存键:av:{video_id}:{md5(规范化参数)}。参数 sort_keys → 顺序无关。"""
+    """稳定缓存键:av:{video_id}:{md5(规范化参数)}。参数 sort_keys → 顺序无关。
+
+    ANALYZE_CACHE_NS(评测用,默认空):给键加命名空间前缀 —— gate 实验三臂必须【全冷】,
+    否则先跑的臂把缓存喂暖,后跑的臂成本虚低,"全口径成本"就是假的(红队 C3)。
+    不设该变量时键与升级前【逐字节一致】(生产路径零影响)。"""
     payload = json.dumps(
         {"q": question, "ctx": context, "rubric": rubric, "tr": time_range, "m": model},
         sort_keys=True, ensure_ascii=False, default=str)
     digest = hashlib.md5(payload.encode("utf-8")).hexdigest()
-    return f"av:{video_id}:{digest}"
+    ns = os.environ.get("ANALYZE_CACHE_NS", "")
+    return f"av:{ns}:{video_id}:{digest}" if ns else f"av:{video_id}:{digest}"
 
 
 # ── L2 Redis(惰性、fail-open)────────────────────────────────
