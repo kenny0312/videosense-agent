@@ -30,13 +30,19 @@ def _inline(task_id: str, wave_n: int) -> None:
     threading.Thread(target=run, daemon=True, name=f"task-{task_id}-w{wave_n}").start()
 
 
-def _cloudtasks(task_id: str, wave_n: int) -> None:
+def task_name(task_id: str, wave_n: int, salt: str = "") -> str:
+    """命名任务的名字(纯函数,单测钉)。salt 非空 = resume/救援重投:执行过的名字有
+    ~1h 墓碑期,裸重投会 ALREADY_EXISTS 静默丢投(假活)—— 必须带后缀绕开。"""
+    return f"{task_id}-w{wave_n}" + (f"-{salt}" if salt else "")
+
+
+def _cloudtasks(task_id: str, wave_n: int, salt: str = "") -> None:
     """生产驱动:命名 HTTP 任务(OIDC 由队列侧配置注入,鉴权在 advance 端点验)。"""
     from google.cloud import tasks_v2                    # 惰性:本地不装也能跑 inline
     from google.api_core.exceptions import AlreadyExists
     client = tasks_v2.CloudTasksClient()
     parent = client.queue_path(config.GCP_PROJECT, config.TASKS_REGION, config.TASKS_QUEUE)
-    name = f"{parent}/tasks/{task_id}-w{wave_n}"
+    name = f"{parent}/tasks/{task_name(task_id, wave_n, salt)}"
     task = {
         "name": name,
         "http_request": {
@@ -57,9 +63,10 @@ def _cloudtasks(task_id: str, wave_n: int) -> None:
         log.info("命名任务已存在(%s-w%s)= 排队去重,视为成功", task_id, wave_n)
 
 
-def enqueue_advance(task_id: str, wave_n: int) -> None:
-    """投递下一波。失败上抛(fail-closed 归调用方)。"""
+def enqueue_advance(task_id: str, wave_n: int, salt: str = "") -> None:
+    """投递下一波。失败上抛(fail-closed 归调用方)。
+    salt:resume/救援重投必须传非空(绕命名任务墓碑,见 task_name);常规续投留空。"""
     if config.TASKS_DRIVER == "cloudtasks":
-        _cloudtasks(task_id, wave_n)
+        _cloudtasks(task_id, wave_n, salt)
     else:
         _inline(task_id, wave_n)

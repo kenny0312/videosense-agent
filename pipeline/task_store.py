@@ -86,6 +86,22 @@ def set_status(task_id: str, to_status: str) -> bool:
     return bool(rows)
 
 
+def resume(task_id: str, new_cap: float) -> "tuple[int, float] | None":
+    """复活暂停的任务:新 cap + 回 running + 清租约。返回 (当前 wave_n, 生效 cap);
+    None = 不在暂停态(幂等:重复 resume 不炸)。投递归调用方(必须投,否则死锁)。"""
+    rows = _execute(TS.RESUME_SQL, TS.resume_params(task_id, new_cap))
+    return (int(rows[0][0]), float(rows[0][1])) if rows else None
+
+
+def live_state(task_id: str) -> "tuple[str, float, float] | None":
+    """(status, spent_usd, budget_cap):步内取消/预算闸的实时读数(S-4 wrapper 用)。"""
+    rows = _execute("SELECT status, spent_usd, budget_cap FROM agent_tasks "
+                    "WHERE task_id=%(t)s", {"t": task_id})
+    if not rows:
+        return None
+    return (rows[0][0], float(rows[0][1]), float(rows[0][2]))
+
+
 def get_view(owner: str, task_id: str, events_limit: int = 10) -> "dict | None":
     """状态+进度(done/remaining 按 id 计数)+成本行+events 尾部。owner 不符 → None(404 口径)。"""
     rows = _execute(_GET_SQL, {"task_id": task_id, "owner": owner})

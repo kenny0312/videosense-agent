@@ -223,3 +223,125 @@ def test_idempotent_hit_repairs_pending_ghost(client, monkeypatch):
     monkeypatch.setattr(task_store, "status_of", lambda tid: ("running", 3))
     assert c.post("/v1/tasks", json={"goal": "x"}, headers=_auth()).status_code == 200
     assert enq == []
+
+
+# ── S-4 复活 / S-5 重推 ──
+def test_resume_sets_cap_and_must_enqueue(client, monkeypatch):
+    """红队 HIGH:resume 没投递 = 必死锁。新 cap + 回 running + 清租约(SQL)+ 投当前波,
+    且投递名带 salt(绕命名任务墓碑,否则执行过的波号裸重投静默丢投 = 假活)。"""
+    c, srv = client
+    from pipeline import task_queue
+    seen = {}
+    monkeypatch.setattr(task_store, "owner_of", lambda tid: "kenny")
+    monkeypatch.setattr(task_store, "live_state", lambda tid: ("paused_budget", 0.1, 0.5))
+    monkeypatch.setattr(task_store, "resume",
+                        lambda tid, cap: seen.update(cap=cap) or (4, cap))
+    monkeypatch.setattr(task_store, "add_event",
+                        lambda tid, kind, payload=None: seen.setdefault("events", []).append(kind))
+    monkeypatch.setattr(task_queue, "enqueue_advance",
+                        lambda tid, w, salt="": seen.update(enq=(tid, w, bool(salt))))
+    r = c.post("/v1/tasks/tk_1/resume", json={"budget_cap": 99.0}, headers=_auth())
+    assert r.status_code == 200 and r.json()["resumed"] is True
+    assert seen["cap"] <= min(srv.config.TASK_MAX_CAP_USD, srv.config.RL_TASK_DAILY_COST_USD)
+    assert seen["enq"] == ("tk_1", 4, True)                  # 投当前波 + 带 salt
+    assert "resumed" in seen["events"]
+
+
+def test_resume_rejects_bad_cap_and_is_idempotent(client, monkeypatch):
+    c, _ = client
+    monkeypatch.setattr(task_store, "owner_of", lambda tid: "kenny")
+    monkeypatch.setattr(task_store, "live_state", lambda tid: ("running", 0.1, 0.5))
+    monkeypatch.setattr(task_store, "resume", lambda tid, cap: None)   # 不在暂停态
+    r = c.post("/v1/tasks/tk_1/resume", json={}, headers=_auth())
+    assert r.status_code == 200 and r.json()["resumed"] is False       # 幂等不报错
+    assert c.post("/v1/tasks/tk_1/resume", json={"budget_cap": 0},
+                  headers=_auth()).status_code == 422
+    r2 = c.post("/v1/tasks/tk_1/resume", content='{"budget_cap": NaN}',
+                headers={**_auth(), "Content-Type": "application/json"})
+    assert r2.status_code == 422
+
+
+def test_resume_enqueue_failure_goes_back_to_paused(client, monkeypatch):
+    """投不出去必须回 paused_error —— 否则状态是 running 却永远等不来波(假活)。"""
+    c, _ = client
+    from pipeline import task_queue
+    ops = []
+    monkeypatch.setattr(task_store, "owner_of", lambda tid: "kenny")
+    monkeypatch.setattr(task_store, "live_state", lambda tid: ("paused_error", 0.1, 0.5))
+    monkeypatch.setattr(task_store, "resume", lambda tid, cap: (2, cap))
+    monkeypatch.setattr(task_store, "set_status",
+                        lambda tid, st: ops.append(st) or True)
+    monkeypatch.setattr(task_store, "add_event", lambda tid, kind, payload=None: ops.append(kind))
+    monkeypatch.setattr(task_queue, "enqueue_advance",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down")))
+    r = c.post("/v1/tasks/tk_1/resume", json={}, headers=_auth())
+    assert r.status_code == 503
+    assert "paused_error" in ops and "enqueue_failed" in ops
+
+
+def test_nudge_only_for_running(client, monkeypatch):
+    c, _ = client
+    from pipeline import task_queue
+    enq = []
+    monkeypatch.setattr(task_store, "owner_of", lambda tid: "kenny")
+    monkeypatch.setattr(task_queue, "enqueue_advance",
+                        lambda tid, w, salt="": enq.append((tid, w, bool(salt))))
+    monkeypatch.setattr(task_store, "status_of", lambda tid: ("paused_budget", 3))
+    assert c.post("/v1/tasks/tk_1/nudge", headers=_auth()).json()["nudged"] is False
+    assert enq == []                                         # 暂停的不该走重推
+    monkeypatch.setattr(task_store, "status_of", lambda tid: ("running", 3))
+    assert c.post("/v1/tasks/tk_1/nudge", headers=_auth()).json()["nudged"] is True
+    assert enq == [("tk_1", 3, True)]                        # 带 salt 绕墓碑
+
+
+def test_resume_and_nudge_guarded(client, monkeypatch):
+    c, _ = client
+    g = _auth("guest", "gg")
+    assert c.post("/v1/tasks/tk_1/resume", json={}, headers=g).status_code == 403
+    assert c.post("/v1/tasks/tk_1/nudge", headers=g).status_code == 403
+    monkeypatch.setattr(task_store, "owner_of", lambda tid: "别人")
+    assert c.post("/v1/tasks/tk_1/resume", json={}, headers=_auth()).status_code == 404
+    assert c.post("/v1/tasks/tk_1/nudge", headers=_auth()).status_code == 404
+
+
+def test_task_name_salt_bypasses_tombstone():
+    from pipeline import task_queue
+    assert task_queue.task_name("tk_1", 3) == "tk_1-w3"
+    assert task_queue.task_name("tk_1", 3, "abc") == "tk_1-w3-abc"
+
+
+def test_resume_at_hard_cap_tells_the_truth(client, monkeypatch):
+    """review-HIGH:spent 贴顶后任何 cap 都过不了波开头闸,旧写法回 200"已恢复"
+    却下一波立刻又暂停 = 假成功骗 UI。必须诚实回 resumed=false + 人话。"""
+    c, srv = client
+    from pipeline import task_queue
+    enq = []
+    monkeypatch.setattr(task_store, "owner_of", lambda tid: "kenny")
+    monkeypatch.setattr(task_store, "live_state",
+                        lambda tid: ("paused_budget", 2.5, 2.0))   # 已花超硬顶
+    monkeypatch.setattr(task_store, "resume", lambda tid, cap: (3, cap))
+    monkeypatch.setattr(task_queue, "enqueue_advance", lambda *a, **k: enq.append(a))
+    r = c.post("/v1/tasks/tk_1/resume", json={"budget_cap": 99}, headers=_auth())
+    assert r.status_code == 200 and r.json()["resumed"] is False
+    assert "上限" in r.json()["note"] and enq == []           # 没白投一波
+    # 还没贴顶 → 照常恢复
+    monkeypatch.setattr(task_store, "live_state", lambda tid: ("paused_budget", 0.4, 0.5))
+    monkeypatch.setattr(task_store, "add_event", lambda *a, **k: None)
+    r2 = c.post("/v1/tasks/tk_1/resume", json={}, headers=_auth())
+    assert r2.json()["resumed"] is True and enq
+
+
+def test_resume_survives_ledger_read_failure(client, monkeypatch):
+    """离线纪律 + fail-open:读实时账目失败不许拦住用户恢复(波开头闸会兜住),
+    也不许让端点 500。"""
+    c, _ = client
+    from pipeline import task_queue
+    enq = []
+    monkeypatch.setattr(task_store, "owner_of", lambda tid: "kenny")
+    monkeypatch.setattr(task_store, "live_state",
+                        lambda tid: (_ for _ in ()).throw(RuntimeError("db down")))
+    monkeypatch.setattr(task_store, "resume", lambda tid, cap: (1, cap))
+    monkeypatch.setattr(task_store, "add_event", lambda *a, **k: None)
+    monkeypatch.setattr(task_queue, "enqueue_advance", lambda *a, **k: enq.append(a))
+    r = c.post("/v1/tasks/tk_1/resume", json={}, headers=_auth())
+    assert r.status_code == 200 and r.json()["resumed"] is True and enq

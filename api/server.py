@@ -390,6 +390,81 @@ def tasks_advance(request: Request, body: dict):
     return out
 
 
+@app.post("/v1/tasks/{task_id}/resume")
+def task_resume(task_id: str, request: Request, body: dict | None = None):
+    """S-4 复活(paused_budget 提额 / paused_error 重试):新 cap + 回 running + 清租约
+    + 【必须投递】当前波(红队 HIGH:v1 的 resume 没投递 = 必死锁)。
+    投递名带 salt 绕命名任务墓碑(执行过的名字 ~1h 内裸重投会静默丢投 = 假活)。"""
+    if (r := _tasks_gate(request)) is not None:
+        return r
+    owner = getattr(request.state, "app_user", "anon")
+    from pipeline import task_queue, task_store
+    if task_store.owner_of(task_id) != owner:
+        return Response(status_code=404)
+    raw = (body or {}).get("budget_cap")
+    import math
+    if raw is None:
+        new_cap = config.TASK_MAX_CAP_USD
+    else:
+        new_cap = float(raw)
+        if not math.isfinite(new_cap) or new_cap <= 0:
+            return Response(json.dumps({"error": "budget_cap 必须是正的有限数"}),
+                            status_code=422, media_type="application/json")
+    new_cap = min(new_cap, config.TASK_MAX_CAP_USD, config.RL_TASK_DAILY_COST_USD)
+    # 贴顶诚实回话(review-HIGH:硬顶之上任何 cap 都过不了波开头闸,旧写法回 200
+    # "已恢复"却下一波立刻又暂停 = 假成功骗 UI)。收口波有收尾额度,所以只有"连收尾
+    # 都不够"才算真到顶。
+    try:
+        live = task_store.live_state(task_id)
+    except Exception:                          # 读不到就照常恢复(波开头闸会兜住),不拦用户
+        log.warning("resume 读实时账目失败(fail-open)", exc_info=True)
+        live = None
+    if live and live[1] > new_cap + config.TASK_FINALIZE_GRACE_USD:
+        return {"ok": True, "resumed": False,
+                "note": (f"这个任务已经花了 ${live[1]:.2f},到了单任务的花费上限 "
+                         f"(${config.TASK_MAX_CAP_USD:.2f}),再恢复也推不动了。"
+                         "要继续请提高上限后重开一个任务,或就现有结果收尾。")}
+    got = task_store.resume(task_id, new_cap)
+    if got is None:                                        # 不在暂停态 → 幂等,不报错
+        return {"ok": True, "resumed": False,
+                "note": "这个任务现在不处于暂停状态,不需要恢复"}
+    wave_n, cap = got
+    task_store.add_event(task_id, "resumed", {"wave": wave_n, "new_cap": cap})
+    try:
+        task_queue.enqueue_advance(task_id, wave_n, salt=uuid.uuid4().hex[:8])
+    except Exception as e:                                 # 投不出去 → 回 paused_error,别假活
+        log.warning("resume 投递失败 %s: %r", task_id, e)
+        task_store.set_status(task_id, "paused_error")
+        task_store.add_event(task_id, "enqueue_failed", {"error": repr(e)[:200],
+                                                         "at": "resume"})
+        return Response(json.dumps({"error": "恢复失败:排队服务暂时不可用,请稍后再试"}),
+                        status_code=503, media_type="application/json")
+    return {"ok": True, "resumed": True, "wave_n": wave_n, "budget_cap": cap}
+
+
+@app.post("/v1/tasks/{task_id}/nudge")
+def task_nudge(task_id: str, request: Request):
+    """S-5 唯一必做件:人肉救援通道 —— 对"running 但久未推进"的任务重投当前波。
+    命名任务带 salt 绕墓碑;CLAIM 的 CAS 保证真在跑的波不会被重复执行。"""
+    if (r := _tasks_gate(request)) is not None:
+        return r
+    owner = getattr(request.state, "app_user", "anon")
+    from pipeline import task_queue, task_store
+    if task_store.owner_of(task_id) != owner:
+        return Response(status_code=404)
+    st = task_store.status_of(task_id)
+    if not st or st[0] != "running":
+        return {"ok": True, "nudged": False,
+                "note": "只有卡住的进行中任务需要重推;暂停的请用恢复"}
+    try:
+        task_queue.enqueue_advance(task_id, st[1], salt=uuid.uuid4().hex[:8])
+    except Exception as e:
+        log.warning("nudge 投递失败 %s: %r", task_id, e)
+        return Response(json.dumps({"error": "重推失败:排队服务暂时不可用"}),
+                        status_code=503, media_type="application/json")
+    return {"ok": True, "nudged": True, "wave_n": st[1]}
+
+
 @app.post("/v1/tasks/{task_id}/cancel")
 def task_cancel(task_id: str, request: Request):
     if (r := _tasks_gate(request)) is not None:

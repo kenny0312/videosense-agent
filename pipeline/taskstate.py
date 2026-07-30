@@ -67,14 +67,17 @@ RETURNING task_id, owner, goal, plan, status, wave_n, lease_token,
           budget_cap, spent_usd, wasted_usd, precharged_usd
 """
 
-# 记账先行(S-3 步3):本波保守预估悲观计入 spent —— 超时波也推高 spent,预算闸对重试
-# 风暴有视力。【同一条语句】把上一 attempt 未结算的预估滚转成 wasted(review-HIGH:
-# 没这步,每个失败 attempt 泄漏一份 est 永久滞留 spent,wasted_usd 变死列):
-#   spent  = spent - 上次预估 + 本次预估;wasted += 上次预估;precharged = 本次预估。
-# 提交时(CHECKPOINT)实测覆盖预估并清 precharged。
+# ── 钱账口径(review 两轮后定稿)────────────────────────────────────────────
+# spent_usd  = 本任务【真实累计花费】,单调不减,含所有白花的钱 → 波开头闸只看它就够;
+# wasted_usd = spent 里"白花"的那部分(仅作披露,不参与闸);
+# precharged_usd = 本 attempt 未结算的悲观预估(成功时被实测替换,失败时留在 spent 里)。
+#
+# 记账先行(S-3 步3):本波预估悲观计入 spent —— 超时/被杀的波【不退这笔钱】,只把它
+# 标记成 wasted(review-HIGH:退钱=闸对重试风暴失明,实测 cap 可被突破 N 倍;
+# 规格原文就是"超时波也推高 spent,预算闸对重试风暴恢复视力")。
 PRECHARGE_SQL = """
 UPDATE agent_tasks
-SET spent_usd = spent_usd - precharged_usd + %(est)s,
+SET spent_usd = spent_usd + %(est)s,
     wasted_usd = wasted_usd + precharged_usd,
     precharged_usd = %(est)s, updated_at=now()
 WHERE task_id=%(task_id)s
@@ -83,9 +86,25 @@ WHERE task_id=%(task_id)s
 RETURNING spent_usd, wasted_usd
 """
 
+# 结算失败 attempt(崩溃/僵尸):实测替换本次预估,且【这笔钱全记浪费】。
+# 与 PRECHARGE 的区别:这里知道实测值,所以退预估换实测是准确的、不是失明。
+SETTLE_FAILED_SQL = """
+UPDATE agent_tasks
+SET spent_usd = spent_usd - precharged_usd + %(actual)s,
+    wasted_usd = wasted_usd + %(actual)s,
+    precharged_usd = 0, updated_at=now()
+WHERE task_id=%(task_id)s
+  AND lease_token=%(token)s
+RETURNING spent_usd, wasted_usd
+"""
+
 
 def precharge_params(task_id: str, token: str, est: float) -> dict:
     return {"task_id": task_id, "token": token, "est": float(est)}
+
+
+def settle_failed_params(task_id: str, token: str, actual: float) -> dict:
+    return {"task_id": task_id, "token": token, "actual": float(actual)}
 
 
 # 落检查点(CAS):0 行 = 本 attempt 是僵尸 → 整波战果丢弃,只记 wasted event。
@@ -129,6 +148,23 @@ def checkpoint_params(task_id: str, wave_n: int, token: str, plan: dict,
     return {"task_id": task_id, "wave_n": int(wave_n), "token": token,
             "plan": Json(plan), "spent_usd": float(spent_usd),
             "wasted_usd": float(wasted_usd)}
+
+
+# 复活(S-4 resume / paused_error 重试):新 cap + 回 running + 【同一条语句清租约】+
+# 返回当前 wave_n 供投递。红队 HIGH:v1 的 resume 没投递 = 必死锁;不清租约 = 认领不了。
+# 只有两种暂停态能复活(from 守卫与 LEGAL 同口径,DB 层兜底)。
+RESUME_SQL = """
+UPDATE agent_tasks
+SET status='running', budget_cap=%(new_cap)s,
+    lease_until=NULL, lease_token=NULL, updated_at=now()
+WHERE task_id=%(task_id)s
+  AND status IN ('paused_budget','paused_error')
+RETURNING wave_n, budget_cap
+"""
+
+
+def resume_params(task_id: str, new_cap: float) -> dict:
+    return {"task_id": task_id, "new_cap": float(new_cap)}
 
 
 def terminal_params(task_id: str, to_status: str) -> dict:

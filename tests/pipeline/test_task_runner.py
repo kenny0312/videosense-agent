@@ -46,12 +46,19 @@ class FakeDB:
                 r["lease_token"], r["lease_live"] = None, False
                 return [(r["wave_n"],)]
             return []
-        if "spent_usd = spent_usd - precharged_usd" in s:                # PRECHARGE(规范:滚转)
+        if "spent_usd = spent_usd + %(est)s" in s:                       # PRECHARGE(悲观累加)
             if r and r.get("lease_token") == params["token"] and r["status"] == "running":
                 prev = r.get("precharged_usd", 0.0)
-                r["spent_usd"] = r["spent_usd"] - prev + params["est"]
-                r["wasted_usd"] = r.get("wasted_usd", 0.0) + prev
+                r["spent_usd"] = r["spent_usd"] + params["est"]          # 陈预估不退(留在 spent)
+                r["wasted_usd"] = r.get("wasted_usd", 0.0) + prev        # 只标记成浪费
                 r["precharged_usd"] = params["est"]
+                return [(r["spent_usd"], r["wasted_usd"])]
+            return []
+        if "wasted_usd = wasted_usd + %(actual)s" in s:                  # SETTLE_FAILED
+            if r and r.get("lease_token") == params["token"]:
+                r["spent_usd"] = r["spent_usd"] - r.get("precharged_usd", 0.0) + params["actual"]
+                r["wasted_usd"] = r.get("wasted_usd", 0.0) + params["actual"]
+                r["precharged_usd"] = 0.0
                 return [(r["spent_usd"], r["wasted_usd"])]
             return []
         if s.startswith("UPDATE agent_tasks SET status="):               # TERMINAL
@@ -66,6 +73,11 @@ class FakeDB:
         if "kind='user_note'" in s:
             return []
         raise AssertionError(f"FakeDB 不认识的 SQL:{s[:80]}")
+
+
+def usage_mod():
+    from pipeline.agentops import usage
+    return usage
 
 
 def _row(**kw):
@@ -261,14 +273,15 @@ def test_advance_auth_local_secret_and_cloud_lockdown(monkeypatch):
 
 
 # ── S-3 review 钉子 ──
-def test_retry_converts_stale_estimate_to_wasted(wired):
-    """review-HIGH:重试波必须把上一 attempt 未结算的预估滚转成 wasted ——
-    否则每个失败 attempt 泄漏一份 est 永久滞留 spent,wasted_usd 变死列。"""
+def test_stale_estimate_stays_in_spent_and_marked_wasted(wired):
+    """review 两轮定稿的钱账口径:被杀/超时 attempt 的预估【不退钱】,留在 spent 里
+    (悲观,规格原文"超时波也推高 spent,预算闸对重试风暴恢复视力"),只标记成 wasted。
+    退钱=闸对重试风暴失明,实测 cap 可被突破 N 倍。"""
     db, calls = wired
-    db.row.update(spent_usd=0.16, precharged_usd=0.06)       # 上一 attempt 预扣后死掉
+    db.row.update(spent_usd=0.16, precharged_usd=0.06)       # 上一 attempt 预扣后被杀
     TR.advance("tk_1", 1)
-    # 结算:基线 0.10(去掉陈预估)+ 实测 0.033;陈预估 0.06 转 wasted
-    assert db.row["spent_usd"] == pytest.approx(0.133)
+    # spent = 0.16(含陈预估)+ 本次实测 0.033;陈预估标记为浪费但不退
+    assert db.row["spent_usd"] == pytest.approx(0.193)
     assert db.row["wasted_usd"] == pytest.approx(0.06)
     assert db.row["precharged_usd"] == 0.0                   # 本 attempt 已结清
 
@@ -349,3 +362,142 @@ def test_oidc_pins_caller_identity(monkeypatch):
     monkeypatch.setattr(srv.config, "TASKS_INVOKER_SA", "")  # SA 未配置 → fail-closed
     assert fake_claims({"email": "tasks@proj.iam.gserviceaccount.com",
                         "email_verified": True}) is False
+
+
+# ── S-4 步内闸(取消 / 预算)──
+def _gate_probe(monkeypatch, live):
+    """给 _wrap_step_gate 造一个 base execute + 打桩的 live_state。返回 (gated, hits)。"""
+    from pipeline import loop_driver, task_store
+    hits = []
+
+    def base(cid, name, inputs, upstream, uses):
+        hits.append(name)
+        return loop_driver.ExecResult(ok=True, value={"rows": 1}, preview=[], n=1)
+    base.tree_guard = "G"
+    base.tree_nodes = {"nodes": 1}
+    monkeypatch.setattr(task_store, "live_state", lambda tid: live)
+    return TR._wrap_step_gate(base, "tk_1", 0.0), hits
+
+
+def test_step_gate_stops_on_cancel(monkeypatch):
+    """验收:cancel ≤1 步边界生效 —— 下一次工具调用【不执行】,回软收口信封。"""
+    gated, hits = _gate_probe(monkeypatch, ("cancelled", 0.1, 0.5))
+    res = gated("c1", "sql_query", {}, {}, [])
+    assert res.ok and "取消" in res.value["answer"] and "【未核查】" in str(res.preview)
+    assert hits == []                                        # 真的没执行
+
+
+def test_step_gate_stops_on_budget_overrun(monkeypatch):
+    gated, hits = _gate_probe(monkeypatch, ("running", 0.61, 0.5))
+    res = gated("c1", "analyze_video", {}, {}, [])
+    assert res.ok and "超预算" in res.value["answer"] and hits == []
+
+
+def test_step_gate_lets_show_and_healthy_through(monkeypatch):
+    gated, hits = _gate_probe(monkeypatch, ("cancelled", 0.1, 0.5))
+    gated("c1", "show_video", {}, {}, [])                    # 交付类放行(不烧钱)
+    assert hits == ["show_video"]
+    gated2, hits2 = _gate_probe(monkeypatch, ("running", 0.1, 0.5))
+    gated2("c2", "sql_query", {}, {}, [])
+    assert hits2 == ["sql_query"]                            # 健康任务照常
+
+
+def test_step_gate_caches_and_fails_open(monkeypatch):
+    """读数缓存 5s(别每次工具调用打库);查库炸了 fail-open(观测不拖垮执行)。"""
+    from pipeline import loop_driver, task_store
+    calls = []
+
+    def base(cid, name, inputs, upstream, uses):
+        return loop_driver.ExecResult(ok=True, value={}, preview=[], n=1)
+    monkeypatch.setattr(task_store, "live_state",
+                        lambda tid: calls.append(1) or ("running", 0.1, 0.5))
+    gated = TR._wrap_step_gate(base, "tk_1", 0.0)
+    for _ in range(5):
+        gated("c", "sql_query", {}, {}, [])
+    assert len(calls) == 1                                   # 5 次调用只查了 1 次库
+    monkeypatch.setattr(task_store, "live_state",
+                        lambda tid: (_ for _ in ()).throw(RuntimeError("db down")))
+    g2 = TR._wrap_step_gate(base, "tk_2", 0.0)
+    assert g2("c", "sql_query", {}, {}, []).ok               # fail-open 照常执行
+
+
+def test_step_gate_passes_closure_attrs(monkeypatch):
+    """P0-6 教训:子 agent 靠 execute.tree_guard/tree_nodes 取全树账本 —— 壳必须透传。"""
+    gated, _ = _gate_probe(monkeypatch, ("running", 0.1, 0.5))
+    assert gated.tree_guard == "G" and gated.tree_nodes == {"nodes": 1}
+
+
+# ── S-4 review 三条 HIGH 的钉子 ──
+def test_crash_settles_real_cost_into_task_ledger(wired, monkeypatch):
+    """review-HIGH:崩溃 attempt 的真实花费必须结进【任务账本】——
+    只落 event 的话每次 resume 都是"免费重跑",实测 cap 可被突破 N 倍。"""
+    db, calls = wired
+    monkeypatch.setattr(usage_mod(), "summarize", lambda: {"cost_usd": 0.40})
+    monkeypatch.setattr(TR, "run_wave", lambda *a: (_ for _ in ()).throw(RuntimeError("boom")))
+    TR.advance("tk_1", 1)
+    assert db.row["status"] == "paused_error"
+    assert db.row["spent_usd"] == pytest.approx(0.40)         # 真花的钱进了账本
+    assert db.row["wasted_usd"] == pytest.approx(0.40)        # 且全记为浪费
+    assert db.row["precharged_usd"] == 0.0
+
+
+def test_zombie_settles_real_cost_into_task_ledger(wired, monkeypatch):
+    db, calls = wired
+    db.row["cas_lost"] = True
+    monkeypatch.setattr(usage_mod(), "summarize", lambda: {"cost_usd": 0.25})
+    TR.advance("tk_1", 1)
+    assert db.row["spent_usd"] == pytest.approx(0.25)
+    assert db.row["wasted_usd"] == pytest.approx(0.25)
+
+
+def test_repeated_crash_resume_cannot_burn_past_cap(wired, monkeypatch):
+    """review 实测的烧钱回路:5 次"崩在末尾"+ 5 次 resume,旧实现账本恒 0.22 而真烧 $2。
+    新口径下 spent 单调增,闸必须在第 N 次前把它拦住。"""
+    db, calls = wired
+    monkeypatch.setattr(usage_mod(), "summarize", lambda: {"cost_usd": 0.20})
+    monkeypatch.setattr(TR, "run_wave", lambda *a: (_ for _ in ()).throw(RuntimeError("boom")))
+    outs = []
+    for _ in range(5):
+        db.row["status"] = "running"                          # 模拟用户点 resume
+        db.row["lease_live"] = False
+        outs.append(TR.advance("tk_1", 1)["dispatch"])
+    assert "paused_budget" in outs                            # 闸真的拦住了
+    assert db.row["spent_usd"] <= 0.5 + 0.21                  # 没有 N 倍突破
+
+
+def test_finalize_wave_gets_grace_budget(wired, monkeypatch):
+    """review-HIGH 死锁:花满预算的任务因差几分钱收尾费永远出不了报告。
+    收口波(零 batch,一次 LLM 调用)在 cap 之上有小额收尾额度。"""
+    db, calls = wired
+    db.row.update(wave_n=2, spent_usd=0.50,                   # 正好花满 cap
+                  plan={"remaining": [], "done": {"1": {"answer": "a"}}})
+    out = TR.advance("tk_1", 2)
+    assert out["dispatch"] == "done"                          # 不再是 paused_budget
+    assert db.row["plan"]["report"] == "最终报告"              # 战果变成了交付物
+
+
+def test_normal_wave_still_gated_at_cap(wired):
+    """收尾额度只给收口波:普通波该停还是停(别把 grace 变成普涨)。"""
+    db, calls = wired
+    db.row["spent_usd"] = 0.50
+    out = TR.advance("tk_1", 1)                               # remaining 非空 = 普通波
+    assert out["dispatch"] == "paused_budget"
+
+
+def test_step_gate_verdict_is_sticky_across_db_failure(monkeypatch):
+    """review-HIGH:判停必须粘住 —— TTL 过期时查库失败,旧实现 fail-open 把已生效的
+    取消裁决重置回放行(取消是终态,没有"取消又被撤销"的语义)。"""
+    from pipeline import loop_driver, task_store
+    hits = []
+
+    def base(cid, name, inputs, upstream, uses):
+        hits.append(name)
+        return loop_driver.ExecResult(ok=True, value={}, preview=[], n=1)
+    monkeypatch.setattr(task_store, "live_state", lambda tid: ("cancelled", 0.1, 0.5))
+    monkeypatch.setattr(TR, "STEP_CHECK_TTL_S", 0.0)          # TTL 立刻过期
+    gated = TR._wrap_step_gate(base, "tk_1", 0.0)
+    assert "取消" in gated("c1", "sql_query", {}, {}, []).value["answer"]
+    monkeypatch.setattr(task_store, "live_state",
+                        lambda tid: (_ for _ in ()).throw(RuntimeError("db down")))
+    res = gated("c2", "sql_query", {}, {}, [])                # 查库炸 + TTL 过期
+    assert "取消" in res.value["answer"] and hits == []       # 仍然判停,工具没执行

@@ -72,6 +72,59 @@ def plan_goal(goal: str, notes: list) -> list:
     return out
 
 
+STEP_CHECK_TTL_S = 5.0          # 步内闸的 DB 读数缓存(别每次工具调用都打库)
+
+
+def _wrap_step_gate(execute, task_id: str, base_spent: float):
+    """S-4 步内闸:每次工具调用前查【取消 / 预算】—— 波开头闸只在波边界,一波内跑 12 分钟
+    期间用户按了取消、或实际花费超了 cap,必须在下一次工具调用前就停。
+    触发 = 软失败信封(与熔断同款:教大脑就已有证据收口,别 kill 线程 = 全额浪费)。
+    读数缓存 5s;查库失败 fail-open(观测绝不拖垮执行)。闭包属性必须透传 —— 子 agent
+    靠 execute.tree_guard/tree_nodes 取全树账本(P0-6 教训)。"""
+    from pipeline import loop_driver, task_store
+    # fresh 是独立标记:不能用 "verdict is not None" 当"查过了"—— 健康任务的裁决恰是 None,
+    # 那样每次工具调用都会打一次库(自测逮出:5 次调用查了 5 次)。
+    state = {"at": 0.0, "fresh": False, "verdict": None}
+
+    def _verdict():
+        now = time.monotonic()
+        # 判停【粘住】:一旦读到取消/暂停/超支就永不再查库、永不撤销(review-HIGH:
+        # TTL 过期时若查库失败,fail-open 会把已生效的取消裁决重置回放行 —— 取消是终态,
+        # 不存在"取消又被撤销"的合法语义)。fail-open 只对【还没判停过】的任务成立。
+        if state["verdict"]:
+            return state["verdict"]
+        if state["fresh"] and now - state["at"] < STEP_CHECK_TTL_S:
+            return None
+        v = None
+        try:
+            live = task_store.live_state(task_id)
+            if live:
+                status, spent, cap = live
+                if status in TS.TERMINAL:
+                    v = f"[系统] 本任务已被{'取消' if status == 'cancelled' else '结束'}"
+                elif status != "running":
+                    v = f"[系统] 本任务已暂停({status})"
+                elif spent > cap:
+                    v = f"[系统] 本任务累计花费 ${spent:.4f} 已超预算上限 ${cap:.2f}"
+        except Exception:
+            log.warning("步内闸查库失败(fail-open)", exc_info=True)
+            v = None
+        state["at"], state["fresh"], state["verdict"] = now, True, v
+        return v
+
+    def gated(cid, name, inputs, upstream, uses):
+        if not name.startswith("show_"):          # 交付类不烧钱,放行(与熔断同口径)
+            v = _verdict()
+            if v:
+                return loop_driver._soft_note(
+                    v + ":这次调用【没执行】。请立刻基于已经拿到的证据收口作答;"
+                        "没查到的部分明确写【未核查】,不要推测填补。")
+        return execute(cid, name, inputs, upstream, uses)
+    gated.tree_guard = getattr(execute, "tree_guard", None)
+    gated.tree_nodes = getattr(execute, "tree_nodes", None)
+    return gated
+
+
 def run_wave(task_row: dict, batch: list) -> dict:
     """跑一波:K 个子任务并行(复用 run_fanout 全套护栏)。返回 {id: {answer, ...}}。
     live 实现走 subagents;单测 monkeypatch 本函数。"""
@@ -79,12 +132,13 @@ def run_wave(task_row: dict, batch: list) -> dict:
     from pipeline.agentops import trace as T
     from pipeline.agentops.treeguard import TreeGuard
     trace = T.Trace(quiet=True)
-    # 波内 per-tree 熔断:cap = 任务剩余预算(不许一波烧穿任务 cap;S-4 再加步内取消)。
+    # 波内 per-tree 熔断:cap = 任务剩余预算(不许一波烧穿任务 cap)。
     remaining_budget = max(0.05, float(task_row["budget_cap"]) - float(task_row["spent_usd"]))
     guard = TreeGuard(cost_cap=remaining_budget, wall_cap_s=0, trace=trace)
     execute = loop_driver._make_executor(sandbox=None, trace=trace, schema=None,
                                          session_id=None, owner=task_row["owner"],
                                          guard=guard)
+    execute = _wrap_step_gate(execute, task_row["task_id"], float(task_row["spent_usd"]))
     tasks = [{"instruction": b["instruction"], "video_ids": b.get("video_ids") or []}
              for b in batch]
     results = subagents.run_fanout(tasks, sandbox=None, trace=trace, schema=None,
@@ -157,6 +211,7 @@ def advance(task_id: str, wave_n: int) -> dict:
     audit = {"task_id": task_id, "wave_n": wave_n, "outcome": "?"}
     token = uuid.uuid4().hex
     claimed = False
+    precharged = False
     owner = ""
     try:
         rows = _execute(TS.CLAIM_SQL, TS.claim_params(task_id, wave_n, token))
@@ -191,8 +246,12 @@ def advance(task_id: str, wave_n: int) -> dict:
         batch = [] if (planning or finalizing) else remaining[:max(1, config.SUBAGENT_MAX_FANOUT)]
         est = WAVE_TASK_EST_USD * max(1, len(batch))
 
-        # S-4 波开头预算闸:悲观预估后比;触发 = paused_budget(TERMINAL_SQL 同语句清租约)。
-        if task["spent_usd"] - task["precharged_usd"] + est > task["budget_cap"]:
+        # S-4 波开头预算闸:悲观预估后比(spent 已是含全部浪费的真实累计,直接比)。
+        # 收口波额外给一份小额收尾额度:已经付过钱买到的战果必须能变成交付物 ——
+        # 否则花了 $2 的任务会因差 $0.06 的收尾费永远出不了报告,resume 也救不回(review-HIGH
+        # 实测的死锁:cap 上界锁死在 TASK_MAX_CAP,spent 贴顶后任何 cap 都过不了闸)。
+        gate_cap = task["budget_cap"] + (config.TASK_FINALIZE_GRACE_USD if finalizing else 0.0)
+        if task["spent_usd"] + est > gate_cap:
             task_store.set_status(task_id, "paused_budget")
             task_store.add_event(task_id, "paused",
                                  {"why": "budget", "spent": task["spent_usd"],
@@ -208,6 +267,7 @@ def advance(task_id: str, wave_n: int) -> dict:
             return {"result": OK, "dispatch": "zombie_dropped"}
         spent_now, wasted_now = float(pc[0][0]), float(pc[0][1])
         base = spent_now - est                              # 结算基线(不含本波预估)
+        precharged = True                                   # 之后的失败必须结算真实花费
         task_store.add_event(task_id, "wave_attempt",
                              {"wave": wave_n, "est_usd": est, "token": token[:8]})
 
@@ -237,9 +297,13 @@ def advance(task_id: str, wave_n: int) -> dict:
                       TS.checkpoint_params(task_id, wave_n, token, new_plan,
                                            base + measured, wasted_now))
         if not cp:                                          # 僵尸:租约易主/被取消 → 战果丢弃
+            # 钱要结进【任务账本】(review-HIGH:只落 event 的话 resume 就是免费重跑,
+            # cap 被突破 N 倍);租约已易主时这条 CAS 也会 0 行,那就由新主的账目接管。
+            _execute(TS.SETTLE_FAILED_SQL,
+                     TS.settle_failed_params(task_id, token, measured))
             task_store.add_event(task_id, "wasted",
                                  {"wave": wave_n, "usd": measured, "why": "cas_lost"})
-            _record_cost(owner, measured)                   # 真实花费仍须进全站账(review 确认)
+            _record_cost(owner, measured)                   # 真实花费仍须进全站账
             audit["outcome"] = "zombie_dropped"
             return {"result": OK, "dispatch": "zombie_dropped"}
         _record_cost(owner, measured)
@@ -274,10 +338,13 @@ def advance(task_id: str, wave_n: int) -> dict:
             pass
         try:
             from pipeline import task_store as _ts
+            if precharged:                                  # 崩溃前的真实花费结进任务账本
+                _execute(TS.SETTLE_FAILED_SQL,              # (review-HIGH:不结算 = 免费重跑)
+                         TS.settle_failed_params(task_id, token, crash_cost))
             _ts.set_status(task_id, "paused_error")
             _ts.add_event(task_id, "error", {"wave": wave_n, "error": repr(e)[:200],
                                              "usd_before_crash": crash_cost})
-            _record_cost(owner, crash_cost)                 # 崩溃前的真实花费也进全站账
+            _record_cost(owner, crash_cost)                 # 也进全站账
         except Exception:
             log.error("advance 崩溃后的 fail-closed 处置也失败", exc_info=True)
         audit["outcome"] = "crashed"
