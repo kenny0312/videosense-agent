@@ -165,6 +165,8 @@ def main():
     ap.add_argument("--split", default="dev", choices=("dev", "holdout"))
     ap.add_argument("--arms", default="A,B,C")
     ap.add_argument("--n", type=int, default=1, help="每题每臂 rep 数")
+    ap.add_argument("--rep-start", type=int, default=1,
+                    help="从第几个 rep 开始(补跑用;rep 号进缓存命名空间,保证与前一轮全冷)")
     ap.add_argument("--ids", default=None, help="只跑这些题(逗号分隔)")
     ap.add_argument("--budget", type=float, default=42.0, help="本次预算(硬顶)")
     ap.add_argument("--half-stop", type=float, default=None, help="半程闸金额")
@@ -196,7 +198,7 @@ def main():
     print(f"[gate] split={a.split} arms={arms} n={a.n} 题数={len(items)} 计划 {total} 次 "
           f"预算 ${a.budget:.2f}(半程闸 ${half_stop:.2f})", flush=True)
     stopped = None
-    for rep in range(1, a.n + 1):
+    for rep in range(a.rep_start, a.rep_start + a.n):
         for item in items:
             for arm in arms:
                 if spent >= a.budget:                    # 闸3 硬顶
