@@ -41,6 +41,13 @@ SEARCH_SQL = ("SELECT video_id, source, snippet, start_ts, end_ts, "
               "1 - (embedding <=> %s::vector) AS score "
               "FROM content_embeddings ORDER BY embedding <=> %s::vector LIMIT %s")
 
+# P0-5(长程引擎 视频内下钻):只在指定视频集合内检索。独立一条 SQL 而不是往 SEARCH_SQL
+# 里拼可选 WHERE —— 不传 video_ids 的路径必须与升级前【逐字节】一致(Part 0 不变量①)。
+SEARCH_SQL_FILTERED = ("SELECT video_id, source, snippet, start_ts, end_ts, "
+                       "1 - (embedding <=> %s::vector) AS score "
+                       "FROM content_embeddings WHERE video_id = ANY(%s) "
+                       "ORDER BY embedding <=> %s::vector LIMIT %s")
+
 
 # ── snippet 构造(纯函数,离线可测)──────────────────────────────
 def fact_snippet(row: dict) -> "tuple[str, str, float | None, float | None] | None":
@@ -149,9 +156,13 @@ T_HI = float(os.environ.get("SEMANTIC_T_HI", "0.735"))
 WEAK_THRESHOLD = T_LO      # 兼容别名(evals 假世界 build_cosine_search 等引用)
 
 
-def search(vec_lit: str, k: int) -> list[dict]:
-    """pgvector 近邻检索 → 行列表(score 降序)。每行标 relevance(strong/weak)。异常上抛,调用方 fail-open。"""
-    rows = _execute(SEARCH_SQL, (vec_lit, vec_lit, int(k)))
+def search(vec_lit: str, k: int, video_ids: "list[str] | None" = None) -> list[dict]:
+    """pgvector 近邻检索 → 行列表(score 降序)。每行标 relevance(strong/weak)。异常上抛,调用方 fail-open。
+    video_ids(P0-5,可选):只在这些视频里检索(深度 2 的视频内下钻);None/空 = 全库,行为不变。"""
+    if video_ids:
+        rows = _execute(SEARCH_SQL_FILTERED, (vec_lit, list(video_ids), vec_lit, int(k)))
+    else:
+        rows = _execute(SEARCH_SQL, (vec_lit, vec_lit, int(k)))
     return [{"n": i + 1, "video_id": r[0], "source": r[1], "snippet": r[2],
              "start_ts": r[3], "end_ts": r[4], "score": round(float(r[5]), 3),
              "relevance": ("strong" if float(r[5]) >= T_HI

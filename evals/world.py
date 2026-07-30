@@ -31,12 +31,16 @@ def build_cosine_search(index, weak_threshold: float = 0.6):
     评测世界的语义判定必须和生产同一套,否则调的是两个系统。"""
     from pipeline import semantic_index as _si
 
-    def search(vec_lit, k):
+    def search(vec_lit, k, video_ids=None):
+        # P0-5:参数契约与真 semantic_index.search 对齐 —— 否则三臂实验(EVAL_SEMANTIC=1
+        # + USE_IN_VIDEO_SEARCH=1)里大脑一带 video_ids 就裸 TypeError,下钻臂调一次挂一次,
+        # 实验测到的是坏工具不是下钻收益(review 实测确认)。
         try:
             qv = json.loads(vec_lit)
         except Exception:
             return []
-        scored = sorted(((_cosine(qv, e[4]), e) for e in index), key=lambda x: -x[0])[:int(k)]
+        pool = index if not video_ids else [e for e in index if e[0] in set(video_ids)]
+        scored = sorted(((_cosine(qv, e[4]), e) for e in pool), key=lambda x: -x[0])[:int(k)]
         return [{"n": i + 1, "video_id": e[0], "source": "eval", "snippet": e[1],
                  "start_ts": e[2], "end_ts": e[3], "score": round(sc, 3),
                  "relevance": ("strong" if sc >= _si.T_HI

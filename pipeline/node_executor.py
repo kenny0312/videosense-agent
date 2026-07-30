@@ -484,6 +484,24 @@ def _translate_query_en(query: str) -> "str | None":
         return None
 
 
+def _dedupe_in_video(rows: list, k: int) -> list:
+    """P0-5 视频内下钻的去重:同一视频的【多个时刻都要保留】—— 每视频压一行会把
+    "在这个视频里找具体片段"退化成 top-1,k 形同虚设(review 确认:与 _dedupe_by_video
+    的全库视频广度目标正好相反)。只去掉重复片段(双路检索合并可能撞同一条),按分取 k。"""
+    seen, out = set(), []
+    for r in sorted(rows, key=lambda r: -r["score"]):
+        key = (r.get("video_id"), r.get("snippet"))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(r)
+        if len(out) >= k:
+            break
+    for i, r in enumerate(out):
+        r["n"] = i + 1
+    return out
+
+
 def _dedupe_by_video(rows: list, k: int) -> list:
     """按视频聚合:每视频只保留最高分的一行再取 top-k(审计 B3:v2 后同一视频有
     vid/cap/tr 多种行,平面 top-k 里互相抢名额,列表类查询的视频广度最坏减半)。
@@ -512,10 +530,28 @@ def _run_semantic_search(node: Node) -> NodeResult:
     if not query:
         raise ValueError("semantic_search 需要 inputs.query")
     k = max(1, min(int(node.inputs.get("k") or _cfg.SEMANTIC_SEARCH_K), 20))
+    # P0-5 视频内下钻:锁定候选后只在这些视频里检索。开关关闭时参数在声明层已被剥掉
+    # (loop_function_declarations),这里的报错只兜直连 API/回放的旧参数。
+    # 坏类型【必须报错】不许归空 —— 归空 = 开着闸静默退回全库检索,大脑会把全库命中
+    # 当成指定视频里的时刻引用(review 确认:比不过滤更毒)。
+    raw_vids = node.inputs.get("video_ids")
+    if raw_vids not in (None, [], ""):
+        if not isinstance(raw_vids, list):
+            raise ValueError('video_ids 必须是字符串数组(如 ["v001"]);要全库检索就别传这个参数')
+        vids = [str(v) for v in raw_vids if v]
+        if not vids:
+            raise ValueError("video_ids 里全是空值;要全库检索就别传这个参数")
+    else:
+        vids = []
+    if vids and not _cfg.USE_IN_VIDEO_SEARCH:
+        raise ValueError("video_ids 过滤未开启(USE_IN_VIDEO_SEARCH=0);去掉该参数全库检索")
     vec = embed_query(query)
     if vec is None:
         raise ValueError("query embedding 失败(稍后重试,或改用 sql_query/analyze_video)")
-    rows = semantic_index.search(vec_literal(vec), k * 3)   # 超采:聚合后仍够 k 个不同视频
+    # 无过滤时连调用形状都与升级前一致(不传 kwarg)—— 不变量①按字面执行。
+    _s = ((lambda v, n: semantic_index.search(v, n, video_ids=vids)) if vids
+          else semantic_index.search)
+    rows = _s(vec_literal(vec), k * 3)                      # 超采:聚合后仍够 k 个不同视频
     # 跨语言桥:英译路有 strong 命中就【以英译路为准】—— 两条路的分数刻度不同
     # (中文查询打英文片段,枢纽片段常拿虚高分:实测『打台球』原文路给躲避球 0.766,
     # 高于英译路台球的 0.75,按分高合并会把毒瘤排第一)。原文路只补【中文片段】的
@@ -524,7 +560,7 @@ def _run_semantic_search(node: Node) -> NodeResult:
     if en and en.lower() != query.lower():
         vec_en = embed_query(en)
         if vec_en is not None:
-            en_rows = semantic_index.search(vec_literal(vec_en), k * 3)
+            en_rows = _s(vec_literal(vec_en), k * 3)        # 双路同过滤(P0-5)
             if any(r.get("relevance") == "strong" for r in en_rows):
                 seen = {(r["video_id"], r["snippet"]) for r in en_rows}
                 extra = [r for r in rows
@@ -536,7 +572,9 @@ def _run_semantic_search(node: Node) -> NodeResult:
                     r["n"] = i + 1
             elif not any(r.get("relevance") == "strong" for r in rows):
                 rows = en_rows          # 两路都无 strong:信封用英译路(刻度准)的最近邻
-    rows = _dedupe_by_video(rows, k)
+    # 视频内下钻(有过滤)要的是【同一视频的多个时刻】,全库检索要的是【视频广度】——
+    # 两个目标用两种去重(review 确认:错用前者会把下钻压成每视频 1 行)。
+    rows = _dedupe_in_video(rows, k) if vids else _dedupe_by_video(rows, k)
     # 治过度召回(结构性,非靠大脑自觉):没有 strong = 不给行列表 —— show_video 结构上
     # 无法把信封当"找到的视频"展示。borderline(像与不像之间)单独说明:先核对再下结论。
     strong = [r for r in rows if r.get("relevance") == "strong"]
@@ -550,6 +588,15 @@ def _run_semantic_search(node: Node) -> NodeResult:
                 "note": "有几条命中介于【像与不像】之间(分数进了模糊带)。别直接当找到了:"
                         "先用 sql_query 查这些视频的 video_facts 核对是否真有该内容 —— "
                         "核上了就正常引用这些视频回答(该展示展示);核不上就如实说没有。",
+                "closest": closest})
+        # 信封的事实断言范围必须跟着检索范围走(review 确认):只查了指定视频却宣称
+        # "库里没有",会教大脑对用户说出事实性错误(内容可能就在集合外的视频里)。
+        if vids:
+            return NodeResult(node.id, node.tool, ok=True, value={
+                "no_strong_match": True, "scoped_to": vids,
+                "note": f"【只检索了指定的 {len(vids)} 个视频】,这些视频里没有与该查询真正"
+                        "匹配的内容(全部为弱相关)。如实说【这(几)个视频里】没有;"
+                        "内容可能在别的视频里 —— 要全库找就去掉 video_ids 再查一次。",
                 "closest": closest})
         return NodeResult(node.id, node.tool, ok=True, value={
             "no_strong_match": True,

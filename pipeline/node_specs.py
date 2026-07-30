@@ -163,7 +163,11 @@ SPECS: dict[str, NodeSpec] = {
         ),
         parameters=_obj(
             {"query": {"type": "string", "description": "检索意图(英文短语;把中文意图翻成英文)"},
-             "k": {"type": "integer", "description": "返回条数,默认 8"}},
+             "k": {"type": "integer", "description": "返回条数,默认 8"},
+             # P0-5 视频内下钻:USE_IN_VIDEO_SEARCH 关闭时本参数会在声明层被剥掉(大脑不可见)。
+             "video_ids": {"type": "array", "items": {"type": "string"},
+                           "description": "可选:只在这些视频里检索(已锁定候选视频、要在【视频内】"
+                                          "找具体片段/时刻时用);不传 = 全库检索"}},
             ["query"],
         ),
     ),
@@ -200,6 +204,12 @@ SPECS: dict[str, NodeSpec] = {
             "可并行的异质分解(如「跳伞 vs 滑雪 哪个更精彩」=一个 agent 深评跳伞组、一个深评滑雪组)。"
             "【别用】只是计数/分类(sql_query COUNT 就够)、只看单个视频(直接 analyze_video)、"
             "语义找片段(semantic_search)—— 这些别 spawn,多 agent 又贵又慢。"
+            "【spawn 前先过五道判据,任何一道不过就自己直接做】:"
+            "①原子性 —— sql_query/semantic_search 两三步就能答的,不拆;"
+            "②独立性 —— 子任务之间互不需要对方的中间结果(需要的话改成你自己按顺序做);"
+            "③多步性 —— 每个子任务本身得需要多步深看(只查一条 SQL 的不配当子任务);"
+            "④可综合 —— 你收口只需要各子任务的【结论+证据引用】就够(要原始过程才能综合的别拆);"
+            "⑤成本 —— 每个子 agent 约等于一次完整视频分析的钱,先想清 K 个子 agent 值不值这个价。"
             "先用 sql_query/semantic_search 把候选缩小、想清怎么拆,再一次给出 K 段【不同的】instruction。"
             "返回 [{instruction, output}...] —— 是各子 agent 的原始结论,你【自己】读完综合成最终答案"
             "(需要交付视频时,由【你】再调 show_video,子 agent 不负责交付)。"

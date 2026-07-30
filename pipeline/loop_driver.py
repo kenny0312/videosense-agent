@@ -57,6 +57,10 @@ def loop_function_declarations() -> list[dict]:
         if d["name"] == "spawn_agents" and not config.USE_SUBAGENTS:
             continue
         d = copy.deepcopy(d)
+        # P0-5:视频内下钻开关关闭 → video_ids 参数从声明里消失(大脑不可见,零残留),
+        # 不传参路径与升级前逐字节一致(Part 0 不变量①)。
+        if d["name"] == "semantic_search" and not config.USE_IN_VIDEO_SEARCH:
+            d["parameters"].get("properties", {}).pop("video_ids", None)
         handles = UPSTREAM_HANDLES.get(d["name"], [])
         if handles:
             props = d["parameters"].setdefault("properties", {})

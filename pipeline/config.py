@@ -79,6 +79,9 @@ USER_MEMORY_MAX_CHARS = int(os.environ.get("USER_MEMORY_MAX_CHARS", "6000"))   #
 # V1:语义检索(pgvector 内容级;semantic_search 工具 + analyze 随用写钩子)。
 #   0 = 工具从声明消失且写钩子停用(零残留)。S4 验收通过(2026-07-02)→ 默认开。
 USE_SEMANTIC_SEARCH = os.environ.get("USE_SEMANTIC_SEARCH", "1").lower() in ("1", "true", "yes")
+# P0-5 长程引擎:semantic_search 的 video_ids 过滤(视频内下钻)。关 = 参数对大脑不可见、
+# 行为与升级前逐字节一致;深度 2 三臂实验【同开】(控制变量)。
+USE_IN_VIDEO_SEARCH = os.environ.get("USE_IN_VIDEO_SEARCH", "0").lower() in ("1", "true", "yes")
 SEMANTIC_SEARCH_K   = int(os.environ.get("SEMANTIC_SEARCH_K", "8"))
 MAX_LOOP_STEPS     = int(os.environ.get("MAX_LOOP_STEPS", "16"))    # 终止护栏:防死循环
 LOOP_REPEAT_LIMIT  = int(os.environ.get("LOOP_REPEAT_LIMIT", "2"))  # 同一(工具,参数)连续失败上限
