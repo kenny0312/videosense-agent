@@ -234,6 +234,122 @@ def health():
             "gated": bool(_ACCESS_KEYS)}
 
 
+# ── S-2 任务底座四端点(设计 docs/longhorizon-task-substrate-plan.md §S-2)────────
+# USE_TASKS=0 → 全 404(特性不存在);guest 一律 403(公开部署日不返工);
+# owner 隔离在 task_store 的 SQL WHERE 里(不靠这里自觉)。
+class TaskCreateRequest(BaseModel):
+    goal: str
+    budget_cap: "float | None" = None
+
+
+def _tasks_gate(request: Request) -> "Response | None":
+    if not config.USE_TASKS:
+        return Response(status_code=404)
+    owner = getattr(request.state, "app_user", "anon")
+    if _is_guest(owner):
+        return Response(json.dumps({"error": "游客不能使用后台任务"}),
+                        status_code=403, media_type="application/json")
+    return None
+
+
+@app.post("/v1/tasks")
+def task_create(req: TaskCreateRequest, request: Request):
+    if (r := _tasks_gate(request)) is not None:
+        return r
+    owner = getattr(request.state, "app_user", "anon")
+    goal = (req.goal or "").strip()
+    if not goal or len(goal) > 2000:
+        return Response(json.dumps({"error": "goal 必填且 ≤2000 字"}),
+                        status_code=422, media_type="application/json")
+    # 只做 ratelimit precheck 校验、不扣占位(红队:占位与日顶制度双向冲突)。
+    # sid 必须传 None:常量 sid 是全用户共享的伪会话桶 —— review 实测一个登录用户把自己
+    # 会话取名同值烧到 $0.75 就能让【全站】立项 429 二十四小时(投毒 DoS)。
+    # S-3 记账处同禁:任务花费绝不许挂常量 sid。
+    if (rl := _rate_limited(request, owner, sid=None)) is not None:
+        return rl
+    # cap 夹在 (0, min(单任务硬顶, 任务日顶)]。NaN 必拒:json/pydantic 默认放行裸 NaN,
+    # 而 min(nan, x)=nan、nan<=0=False → 穿透夹紧入库 = 预算闸对该任务失明 + 任务页
+    # 序列化 500(review 实测);0 也必拒(旧写法 or 会把显式 0 静默换成默认再开跑烧钱)。
+    import math
+    cap_in = config.TASK_DEFAULT_CAP_USD if req.budget_cap is None else float(req.budget_cap)
+    if not math.isfinite(cap_in) or cap_in <= 0:
+        return Response(json.dumps({"error": "budget_cap 必须是正的有限数"}),
+                        status_code=422, media_type="application/json")
+    cap = min(cap_in, config.TASK_MAX_CAP_USD, config.RL_TASK_DAILY_COST_USD)
+    from pipeline import task_queue, task_store
+    task_id, created = task_store.create_task(owner, goal, cap)
+    if not created:                                       # 幂等命中(含前端双击)
+        # pending 幽灵自愈(review 确认两个触发器:commit→enqueue 窗口进程死 / _execute
+        # 盲重试撞自己刚插的行把 created 翻成 False)—— 命中的行若还停在 pending,
+        # 说明第一波从没投出去,这里补投一次(命名任务/CLAIM CAS 天然幂等,重复无害)。
+        st = task_store.status_of(task_id)
+        if st and st[0] == "pending":
+            try:
+                task_queue.enqueue_advance(task_id, st[1])
+            except Exception as e:
+                log.warning("pending 幽灵补投失败 %s: %r", task_id, e)
+                return Response(json.dumps({"error": "任务已登记但排队服务暂时不可用,"
+                                                     "请稍后重试(费用未发生)"}),
+                                status_code=503, media_type="application/json")
+        return {"task_id": task_id, "created": False,
+                "note": "同目标的任务已在进行中,直接看它的进度即可"}
+    try:
+        task_queue.enqueue_advance(task_id, 0)            # 投第一波(wave 0 = 规划波)
+    except Exception as e:                                # fail-closed:不留 running/pending 幽灵
+        log.warning("任务 %s 投递失败(fail-closed → paused_error): %r", task_id, e)
+        try:
+            task_store.set_status(task_id, "paused_error")
+            task_store.add_event(task_id, "enqueue_failed", {"error": repr(e)[:200]})
+        except Exception:
+            log.error("任务 %s 投递失败后的 fail-closed 处置也失败", task_id, exc_info=True)
+        return Response(json.dumps({"error": "任务已登记但排队服务暂时不可用,"
+                                             "请稍后在任务页点重试(费用未发生)"}),
+                        status_code=503, media_type="application/json")
+    return {"task_id": task_id, "created": True}
+
+
+@app.get("/v1/tasks/{task_id}")
+def task_get(task_id: str, request: Request):
+    if (r := _tasks_gate(request)) is not None:
+        return r
+    owner = getattr(request.state, "app_user", "anon")
+    from pipeline import task_store
+    view = task_store.get_view(owner, task_id)
+    if view is None:                                      # 不存在或不属于你,同一口径(防枚举)
+        return Response(status_code=404)
+    return view
+
+
+@app.post("/v1/tasks/{task_id}/notes")
+def task_note(task_id: str, request: Request, body: dict):
+    if (r := _tasks_gate(request)) is not None:
+        return r
+    owner = getattr(request.state, "app_user", "anon")
+    note = str((body or {}).get("note") or "").strip()
+    if not note or len(note) > 1000:
+        return Response(json.dumps({"error": "note 必填且 ≤1000 字"}),
+                        status_code=422, media_type="application/json")
+    from pipeline import task_store
+    if task_store.owner_of(task_id) != owner:
+        return Response(status_code=404)
+    task_store.add_event(task_id, "user_note", {"note": note})   # 下一波组装注入(S-3)
+    return {"ok": True}
+
+
+@app.post("/v1/tasks/{task_id}/cancel")
+def task_cancel(task_id: str, request: Request):
+    if (r := _tasks_gate(request)) is not None:
+        return r
+    owner = getattr(request.state, "app_user", "anon")
+    from pipeline import task_store
+    if task_store.owner_of(task_id) != owner:
+        return Response(status_code=404)
+    changed = task_store.set_status(task_id, "cancelled")  # 终态同语句清租约;非法前驱=0 行
+    if changed:
+        task_store.add_event(task_id, "cancelled", {})
+    return {"ok": True, "changed": changed}                # 已终态的重复 cancel 幂等
+
+
 # 同会话请求在本进程内串行化 —— 端点是 sync def,FastAPI 放线程池并发执行;一次请求是
 # read(get_or_create)→ mutate(run_query)→ write(save) 的非原子序列,两个同 session_id
 # 请求重叠会"后写覆盖"整轮(丢一轮记忆)。每会话一把锁把这段串起来 → 单副本即安全。

@@ -125,6 +125,12 @@ USE_DEPTH2          = os.environ.get("USE_DEPTH2", "0").lower() in ("1", "true",
 USE_TASKS           = os.environ.get("USE_TASKS", "0").lower() in ("1", "true", "yes")
 RL_TASK_DAILY_COST_USD = float(os.environ.get("RL_TASK_DAILY_COST_USD", "2.0"))  # 任务自己的日顶(独立于对话 $2 日顶)
 TASK_MAX_CAP_USD    = float(os.environ.get("TASK_MAX_CAP_USD", "2.0"))           # 单任务 cap 硬顶(resume 提额也不越)
+TASK_DEFAULT_CAP_USD = float(os.environ.get("TASK_DEFAULT_CAP_USD", "0.5"))      # 立项不填 cap 时的默认
+TASKS_DRIVER        = os.environ.get("TASKS_DRIVER", "inline")                   # inline|cloudtasks(同一代码路径)
+TASKS_QUEUE         = os.environ.get("TASKS_QUEUE", "agent-tasks")
+TASKS_REGION        = os.environ.get("TASKS_REGION", "us-central1")
+TASKS_ADVANCE_URL   = os.environ.get("TASKS_ADVANCE_URL", "")                    # advance 完整 URL(OIDC audience 同值)
+TASKS_INVOKER_SA    = os.environ.get("TASKS_INVOKER_SA", "")                     # Cloud Tasks 注入 OIDC 的 SA
 SUBAGENT_L2_FANOUT  = int(os.environ.get("SUBAGENT_L2_FANOUT", "3"))    # depth-1 再拆时的扇出顶
 MAX_TREE_NODES      = int(os.environ.get("MAX_TREE_NODES", "13"))       # 全树节点硬顶(防 6×6 乘法)
 # M5 记忆:loop 路径 transcript 回放 + 压缩(决策④)
