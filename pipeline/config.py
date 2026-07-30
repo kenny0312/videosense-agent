@@ -121,6 +121,10 @@ SUBAGENT_MODEL      = os.environ.get("SUBAGENT_MODEL", LOOP_MODEL)   # 默认同
 # ── P0-6 长程引擎:裸 depth-2(实验对象,默认关;依赖 USE_SUBAGENTS=1)──────────
 # 只做深度穿透,不带 DAG/蒸馏/分层(红队 C2:实验测单变量)。关 = 全部路径与现状逐字节一致。
 USE_DEPTH2          = os.environ.get("USE_DEPTH2", "0").lower() in ("1", "true", "yes")
+# ── 线2 任务底座(S-1 起;默认全关,行为与升级前等价)────────────────────────
+USE_TASKS           = os.environ.get("USE_TASKS", "0").lower() in ("1", "true", "yes")
+RL_TASK_DAILY_COST_USD = float(os.environ.get("RL_TASK_DAILY_COST_USD", "2.0"))  # 任务自己的日顶(独立于对话 $2 日顶)
+TASK_MAX_CAP_USD    = float(os.environ.get("TASK_MAX_CAP_USD", "2.0"))           # 单任务 cap 硬顶(resume 提额也不越)
 SUBAGENT_L2_FANOUT  = int(os.environ.get("SUBAGENT_L2_FANOUT", "3"))    # depth-1 再拆时的扇出顶
 MAX_TREE_NODES      = int(os.environ.get("MAX_TREE_NODES", "13"))       # 全树节点硬顶(防 6×6 乘法)
 # M5 记忆:loop 路径 transcript 回放 + 压缩(决策④)
