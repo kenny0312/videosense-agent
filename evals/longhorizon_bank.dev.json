@@ -1,0 +1,342 @@
+{
+ "meta": {
+  "frozen_at": "2026-07-30T12:54:29.580439+00:00",
+  "items_sha256": "f0952ca06391d0473a1c0302d6f71ef80e53fdc568d2482a2d14ac42acec6919",
+  "category_vocab": [
+   "ball sports",
+   "beach & leisure",
+   "car care",
+   "celebration & awards",
+   "climbing",
+   "cooking & food",
+   "cycling",
+   "dancing",
+   "diy & crafts",
+   "equestrian",
+   "everyday activities",
+   "fitness",
+   "holiday & party",
+   "household & cleaning",
+   "martial arts & wrestling",
+   "motorsports",
+   "music",
+   "paintball & shooting",
+   "personal care",
+   "shopping",
+   "skateboarding",
+   "skydiving",
+   "spectating",
+   "talking & presenting",
+   "water sports",
+   "winter sports"
+  ],
+  "answer_contract": {
+   "video_ids": "list[str]",
+   "count": "int",
+   "per_video": "{vid: {category, start_ts, end_ts, evidence}}"
+  },
+  "notes": "环境冻结要求:关闭 use-to-grow(_index_analyze_result)、DB 快照冻结、T2 谓词 ts 掩码、analyze 缓存按 arm×rep 命名空间(红队 C3)。"
+ },
+ "split": "dev",
+ "items": [
+  {
+   "id": "t1-swimming",
+   "tier": "T1",
+   "predicate": "swimming",
+   "question": "找出库里所有出现游泳的视频,并给每条标注它属于哪个大类",
+   "rephrased": false,
+   "gold": {
+    "video_ids": [
+     "v_-TWiYyvt2Ec",
+     "v_8Ny9NjNpQQA",
+     "v_EpWZ_-hNKKs",
+     "v_F3tKnLz9YyE",
+     "v_OHNH7IV0768",
+     "v_Te1d8H4VWYw",
+     "v_wYIeRRTRtX8"
+    ],
+    "count": 7,
+    "per_video": {
+     "v_-TWiYyvt2Ec": {
+      "categories": [
+       "water sports"
+      ]
+     },
+     "v_8Ny9NjNpQQA": {
+      "categories": [
+       "water sports"
+      ]
+     },
+     "v_EpWZ_-hNKKs": {
+      "categories": [
+       "water sports"
+      ]
+     },
+     "v_F3tKnLz9YyE": {
+      "categories": [
+       "beach & leisure",
+       "water sports"
+      ]
+     },
+     "v_OHNH7IV0768": {
+      "categories": [
+       "ball sports",
+       "water sports"
+      ]
+     },
+     "v_Te1d8H4VWYw": {
+      "categories": [
+       "water sports"
+      ]
+     },
+     "v_wYIeRRTRtX8": {
+      "categories": [
+       "water sports"
+      ]
+     }
+    }
+   }
+  },
+  {
+   "id": "t1-hitting-piñata",
+   "tier": "T1",
+   "predicate": "hitting piñata",
+   "question": "找出库里所有在打那种聚会上装满糖果的彩色纸糊玩偶的视频,并给每条标注它属于哪个大类",
+   "rephrased": true,
+   "gold": {
+    "video_ids": [
+     "v_-GRvxWH4axc",
+     "v_-erT3ckPkAg",
+     "v_ZgIKmwnCqr4",
+     "v_px10045003",
+     "v_qBqUu4_qOnU"
+    ],
+    "count": 5,
+    "per_video": {
+     "v_-GRvxWH4axc": {
+      "categories": [
+       "holiday & party",
+       "music"
+      ]
+     },
+     "v_-erT3ckPkAg": {
+      "categories": [
+       "holiday & party"
+      ]
+     },
+     "v_ZgIKmwnCqr4": {
+      "categories": [
+       "holiday & party"
+      ]
+     },
+     "v_px10045003": {
+      "categories": [
+       "holiday & party"
+      ]
+     },
+     "v_qBqUu4_qOnU": {
+      "categories": [
+       "holiday & party"
+      ]
+     }
+    }
+   }
+  },
+  {
+   "id": "t1-kayaking",
+   "tier": "T1",
+   "predicate": "kayaking",
+   "question": "找出库里所有有人划着单人小艇在水面前进的视频,并给每条标注它属于哪个大类",
+   "rephrased": true,
+   "gold": {
+    "video_ids": [
+     "v_Wu3wa5Rc_Qw",
+     "v_rOeNl9qIoVI",
+     "v_vu-3Zi94F0M"
+    ],
+    "count": 3,
+    "per_video": {
+     "v_Wu3wa5Rc_Qw": {
+      "categories": [
+       "water sports"
+      ]
+     },
+     "v_rOeNl9qIoVI": {
+      "categories": [
+       "water sports"
+      ]
+     },
+     "v_vu-3Zi94F0M": {
+      "categories": [
+       "water sports"
+      ]
+     }
+    }
+   }
+  },
+  {
+   "id": "t2-falling",
+   "tier": "T2",
+   "predicate": "falling",
+   "question": "找出所有出现摔倒的视频,并给出每条里摔倒发生的时间段和画面证据",
+   "rephrased": false,
+   "gold": {
+    "video_ids": [
+     "v_-02DygXbn6w",
+     "v_0AbJgWxIYVI",
+     "v_0Zg-7EgFiC8",
+     "v_McwVhHxdr5g",
+     "v_RPLbUeV3-o0",
+     "v_YzyCFfrX_4I",
+     "v_uOUjBTlwoxg",
+     "v_wEgt41AJaU4"
+    ],
+    "count": 8,
+    "per_video": {
+     "v_-02DygXbn6w": {
+      "categories": [
+       "winter sports"
+      ]
+     },
+     "v_0AbJgWxIYVI": {
+      "categories": [
+       "celebration & awards"
+      ]
+     },
+     "v_0Zg-7EgFiC8": {
+      "categories": [
+       "fitness"
+      ]
+     },
+     "v_McwVhHxdr5g": {
+      "categories": [
+       "skateboarding"
+      ]
+     },
+     "v_RPLbUeV3-o0": {
+      "categories": [
+       "winter sports"
+      ]
+     },
+     "v_YzyCFfrX_4I": {
+      "categories": [
+       "skateboarding"
+      ]
+     },
+     "v_uOUjBTlwoxg": {
+      "categories": [
+       "winter sports"
+      ]
+     },
+     "v_wEgt41AJaU4": {
+      "categories": [
+       "paintball & shooting"
+      ]
+     }
+    }
+   },
+   "ts_mask": true,
+   "db_spans_available": 8,
+   "gold_localization": {
+    "status": "pending_prelabel",
+    "spans": {}
+   }
+  },
+  {
+   "id": "t2-playing-dodgeball",
+   "tier": "T2",
+   "predicate": "playing dodgeball",
+   "question": "找出所有在玩「躲避飞来的球」的团队游戏的视频,并给出时间段和画面证据",
+   "rephrased": true,
+   "gold": {
+    "video_ids": [
+     "v_-5Q7iNtaWCU",
+     "v_-ZBsdK10Trs",
+     "v_cICxG-28hK0",
+     "v_r4bI22hGTg4"
+    ],
+    "count": 4,
+    "per_video": {
+     "v_-5Q7iNtaWCU": {
+      "categories": [
+       "ball sports"
+      ]
+     },
+     "v_-ZBsdK10Trs": {
+      "categories": [
+       "ball sports"
+      ]
+     },
+     "v_cICxG-28hK0": {
+      "categories": [
+       "ball sports"
+      ]
+     },
+     "v_r4bI22hGTg4": {
+      "categories": [
+       "ball sports"
+      ]
+     }
+    }
+   },
+   "ts_mask": true,
+   "db_spans_available": 4,
+   "gold_localization": {
+    "status": "pending_prelabel",
+    "spans": {}
+   }
+  },
+  {
+   "id": "t2-dribbling-basketball",
+   "tier": "T2",
+   "predicate": "dribbling basketball",
+   "question": "找出所有有人拍着球运球移动的视频,并给出时间段和画面证据",
+   "rephrased": true,
+   "gold": {
+    "video_ids": [
+     "v_0GWJ-VHFlTk",
+     "v_R0B5bBr6t8w",
+     "v_jWzLhOqcGtE"
+    ],
+    "count": 3,
+    "per_video": {
+     "v_0GWJ-VHFlTk": {
+      "categories": [
+       "ball sports",
+       "fitness"
+      ]
+     },
+     "v_R0B5bBr6t8w": {
+      "categories": [
+       "ball sports"
+      ]
+     },
+     "v_jWzLhOqcGtE": {
+      "categories": [
+       "ball sports"
+      ]
+     }
+    }
+   },
+   "ts_mask": true,
+   "db_spans_available": 3,
+   "gold_localization": {
+    "status": "pending_prelabel",
+    "spans": {}
+   }
+  },
+  {
+   "id": "probe-snorkeling",
+   "tier": "PROBE",
+   "predicate": "snorkeling",
+   "question": "找出库里所有浮潜的视频",
+   "rephrased": false,
+   "trap": "有游泳/皮划艇/水球等大量水上内容作相似诱惑,但浮潜为零",
+   "gold": {
+    "video_ids": [],
+    "count": 0,
+    "per_video": {}
+   }
+  }
+ ]
+}

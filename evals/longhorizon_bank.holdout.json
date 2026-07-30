@@ -1,0 +1,621 @@
+{
+ "meta": {
+  "frozen_at": "2026-07-30T12:54:29.581008+00:00",
+  "items_sha256": "a5fe134419d06f6f8648b0a404afbfbd8e64b23db2f9f3e3959515707182857b",
+  "category_vocab": [
+   "ball sports",
+   "beach & leisure",
+   "car care",
+   "celebration & awards",
+   "climbing",
+   "cooking & food",
+   "cycling",
+   "dancing",
+   "diy & crafts",
+   "equestrian",
+   "everyday activities",
+   "fitness",
+   "holiday & party",
+   "household & cleaning",
+   "martial arts & wrestling",
+   "motorsports",
+   "music",
+   "paintball & shooting",
+   "personal care",
+   "shopping",
+   "skateboarding",
+   "skydiving",
+   "spectating",
+   "talking & presenting",
+   "water sports",
+   "winter sports"
+  ],
+  "answer_contract": {
+   "video_ids": "list[str]",
+   "count": "int",
+   "per_video": "{vid: {category, start_ts, end_ts, evidence}}"
+  },
+  "notes": "环境冻结要求:关闭 use-to-grow(_index_analyze_result)、DB 快照冻结、T2 谓词 ts 掩码、analyze 缓存按 arm×rep 命名空间(红队 C3)。"
+ },
+ "split": "holdout",
+ "items": [
+  {
+   "id": "t1-driving-car",
+   "tier": "T1",
+   "predicate": "driving car",
+   "question": "找出库里所有有人开车的视频,并给每条标注它属于哪个大类",
+   "rephrased": false,
+   "gold": {
+    "video_ids": [
+     "v_-VKGwqL83w8",
+     "v_8WJWtfmEipI",
+     "v_px18138660",
+     "v_px32093955",
+     "v_px3727447",
+     "v_px5836409",
+     "v_px9935090"
+    ],
+    "count": 7,
+    "per_video": {
+     "v_-VKGwqL83w8": {
+      "categories": [
+       "water sports"
+      ]
+     },
+     "v_8WJWtfmEipI": {
+      "categories": [
+       "car care",
+       "everyday activities"
+      ]
+     },
+     "v_px18138660": {
+      "categories": [
+       "car care",
+       "everyday activities"
+      ]
+     },
+     "v_px32093955": {
+      "categories": [
+       "car care",
+       "everyday activities"
+      ]
+     },
+     "v_px3727447": {
+      "categories": [
+       "car care",
+       "everyday activities"
+      ]
+     },
+     "v_px5836409": {
+      "categories": [
+       "car care",
+       "everyday activities"
+      ]
+     },
+     "v_px9935090": {
+      "categories": [
+       "car care",
+       "everyday activities"
+      ]
+     }
+    }
+   }
+  },
+  {
+   "id": "t1-playing-drums",
+   "tier": "T1",
+   "predicate": "playing drums",
+   "question": "找出库里所有有人打鼓的视频,并给每条标注它属于哪个大类",
+   "rephrased": false,
+   "gold": {
+    "video_ids": [
+     "v_-E2dqOULQgY",
+     "v_-hEr3ydGyoM",
+     "v_00KMCm2oGhk",
+     "v_0KTued0g034",
+     "v_0drl-yrfBAA",
+     "v_2belnHaa36g"
+    ],
+    "count": 6,
+    "per_video": {
+     "v_-E2dqOULQgY": {
+      "categories": [
+       "music"
+      ]
+     },
+     "v_-hEr3ydGyoM": {
+      "categories": [
+       "music"
+      ]
+     },
+     "v_00KMCm2oGhk": {
+      "categories": [
+       "music"
+      ]
+     },
+     "v_0KTued0g034": {
+      "categories": [
+       "music"
+      ]
+     },
+     "v_0drl-yrfBAA": {
+      "categories": [
+       "music"
+      ]
+     },
+     "v_2belnHaa36g": {
+      "categories": [
+       "music"
+      ]
+     }
+    }
+   }
+  },
+  {
+   "id": "t1-riding-horse",
+   "tier": "T1",
+   "predicate": "riding horse",
+   "question": "找出库里所有有人骑马的视频,并给每条标注它属于哪个大类",
+   "rephrased": false,
+   "gold": {
+    "video_ids": [
+     "v_-Lxv663IEaI",
+     "v_3LyyqeVeYkI",
+     "v_8wB0BOjuyes",
+     "v_fO8b3U8fuGo",
+     "v_hwGvU9Csz98"
+    ],
+    "count": 5,
+    "per_video": {
+     "v_-Lxv663IEaI": {
+      "categories": [
+       "equestrian",
+       "motorsports"
+      ]
+     },
+     "v_3LyyqeVeYkI": {
+      "categories": [
+       "equestrian"
+      ]
+     },
+     "v_8wB0BOjuyes": {
+      "categories": [
+       "equestrian"
+      ]
+     },
+     "v_fO8b3U8fuGo": {
+      "categories": [
+       "equestrian"
+      ]
+     },
+     "v_hwGvU9Csz98": {
+      "categories": [
+       "equestrian"
+      ]
+     }
+    }
+   }
+  },
+  {
+   "id": "t1-throwing-ball",
+   "tier": "T1",
+   "predicate": "throwing ball",
+   "question": "找出库里所有有人扔球的视频,并给每条标注它属于哪个大类",
+   "rephrased": false,
+   "gold": {
+    "video_ids": [
+     "v_-5Q7iNtaWCU",
+     "v_-ZBsdK10Trs",
+     "v_4BofYu8Soz8",
+     "v_OHNH7IV0768",
+     "v_cICxG-28hK0",
+     "v_dB4SbhaQQV8"
+    ],
+    "count": 6,
+    "per_video": {
+     "v_-5Q7iNtaWCU": {
+      "categories": [
+       "ball sports"
+      ]
+     },
+     "v_-ZBsdK10Trs": {
+      "categories": [
+       "ball sports"
+      ]
+     },
+     "v_4BofYu8Soz8": {
+      "categories": [
+       "ball sports",
+       "beach & leisure"
+      ]
+     },
+     "v_OHNH7IV0768": {
+      "categories": [
+       "ball sports",
+       "water sports"
+      ]
+     },
+     "v_cICxG-28hK0": {
+      "categories": [
+       "ball sports"
+      ]
+     },
+     "v_dB4SbhaQQV8": {
+      "categories": [
+       "ball sports",
+       "beach & leisure"
+      ]
+     }
+    }
+   }
+  },
+  {
+   "id": "t1-cheering",
+   "tier": "T1",
+   "predicate": "cheering",
+   "question": "找出库里所有观众在为场上的人助威呐喊的视频,并给每条标注它属于哪个大类",
+   "rephrased": true,
+   "gold": {
+    "video_ids": [
+     "v_-9l1Rh10bO8",
+     "v_-TuxT19bogQ",
+     "v_-jNouTszLJ0",
+     "v_0drl-yrfBAA",
+     "v_AGDsfpZQBIs",
+     "v_clUgEizjVkM",
+     "v_qBqUu4_qOnU"
+    ],
+    "count": 7,
+    "per_video": {
+     "v_-9l1Rh10bO8": {
+      "categories": [
+       "cooking & food",
+       "martial arts & wrestling"
+      ]
+     },
+     "v_-TuxT19bogQ": {
+      "categories": [
+       "ball sports"
+      ]
+     },
+     "v_-jNouTszLJ0": {
+      "categories": [
+       "celebration & awards",
+       "holiday & party"
+      ]
+     },
+     "v_0drl-yrfBAA": {
+      "categories": [
+       "music"
+      ]
+     },
+     "v_AGDsfpZQBIs": {
+      "categories": [
+       "ball sports"
+      ]
+     },
+     "v_clUgEizjVkM": {
+      "categories": [
+       "ball sports"
+      ]
+     },
+     "v_qBqUu4_qOnU": {
+      "categories": [
+       "holiday & party"
+      ]
+     }
+    }
+   }
+  },
+  {
+   "id": "t1-shoveling-snow",
+   "tier": "T1",
+   "predicate": "shoveling snow",
+   "question": "找出库里所有有人在清理地上积雪的视频,并给每条标注它属于哪个大类",
+   "rephrased": true,
+   "gold": {
+    "video_ids": [
+     "v_-G-sh-NhYtk",
+     "v_8WJWtfmEipI",
+     "v_bY0vSkxH0PE"
+    ],
+    "count": 3,
+    "per_video": {
+     "v_-G-sh-NhYtk": {
+      "categories": [
+       "everyday activities"
+      ]
+     },
+     "v_8WJWtfmEipI": {
+      "categories": [
+       "car care",
+       "everyday activities"
+      ]
+     },
+     "v_bY0vSkxH0PE": {
+      "categories": [
+       "household & cleaning"
+      ]
+     }
+    }
+   }
+  },
+  {
+   "id": "t2-celebrating",
+   "tier": "T2",
+   "predicate": "celebrating",
+   "question": "找出所有出现庆祝场面的视频,并给出每条里庆祝的时间段和画面证据",
+   "rephrased": false,
+   "gold": {
+    "video_ids": [
+     "v_-NM-0NZXRNw",
+     "v_-jNouTszLJ0",
+     "v_0AbJgWxIYVI",
+     "v_0J55EGFLglQ",
+     "v_BLTOTjVYiuE",
+     "v_QacSWR8c-8Y",
+     "v_c1Gby2EHBzs",
+     "v_eRHbpYeYtxo"
+    ],
+    "count": 8,
+    "per_video": {
+     "v_-NM-0NZXRNw": {
+      "categories": [
+       "celebration & awards",
+       "paintball & shooting"
+      ]
+     },
+     "v_-jNouTszLJ0": {
+      "categories": [
+       "celebration & awards",
+       "holiday & party"
+      ]
+     },
+     "v_0AbJgWxIYVI": {
+      "categories": [
+       "celebration & awards"
+      ]
+     },
+     "v_0J55EGFLglQ": {
+      "categories": [
+       "ball sports",
+       "celebration & awards"
+      ]
+     },
+     "v_BLTOTjVYiuE": {
+      "categories": [
+       "fitness"
+      ]
+     },
+     "v_QacSWR8c-8Y": {
+      "categories": [
+       "fitness"
+      ]
+     },
+     "v_c1Gby2EHBzs": {
+      "categories": [
+       "ball sports",
+       "celebration & awards"
+      ]
+     },
+     "v_eRHbpYeYtxo": {
+      "categories": [
+       "celebration & awards",
+       "fitness"
+      ]
+     }
+    }
+   },
+   "ts_mask": true,
+   "db_spans_available": 8,
+   "gold_localization": {
+    "status": "pending_prelabel",
+    "spans": {}
+   }
+  },
+  {
+   "id": "t2-playing-water-polo",
+   "tier": "T2",
+   "predicate": "playing water polo",
+   "question": "找出所有有人打水球的视频,并给出每条里打水球的时间段和画面证据",
+   "rephrased": false,
+   "gold": {
+    "video_ids": [
+     "v_8Ny9NjNpQQA",
+     "v_OHNH7IV0768",
+     "v_Te1d8H4VWYw"
+    ],
+    "count": 3,
+    "per_video": {
+     "v_8Ny9NjNpQQA": {
+      "categories": [
+       "water sports"
+      ]
+     },
+     "v_OHNH7IV0768": {
+      "categories": [
+       "ball sports",
+       "water sports"
+      ]
+     },
+     "v_Te1d8H4VWYw": {
+      "categories": [
+       "water sports"
+      ]
+     }
+    }
+   },
+   "ts_mask": true,
+   "db_spans_available": 3,
+   "gold_localization": {
+    "status": "pending_prelabel",
+    "spans": {}
+   }
+  },
+  {
+   "id": "t2-playing-tennis",
+   "tier": "T2",
+   "predicate": "playing tennis",
+   "question": "找出所有有人打网球的视频,并给出每条里打网球的时间段和画面证据",
+   "rephrased": false,
+   "gold": {
+    "video_ids": [
+     "v_g7l-Y_bgPkI",
+     "v_hrwcr7BxS5I",
+     "v_qPZBSTNEl78"
+    ],
+    "count": 3,
+    "per_video": {
+     "v_g7l-Y_bgPkI": {
+      "categories": [
+       "ball sports"
+      ]
+     },
+     "v_hrwcr7BxS5I": {
+      "categories": [
+       "ball sports"
+      ]
+     },
+     "v_qPZBSTNEl78": {
+      "categories": [
+       "ball sports"
+      ]
+     }
+    }
+   },
+   "ts_mask": true,
+   "db_spans_available": 3,
+   "gold_localization": {
+    "status": "pending_prelabel",
+    "spans": {}
+   }
+  },
+  {
+   "id": "t2-diving",
+   "tier": "T2",
+   "predicate": "diving",
+   "question": "找出所有有人跳水的视频,并给出每条里跳水的时间段和画面证据",
+   "rephrased": false,
+   "gold": {
+    "video_ids": [
+     "v_-VKGwqL83w8",
+     "v_-voGnJbk3CI",
+     "v_wYIeRRTRtX8"
+    ],
+    "count": 3,
+    "per_video": {
+     "v_-VKGwqL83w8": {
+      "categories": [
+       "water sports"
+      ]
+     },
+     "v_-voGnJbk3CI": {
+      "categories": [
+       "water sports"
+      ]
+     },
+     "v_wYIeRRTRtX8": {
+      "categories": [
+       "water sports"
+      ]
+     }
+    }
+   },
+   "ts_mask": true,
+   "db_spans_available": 3,
+   "gold_localization": {
+    "status": "pending_prelabel",
+    "spans": {}
+   }
+  },
+  {
+   "id": "t2-performing-gymnastics",
+   "tier": "T2",
+   "predicate": "performing gymnastics",
+   "question": "找出所有有人在垫上或器械上做翻腾平衡动作的视频,并给出时间段和画面证据",
+   "rephrased": true,
+   "gold": {
+    "video_ids": [
+     "v_0dkIbKXXFzI",
+     "v_aLv03Fznf5A",
+     "v_fRmHJKlQmmw"
+    ],
+    "count": 3,
+    "per_video": {
+     "v_0dkIbKXXFzI": {
+      "categories": [
+       "fitness"
+      ]
+     },
+     "v_aLv03Fznf5A": {
+      "categories": [
+       "fitness"
+      ]
+     },
+     "v_fRmHJKlQmmw": {
+      "categories": [
+       "fitness"
+      ]
+     }
+    }
+   },
+   "ts_mask": true,
+   "db_spans_available": 3,
+   "gold_localization": {
+    "status": "pending_prelabel",
+    "spans": {}
+   }
+  },
+  {
+   "id": "t2-rock-climbing",
+   "tier": "T2",
+   "predicate": "rock climbing",
+   "question": "找出所有有人徒手或借助绳索攀爬岩壁的视频,并给出时间段和画面证据",
+   "rephrased": true,
+   "gold": {
+    "video_ids": [
+     "v_--1DO2V4K74",
+     "v_0HhNhRExwSQ",
+     "v_kr4RUFi1UGs"
+    ],
+    "count": 3,
+    "per_video": {
+     "v_--1DO2V4K74": {
+      "categories": [
+       "climbing"
+      ]
+     },
+     "v_0HhNhRExwSQ": {
+      "categories": [
+       "climbing"
+      ]
+     },
+     "v_kr4RUFi1UGs": {
+      "categories": [
+       "climbing"
+      ]
+     }
+    }
+   },
+   "ts_mask": true,
+   "db_spans_available": 3,
+   "gold_localization": {
+    "status": "pending_prelabel",
+    "spans": {}
+   }
+  },
+  {
+   "id": "probe-golf",
+   "tier": "PROBE",
+   "predicate": "golf",
+   "question": "找出库里所有打高尔夫的视频",
+   "rephrased": false,
+   "trap": "有网球/羽毛球/乒乓球等大量球类内容作相似诱惑,但高尔夫为零",
+   "gold": {
+    "video_ids": [],
+    "count": 0,
+    "per_video": {}
+   }
+  }
+ ]
+}
