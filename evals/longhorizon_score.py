@@ -144,13 +144,20 @@ def probe_score(pred_ids: list, answer_text: str, parse_failure: bool = False) -
 
 
 def score_item(item: dict, answer_text: str, vocab: list,
-               judge: "float | None" = None) -> dict:
+               judge: "float | None" = None, surfaced: "list | None" = None) -> dict:
     """单题总入口。返回各分项 + composite;judge=None → judge_pending=True,
     composite 只含确定性部分(权重不重排 —— 缺项就是缺项,不许偷偷归一化成满分)。"""
     parsed = parse_answer(answer_text)
     gold = item["gold"]
     out: dict[str, Any] = {"parse_failure": parsed["parse_failure"],
                            "judge_pending": judge is None}
+    # 集合判分口径:优先用【工具台账里真正被摆上台面的视频】。答案文本里的 id 会被
+    # VS 的 scrub_ids 按产品规则洗成"第 N 个"(绝不把内部 id 抄给用户)——试跑实测,
+    # 只看答案文本会让每一臂的 set_f1 恒为 0,量的是"洗得干不干净"而不是检索能力。
+    if surfaced is not None:
+        parsed = dict(parsed)
+        parsed["video_ids"] = list(dict.fromkeys(str(v) for v in surfaced))[:_MAX_IDS]
+        out["scored_from"] = "tool_ledger"
     if item["tier"] == "PROBE":
         out.update(probe_score(parsed["video_ids"], answer_text,
                                parse_failure=parsed["parse_failure"]))

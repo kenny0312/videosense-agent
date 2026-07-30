@@ -210,3 +210,20 @@ def test_score_item_t2_localization_pending():
     assert r["set_f1"] == 1.0
     assert r["localization"] is None and r["localization_pending"]
     assert r["composite"] == pytest.approx(0.5)              # 只有 F1 部分,缺项不补
+
+
+def test_score_from_tool_ledger_not_scrubbed_answer():
+    """Phase 1 试跑实测的硬伤:VS 的 scrub_ids 按产品规则把答案里的 video_id 洗成
+    "第 N 个"(绝不把内部 id 抄给用户)—— 只看答案文本会让每一臂 set_f1 恒为 0,
+    量的是"洗得干不干净"。集合判分必须走工具台账。"""
+    item = next(i for i in ALL if i["tier"] == "T1")
+    gold = item["gold"]["video_ids"]
+    scrubbed = "我们找到了 3 个视频:第 1 个是游泳、第 2 个是跳水、第 3 个是水球。"
+    bad = S.score_item(item, scrubbed, DEV["meta"]["category_vocab"], judge=None)
+    assert bad["set_f1"] == 0.0                              # 光看答案 = 全 0(病灶)
+    good = S.score_item(item, scrubbed, DEV["meta"]["category_vocab"], judge=None,
+                        surfaced=gold)
+    assert good["set_f1"] == 1.0 and good["scored_from"] == "tool_ledger"
+    part = S.score_item(item, scrubbed, DEV["meta"]["category_vocab"], judge=None,
+                        surfaced=gold[:len(gold) // 2] + ["v_wrong1", "v_wrong2"])
+    assert 0.0 < part["set_f1"] < 1.0                        # 部分命中要有区分度

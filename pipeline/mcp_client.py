@@ -140,4 +140,26 @@ def get_schema() -> dict:
 
 
 def query_db(sql: str) -> list[dict]:
-    return MCPClient.shared().query_db(sql)
+    rows = MCPClient.shared().query_db(sql)
+    return _mask_ts(rows)
+
+
+# ── 评测用:时间戳掩码(GATE_TS_MASK_PREDICATE,默认空=不掩码,生产零影响)────────
+# 为什么需要:gate 实验的 T2 题问"这个动作在第几秒",本意是考【看视频】的能力。
+# 但库里 video_facts 已有 start_ts —— 试跑实测,大脑 12 次 sql_query、一个视频不看,
+# 直接把时间戳抄出来答得有模有样。号称考感知的题变成了考 SQL,而且是"看起来有结果"
+# 的那种无效(最危险)。掩码把被测谓词的时间戳在【返回给 agent 的行上】置空,
+# 逼它真去看视频;gold 用的是库外预标,不受影响。
+def _mask_ts(rows):
+    import os
+    preds = [p.strip() for p in os.environ.get("GATE_TS_MASK_PREDICATE", "").split(",")
+             if p.strip()]
+    if not preds or not isinstance(rows, list):
+        return rows
+    lowered = {p.lower() for p in preds}
+    out = []
+    for r in rows:
+        if isinstance(r, dict) and str(r.get("predicate", "")).lower() in lowered:
+            r = {**r, "start_ts": None, "end_ts": None}
+        out.append(r)
+    return out

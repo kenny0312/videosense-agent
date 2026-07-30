@@ -53,12 +53,16 @@ COMMON_ENV = {
     "LOOP_THOUGHTS": "1",
 }
 
+# 答案契约按【产品自己的交付方式】设计,不跟它对着干:VS 的规则是"绝不把内部 id 抄给
+# 用户看"(scrub_ids 会把答案里的 id 洗成"第 N 个"),交付视频靠 show_video。
+# 试跑实测:要求"输出 video_ids 的 JSON"会被这条规则洗掉 → 每一臂 set_f1 恒为 0,
+# 量的是"洗得干不干净"。所以判分口径 = show_video 这个【交付动作】的台账。
 ANSWER_CONTRACT = (
-    "\n\n【答案格式(务必遵守)】最后用一个 JSON 代码块给出结构化结果:"
-    '{"video_ids": ["..."], "count": 数量, '
-    '"per_video": {"video_id": {"category": "大类", "start_ts": 秒, "end_ts": 秒, '
-    '"evidence": "画面证据一句话"}}}。'
-    "T1 类问题 per_video 只需 category;找不到就给空数组并说明。JSON 之外可以正常写说明文字。"
+    "\n\n【交付要求(务必遵守)】把你【最终认定符合条件】的视频,用 show_video 一次性摆出来"
+    "(data_result_id 指向你的检索结果,或直接给 video_ids)—— 这是交付动作,只摆你确认的,"
+    "别把探查过程中看过的候选都摆上。然后用文字说明:总共几个、每个属于哪个大类"
+    "(受控词表),T2 类问题还要说每个视频里目标动作的时间段与画面证据。"
+    "一个都没有就明确说没有,别硬凑。"
 )
 
 
@@ -74,8 +78,9 @@ def _set_env(arm: str, item: dict, rep: int):
     for k, v in ARMS[arm].items():
         os.environ[k] = v
     os.environ["ANALYZE_CACHE_NS"] = f"gate-{arm}-r{rep}"
-    # T2 防 SQL 捷径:实验快照对本题谓词做 ts 掩码(env 供 pipeline 侧读;
-    # 若 pipeline 未实现掩码则由 gold 的 ts_mask 标记提示人工核对,不静默当已掩码)
+    # T2 防 SQL 捷径:把本题谓词的时间戳在【返回给 agent 的行上】置空(mcp_client._mask_ts),
+    # 逼它真去看视频。试跑实测:不掩码时大脑 12 次 SQL、一个视频不看就把时间戳抄出来了 ——
+    # 号称考感知的题变成考 SQL。gold 走库外预标,不受掩码影响。
     os.environ["GATE_TS_MASK_PREDICATE"] = item.get("predicate", "") if item.get("ts_mask") else ""
 
 
@@ -87,6 +92,28 @@ def _reload_config():
     for mod in ("pipeline.loop_driver", "pipeline.node_executor", "pipeline.subagents"):
         if mod in sys.modules:
             importlib.reload(sys.modules[mod])
+
+
+def _surfaced_video_ids(lo) -> list:
+    """判分口径 = 【交付动作】摆出来的视频,不是"agent 碰过的一切"。
+    实测:把所有工具结果里的 video_id 都算上,一道 gold=3 的题会抓到 37 条(SQL 探查的
+    中间候选全进来了),precision 崩掉。既定口径(evals/scorers)是"答案 + show_* 参数",
+    这里对应 show_video 的 videos 侧信道 —— 那才是 agent 主动摆给用户看的。"""
+    out, seen = [], set()
+
+    def add(v):
+        v = str(v or "")
+        if v and v not in seen:
+            seen.add(v)
+            out.append(v)
+
+    for cid, er in (getattr(lo, "results", None) or {}).items():
+        if not getattr(er, "ok", False):
+            continue
+        for v in (getattr(er, "videos", None) or []):        # show_video 的交付侧信道
+            if isinstance(v, dict):
+                add(v.get("video_id"))
+    return out
 
 
 def run_one(item: dict, arm: str, rep: int, owner: str = "gate-eval") -> dict:
@@ -115,6 +142,10 @@ def run_one(item: dict, arm: str, rep: int, owner: str = "gate-eval") -> dict:
         rec["turns"] = [{"step": t.get("step"), "brain": (t.get("brain") or "")[:600]}
                         for t in (getattr(lo, "turns", None) or [])][:6]
         rec["spawned"] = "spawn_agents" in (rec["tools"] or [])
+        # 【判分必须从工具结果取 video_id,不能从答案文本抠】:VS 的 scrub_ids 按产品规则
+        # 把答案里的内部 id 全洗成"第 N 个"(绝不把 id 抄给用户看)—— 试跑实测,不这么做
+        # 每一臂的 set_f1 恒为 0,整个实验测的是"洗得干不干净"。
+        rec["surfaced"] = _surfaced_video_ids(lo)
     except Exception as e:
         rec["answer"] = ""
         rec["error"] = repr(e)[:300]
