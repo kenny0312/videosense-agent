@@ -39,6 +39,7 @@ _SUBAGENT_DEFAULT = ("analyze_video", "semantic_search", "sql_query")
 #   服务器线程复用会让跨请求的 contextvar 吃余温,闭包 per-request 天然隔离。
 _TREE_DEPTH = ContextVar("subagent_tree_depth", default=0)
 _BRANCH: ContextVar = ContextVar("subagent_branch_state", default=None)
+_NODES_INIT_LOCK = threading.Lock()          # 异形 execute 懒建节点账的双检锁(见 run_fanout)
 
 
 def _allowed(depth: int) -> tuple:
@@ -143,8 +144,9 @@ def _run_one(task: dict, *, execute, sandbox, trace, schema, session_id, owner,
         def ex(cid, name, inputs, upstream, uses):
             res = base_ex(cid, name, inputs, upstream, uses)
             b = _BRANCH.get()
+            v = getattr(res, "value", None)              # 防御:异形结果对象没有 value 也别炸壳
             if (b is not None and getattr(res, "ok", False) and name != "spawn_agents"
-                    and not (isinstance(res.value, dict) and res.value.get("gate") == "blocked")):
+                    and not (isinstance(v, dict) and v.get("gate") == "blocked")):
                 with b["lock"]:
                     b["ok_tools"] += 1
             return res
@@ -217,11 +219,16 @@ def run_fanout(tasks: Any, *, sandbox, trace, schema: dict | None = None,
     if config.USE_DEPTH2 and execute is not None:
         st = getattr(execute, "tree_nodes", None)
         if st is None:
-            st = {"nodes": 1, "lock": threading.Lock()}  # 1 = 主脑自己
-            try:
-                execute.tree_nodes = st
-            except Exception:                            # 闭包不可挂属性(异形 execute)→ 本次局部账
-                pass
+            # 懒建走双检锁:生产闭包由 _make_executor 预建(到不了这);异形 execute 并发
+            # 首触时两个线程各建一本账会分账逃顶(review 提出,证伪者没跑完,机理自明)。
+            with _NODES_INIT_LOCK:
+                st = getattr(execute, "tree_nodes", None)
+                if st is None:
+                    st = {"nodes": 1, "lock": threading.Lock()}  # 1 = 主脑自己
+                    try:
+                        execute.tree_nodes = st
+                    except Exception:                    # 闭包不可挂属性(异形 execute)→ 本次局部账
+                        pass
         with st["lock"]:
             # 下界防呆:误配 ≤1 会连根上的第一次 spawn 都拒掉(nodes 初始=1=主脑)。
             room = max(2, int(config.MAX_TREE_NODES)) - int(st["nodes"])
