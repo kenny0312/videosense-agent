@@ -90,15 +90,28 @@ def _run_one(task: dict, *, execute, sandbox, trace, schema, session_id, owner,
     if "sql_query" in usable and schema:                 # 要写 SQL 就得看库结构(镜像主 loop 的 _loop_system)
         import json as _json
         system += "\n\n# 数据库结构(sql_query 用)\n" + _json.dumps(schema, ensure_ascii=False)
+    # T-1/T-2:每个子 agent 开一个 exec 层 span。此前子 agent 崩只被吞成一句文本
+    # (trace 上零痕迹),triage 会报"0 失败"—— 静默失败正是因由码制度要消灭的东西。
+    span = trace.step(f"subagent: {instruction[:40]}", component="exec") \
+        if trace is not None and hasattr(trace, "step") else None
     try:
         conv = loop_driver.make_conversation(model, decls, system)
         # 复用父 execute 闭包 → 共享 analyze 配额与 usage;无父闭包(离线单测)→ 现建一个(独立配额)。
         ex = execute or loop_driver._make_executor(sandbox, trace, schema, session_id, owner=owner)
         r = loop_driver.run_loop(instruction, conv, ex, max_steps=max_steps, critic=None)
-        out = r.answer if r.answer is not None else f"(子 agent 未收敛:{r.terminated})"
+        if r.answer is not None:
+            out = r.answer
+            if span:
+                span.ok(steps=getattr(r, "steps", None))
+        else:                                             # 未收敛也是一种失败,要有码
+            out = f"(子 agent 未收敛:{r.terminated})"
+            if span:
+                span.soft("EXEC_NOT_CONVERGED", error=str(r.terminated)[:120])
     except Exception as e:                                # 一个子 agent 崩不该拖垮整批(fail-open)
         log.warning("子 agent 失败(fail-open): %r", e)
         out = f"(子 agent 出错:{e})"
+        if span:
+            span.fail(error=repr(e)[:160], cause="EXEC_TOOL_ERROR")
     return {"instruction": instruction, "output": out}
 
 

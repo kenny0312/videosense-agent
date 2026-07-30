@@ -13,6 +13,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import time
 from typing import Any, TYPE_CHECKING
 
 from pipeline import config, mcp_client
@@ -28,12 +30,31 @@ if TYPE_CHECKING:                       # 仅类型提示;运行期不 import se
 log = logging.getLogger("pipeline.orchestrator")
 
 
+def _maybe_dump_trace(trace: Trace, session_id: str | None, status: str) -> None:
+    """T-1 落盘钩子:TRACE_DUMP_DIR 非空才落一份 trace JSON,供事后
+    `python -m pipeline.agentops.trace_report --triage <dir>` 定位。
+
+    默认关(env 未设 = 一行不写),守住 Part 0 不变量①"开关全关行为等价";
+    跑批/eval/复现事故时打开。全程 fail-open:观测绝不能拖垮请求。
+    """
+    d = os.environ.get("TRACE_DUMP_DIR", "").strip()
+    if not d:
+        return
+    try:
+        from pipeline.agentops.trace import dump_trace
+        name = f"{int(time.time() * 1000)}_{(session_id or 'nosid')[:12]}_{status}.json"
+        dump_trace(trace, os.path.join(d, name), session_id=session_id, status=status)
+    except Exception:
+        log.warning("trace dump 失败(fail-open)", exc_info=True)
+
+
 def _result(ok: bool, *, trace: Trace, dag: DAG | None = None,
             answer: Any = None, results: dict[str, NodeResult] | None = None,
             fail_node: str | None = None, error: str = "",
             status: str | None = None, reason: str = "",
             session_id: str | None = None, turn_type: str = "new",
             loop_meta: dict | None = None, context: dict | None = None) -> dict:
+    _maybe_dump_trace(trace, session_id, status or ("ok" if ok else "error"))
     results = results or {}
     generated_code = {nid: r.code for nid, r in results.items() if r.code}
     plot = next((r.artifact for r in results.values() if r.artifact), {})

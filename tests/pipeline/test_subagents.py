@@ -231,3 +231,22 @@ def test_end_to_end_dispatch_and_preview(monkeypatch):
     execute = loop_driver._make_executor(None, trace, None, None, owner="anon")
     res = execute("c0_0", "spawn_agents", {"tasks": [{"instruction": "A"}]}, {}, [])
     assert res.ok and long_ans in str(res.preview)
+
+
+def test_subagent_failure_opens_a_span_with_cause(monkeypatch):
+    """T-2 真注入(非人造 trace):子 agent 抛错此前只被吞成一句文本、trace 零痕迹,
+    triage 会报"0 失败"。现在必须开出 exec 层 span 且带 EXEC_TOOL_ERROR。"""
+    from pipeline import loop_driver, subagents
+    from pipeline.agentops import trace as T
+    from pipeline.agentops import trace_report as TR
+
+    monkeypatch.setattr(loop_driver, "run_loop",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("sub boom")))
+    monkeypatch.setattr(loop_driver, "make_conversation", lambda *a, **k: object())
+    tr = T.Trace(quiet=True)
+    out = subagents.run_fanout([{"instruction": "深看 A 组"}], sandbox=None, trace=tr,
+                               execute=lambda *a, **k: None)
+    assert "子 agent 出错" in out[0]["output"]          # 对主脑仍是 fail-open 文本
+    spans = [s for s in tr.as_list() if s["component"] == "exec"]
+    assert spans and spans[0]["cause"] == "EXEC_TOOL_ERROR" and spans[0]["status"] == "error"
+    assert tr.cause_counts() == {"EXEC_TOOL_ERROR": 1}

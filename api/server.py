@@ -286,6 +286,10 @@ def _audit(request: Request, req: VibeQueryRequest, result: dict,
         "tokens_in":    usage.get("tokens_in", 0),
         "tokens_out":   usage.get("tokens_out", 0),
         "tokens_total": usage.get("tokens_total", 0),
+        # P0-1:思考/工具用提示 token 单列 —— 思考按 out 价计费,是深跑账单的大头;
+        # 不落日志则"成本全口径可见"红线在唯一的生产消费方处失效。
+        "tokens_thought": usage.get("tokens_thought", 0),
+        "tokens_tool":  usage.get("tokens_tool", 0),
         "llm_calls":    usage.get("llm_calls", 0),
         "cost_usd":     usage.get("cost_usd", 0.0),
         # 序列化成字符串:模型名带点/横线(gemini-2.5-pro),作 JSON 对象会在 BigQuery 里炸成一堆动态列
@@ -301,8 +305,15 @@ def _audit(request: Request, req: VibeQueryRequest, result: dict,
     record["trace_summary"]     = result.get("trace_summary")
     if result.get("status") == "error":                  # 失败轮落完整 trace,供事后重建
         record["trace"]         = json.dumps(result.get("trace", []), ensure_ascii=False)
+    # P0-1 fail-loud:成本里有按【兜底最贵单价】估的模型 → 抬 severity 让 Cloud Logging 能配告警,
+    # 并报出模型名(否则运维只看到一个偏高的 cost_usd,永不知道该往 _PRICE 里加哪一行)。
+    if usage.get("unpriced_models"):
+        record["unpriced_models"] = usage["unpriced_models"]
+        record["severity"] = "WARNING"
     record["message"] = (f'audit user={record["app_user"]} status={record["status"]} '
-                         f'tokens={record["tokens_total"]} cost=${record["cost_usd"]}')
+                         f'tokens={record["tokens_total"]} cost=${record["cost_usd"]}'
+                         + (f' UNPRICED={record.get("unpriced_models")}'
+                            if usage.get("unpriced_models") else ''))
     print(json.dumps(record, ensure_ascii=False), flush=True)
     # P0-2 记账:把本次实际成本累加进限流的当日/会话桶(供下一请求的 precheck 比对)。fail-open。
     try:
