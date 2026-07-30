@@ -166,14 +166,24 @@ def test_executor_default_path_untouched(monkeypatch):
 
 
 # ── P0-4:spawn gate 五判据(prompt 防回归钉子)──
-def test_spawn_gate_five_criteria_present():
-    """五判据是 Atomizer 闸门的全部实现(纯 prompt)—— 文本丢了闸就没了,钉死关键词。"""
+def test_spawn_desc_steers_not_only_brakes():
+    """Phase 1 实测:原描述 922 字里刹车是引导的 3.4 倍,且五判据的 ③(单步子任务不配拆)
+    与 ⑤(K 个 agent ≈ K 次分析的钱)【结构性排除】了本实验的场景 —— 模型不拆是在守指令。
+    重写后必须:①有正面触发规则 ②讲清真收益是"步数"不是"钱" ③给可照做的示范
+    ④正面引导的篇幅不少于反面。"""
     desc = node_specs.SPECS["spawn_agents"].planner_desc
-    assert "五道判据" in desc and "不过就自己直接做" in desc
-    for kw in ("原子性", "独立性", "多步性", "可综合", "成本"):
-        assert kw in desc, f"五判据缺了:{kw}"
-    # 判据必须出现在"别用"清单之后、"先缩小候选"指引之前(闸门语义:先排除、再判拆、后执行)
-    assert desc.index("【别用】") < desc.index("五道判据") < desc.index("先用 sql_query")
+    assert "什么时候该拆" in desc and "什么时候别拆" in desc
+    # 真收益必须写明:买的是步数不是钱(旧描述让模型算出"不省钱 → 不值"而拒拆)
+    assert "步数预算" in desc and "钱基本不变" in desc
+    # 最该拆的情形要和实测失败模式对齐(待看量 > 剩余步数)
+    assert "超过你剩余步数" in desc
+    # 可照做的示范(抽象判据模型学不会)
+    assert "照着做" in desc and "instruction 写成" in desc
+    # 决策要发生在"数得清"之后,不是开局盲猜
+    assert "数一下还有多少要看" in desc
+    pos = desc[desc.index("什么时候该拆"):desc.index("什么时候别拆")]
+    neg = desc[desc.index("什么时候别拆"):]
+    assert len(pos) >= 0.7 * len(neg), f"正面引导 {len(pos)} 字 vs 反面 {len(neg)} 字,又写成刹车了"
 
 
 def test_spawn_gate_reaches_brain_via_declarations(monkeypatch):
@@ -181,7 +191,7 @@ def test_spawn_gate_reaches_brain_via_declarations(monkeypatch):
     monkeypatch.setattr(config, "USE_SUBAGENTS", True)
     decl = next(d for d in loop_driver.loop_function_declarations()
                 if d["name"] == "spawn_agents")
-    assert "五道判据" in decl["description"]
+    assert "什么时候该拆" in decl["description"]      # 引导真的进了大脑看到的声明
 
 
 def _stub_multi_hit(monkeypatch, rows):
