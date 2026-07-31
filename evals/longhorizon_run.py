@@ -138,9 +138,12 @@ def run_one(item: dict, arm: str, rep: int, owner: str = "gate-eval") -> dict:
         rec["terminated"] = lo.terminated
         rec["steps"] = lo.steps
         rec["tools"] = [s.get("tool") for s in (lo.trace or [])]
-        # 大脑原话(思考摘要):验尸时要能看出"它为什么这么决定"—— 尤其"为什么不拆"
-        rec["turns"] = [{"step": t.get("step"), "brain": (t.get("brain") or "")[:600]}
-                        for t in (getattr(lo, "turns", None) or [])][:6]
+        # 大脑原话(思考摘要):验尸时要能看出"它为什么这么决定"。
+        # 【全量记录,不截断】—— 第一版只存前 6 轮 × 600 字,结果验尸时发现关键决策
+        # (拆分发生在第 5 步、跑道提醒发在第 12 步)全在截断之外,看不到。
+        rec["turns"] = [{"step": t.get("step"), "brain": t.get("brain") or "",
+                         "nudge": t.get("nudge") or ""}
+                        for t in (getattr(lo, "turns", None) or [])]
         rec["spawned"] = "spawn_agents" in (rec["tools"] or [])
         # 【判分必须从工具结果取 video_id,不能从答案文本抠】:VS 的 scrub_ids 按产品规则
         # 把答案里的内部 id 全洗成"第 N 个"(绝不把 id 抄给用户看)—— 试跑实测,不这么做
