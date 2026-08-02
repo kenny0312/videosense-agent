@@ -116,10 +116,42 @@ def _surfaced_video_ids(lo) -> list:
     return out
 
 
+_SPAWN_LOG: list = []          # 本次 run_one 内 spawn_agents 的【真实参数 + 真实返回】
+
+
+def _install_spawn_capture():
+    """录下主脑到底【怎么分的活】。
+
+    原来的跑机只存工具名(`["...","spawn_agents",...]`),验尸时看得见"拆了",
+    看不见"拆成了什么" —— 每段 instruction 是主脑现场写的自由文本,那才是拆分质量
+    的全部内容。这里包一层 run_fanout,把入参(tasks)和出参(各子 agent 的结论)原样留档。
+
+    必须在 `_reload_config()` 【之后】装:那个函数会 reload pipeline.subagents,把补丁刷掉。
+    node_executor 是函数内 `from pipeline import subagents` 再 `subagents.run_fanout(...)`,
+    所以改模块属性能生效。深度 2 的嵌套 spawn 也会走这里,自然一并录到。
+    """
+    from pipeline import subagents
+    if getattr(subagents.run_fanout, "_captured", False):
+        return
+    orig = subagents.run_fanout
+
+    def wrapped(tasks, **kw):
+        rec = {"tasks": tasks, "results": None, "error": None}
+        _SPAWN_LOG.append(rec)                   # 先登记:抛异常的那次也要留痕
+        out = orig(tasks, **kw)
+        rec["results"] = out
+        return out
+
+    wrapped._captured = True
+    subagents.run_fanout = wrapped
+
+
 def run_one(item: dict, arm: str, rep: int, owner: str = "gate-eval") -> dict:
     """跑一题一臂一次。返回 {answer, cost_usd, wall_s, llm_calls, terminated, ...}。"""
     _set_env(arm, item, rep)
     _reload_config()
+    _SPAWN_LOG.clear()
+    _install_spawn_capture()
     from pipeline import loop_driver
     from pipeline.agentops import trace as T
     from pipeline.agentops import usage
@@ -153,6 +185,9 @@ def run_one(item: dict, arm: str, rep: int, owner: str = "gate-eval") -> dict:
         rec["answer"] = ""
         rec["error"] = repr(e)[:300]
         rec["terminated"] = "error"
+    # 拆分的【真实分活内容】—— 主脑写给每个子 agent 的 instruction 原文 + 各自交回的结论。
+    # default=str 兜住模型可能塞进来的非 JSON 类型(坏输入本身就是要看的证据)。
+    rec["spawn_calls"] = json.loads(json.dumps(_SPAWN_LOG, ensure_ascii=False, default=str))
     u = usage.summarize()
     rec["cost_usd"] = round(float(u.get("cost_usd") or 0.0), 6)
     rec["tokens"] = u.get("tokens_total", 0)
