@@ -378,12 +378,24 @@ def test_steps_unchanged_when_no_video_ids_named():
     assert subagents._steps_for({}) == config.SUBAGENT_MAX_STEPS
 
 
-def test_steps_scale_with_named_videos_and_hit_cap():
-    """N 个视频 → N 步 analyze + 1 步收口 + 1 步周转;再多也被 CAP 截住(更多步 = 更多钱)。"""
-    assert subagents._steps_for({"video_ids": ["a", "b", "c"]}) == 5
+def test_steps_scale_with_named_videos_and_hit_cap(monkeypatch):
+    """N 个视频 → N 步 analyze + 1 步收口 + 1 步周转;再多也被 CAP 截住(更多步 = 更多钱)。
+
+    基线在这里【显式钉住】而不是吃默认值:公式和默认值是两件事,默认值调过一次
+    (4→6,见 config 注释),测公式的用例不该跟着一起红。
+    """
+    monkeypatch.setattr(config, "SUBAGENT_MAX_STEPS", 4)
+    assert subagents._steps_for({"video_ids": ["a", "b", "c"]}) == 5     # 斜率 N+2
+    assert subagents._steps_for({"video_ids": ["a"]}) == 4               # 不低于基线
     assert subagents._steps_for({"video_ids": [str(i) for i in range(20)]}) == \
-        config.SUBAGENT_MAX_STEPS_CAP
-    assert config.SUBAGENT_MAX_STEPS_CAP == 8              # 默认值本身也钉一下
+        config.SUBAGENT_MAX_STEPS_CAP                                    # 被 CAP 截住
+
+
+def test_shipped_step_defaults():
+    """出厂默认值单独钉:基线 6 是实测定的(4~5 步的 10 个子 agent 无一收敛),
+    改动它要有新数据,不能顺手调。"""
+    assert config.SUBAGENT_MAX_STEPS == 6
+    assert config.SUBAGENT_MAX_STEPS_CAP == 8
 
 
 def test_steps_cap_misconfigured_below_baseline_never_shrinks(monkeypatch):
@@ -394,7 +406,8 @@ def test_steps_cap_misconfigured_below_baseline_never_shrinks(monkeypatch):
 
 
 def test_run_fanout_gives_each_task_its_own_step_budget(monkeypatch):
-    """per-task 不是全局:同一批里点名 3 个视频的那个拿 5 步,没点名的还是 4 步。"""
+    """per-task 不是全局:同一批里点名 5 个视频的那个拿 7 步,没点名的还是基线。"""
+    monkeypatch.setattr(config, "SUBAGENT_MAX_STEPS", 4)   # 显式钉基线,别吃默认值
     _stub_loop(monkeypatch)
     from pipeline import loop_driver
     seen: dict = {}
@@ -406,7 +419,7 @@ def test_run_fanout_gives_each_task_its_own_step_budget(monkeypatch):
     subagents.run_fanout([{"instruction": "A"},
                           {"instruction": "B", "video_ids": ["1", "2", "3"]}],
                          sandbox=None, trace=None, execute=lambda *a, **k: None)
-    assert seen == {"A": config.SUBAGENT_MAX_STEPS, "B": 5}
+    assert seen == {"A": 4, "B": 5}
 
 
 def test_subagent_failure_opens_a_span_with_cause(monkeypatch):

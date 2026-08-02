@@ -116,7 +116,11 @@ SELF_CHECK_MAX_ROUNDS = int(os.environ.get("SELF_CHECK_MAX_ROUNDS", "1"))
 #   FANOUT = 一次最多并行几个子 agent(扇出/成本护栏);MAX_STEPS = 每个子 agent 的循环步上限(防子循环空转)。
 USE_SUBAGENTS       = os.environ.get("USE_SUBAGENTS", "0").lower() in ("1", "true", "yes")
 SUBAGENT_MAX_FANOUT = int(os.environ.get("SUBAGENT_MAX_FANOUT", "6"))
-SUBAGENT_MAX_STEPS  = int(os.environ.get("SUBAGENT_MAX_STEPS", "4"))
+#   基线 4 → 6(2026-08-02 实测改):真机 14 个子 agent,拿 4~5 步的 10 个【无一收敛】、
+#   拿 6 步的 4 个【全部收敛】。且与"派了几个视频"无关 —— 同一步内 analyze 是并行的
+#   (loop_driver 线程池),N 个视频本来就能一步看完;卡死的是固定开销:定位 1~2 步 + 看 1 步
+#   + 汇总 1 步 ≈ 4,4 步等于零余量。实测有子 agent 拿 2 视频/4 步,一个视频都没看成就撞墙。
+SUBAGENT_MAX_STEPS  = int(os.environ.get("SUBAGENT_MAX_STEPS", "6"))
 #   MAX_STEPS 是【基线】,实际步数按这个子任务要看几个视频动态给(subagents._steps_for):
 #   4 步装不下「读任务 + 逐个看 N 个视频 + 汇总成文」—— 点名 3 个视频的子 agent 会在看完最后一个
 #   那步被掐断,钱花了、结论没有。公式 min(CAP, max(MAX_STEPS, len(video_ids)+2));

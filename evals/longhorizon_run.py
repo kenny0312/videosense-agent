@@ -47,7 +47,9 @@ COMMON_ENV = {
     "MAX_TREE_COST_USD": "0.80",         # per-tree 熔断
     "MAX_TREE_WALL_S": "900",
     "SUBAGENT_MAX_FANOUT": "6",
-    "SUBAGENT_MAX_STEPS": "4",
+    # v3 主跑用的是 4。实测那批 14 个子 agent 里 4~5 步的 10 个无一收敛 → 基线提到 6
+    # (见 config.SUBAGENT_MAX_STEPS 注释)。【重测时这里跟着改,与 v3 数据不可直接比】。
+    "SUBAGENT_MAX_STEPS": "6",
     "USE_SELF_CHECK_CRITIC": "0",
     "USE_TASKS": "0",                    # 本实验测树引擎,不测任务底座
     "LOOP_THOUGHTS": "1",
