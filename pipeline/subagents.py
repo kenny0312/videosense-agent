@@ -12,8 +12,12 @@ prompt 的 mini run_loop;ThreadPoolExecutor + copy_context 并行跑,收集各 o
   · 【父请求的 execute 闭包】—— 子 agent 复用它 → analyze_video 计入同一配额
     (MAX_VIDEOS_PER_REQUEST,不绕过成本闸),token 经 add_usage 自动折进本请求 usage 审计。
 
-护栏:一次最多 SUBAGENT_MAX_FANOUT 个;每个子 agent 步数 ≤ SUBAGENT_MAX_STEPS;子 agent 工具集
-【剔除 spawn_agents】(一层,无递归)且限定在只读感知/检索工具(交付 show_* 归主脑)。
+护栏:一次最多 SUBAGENT_MAX_FANOUT 个;每个子 agent 步数由 _steps_for 按它要看的视频数动态给、
+封顶 SUBAGENT_MAX_STEPS_CAP;子 agent 工具集【剔除 spawn_agents】(一层,无递归)且限定在
+只读感知/检索工具(交付 show_* 归主脑)。
+
+没收敛也要交回【已经买到】的 analyze 结果(_salvage_analyses)—— 子 agent 复用父闭包,它看过的
+视频从全树共享配额里实扣,丢掉 = 主脑既没结论也没配额自己去补看。
 """
 from __future__ import annotations
 
@@ -93,6 +97,85 @@ def _clean_tasks(tasks: Any, max_fanout: int, depth: int = 0) -> tuple[list[dict
     return cleaned, note
 
 
+# ── 残值回收:子 agent 没给结论时,把它【已经买到】的 analyze 结果交回主脑 ──────
+# 子 agent 复用父 execute 闭包(见模块头),它每 analyze 一个视频都从全树共享的
+# MAX_VIDEOS_PER_REQUEST 里实扣一个:钱花了、配额没了,都不可逆。此前它撞 max_steps 只回一句
+# "(子 agent 未收敛:max_steps)",ledger 里那几份花钱买来的结论被直接丢弃 —— 主脑既没拿到结论,
+# 又没有配额自己去补看(实测 trace:主脑下一步 analyze 直接撞"已达本请求视频分析上限")。
+# 同 TASK_FINALIZE_GRACE_USD 的道理:已经花钱买到的战果必须能变成交付物。
+#
+# 只捞 analyze_video:它花钱、占配额、不可重来。sql_query / semantic_search 便宜且可重跑,
+# 捞回来只会白撑主脑上下文(主脑要就自己再查一次,零成本差别)。
+_SALVAGE_CELL = 600        # 每条结论的字数上限(照 loop_driver._preview 的 cap 约定:截断留标注)
+_SALVAGE_TOTAL = 3000      # 一个子 agent 捞回内容的总上限。压在 loop_driver.SUBAGENT_PREVIEW_CELL
+                           # (4000)以下 —— 超了会被主脑侧 _preview 无声截断,连截断标注都丢。
+
+
+def _salvage_analyses(r) -> tuple[list[str], int]:
+    """从 LoopResult 里捞【已成功执行】的 analyze_video 结果,返回 (成行的结论, 因额度丢弃数)。
+
+    工具名只在 r.trace 里(ledger 是 cid→ExecResult,不带 tool),所以按 cid 关联 trace 与 ledger
+    —— 这是"认得出是哪个视频、哪个工具"的最小改动路径,不必去改 loop_driver 记 ledger 的方式
+    (video_id 本来就在 analyze 信封的 value 里,见 node_executor._run_analyze_video)。
+    """
+    ledger = getattr(r, "ledger", None) or {}
+    lines: list[str] = []
+    seen: set = set()
+    used = dropped = 0
+    for st in (getattr(r, "trace", None) or []):
+        if not isinstance(st, dict) or st.get("tool") != "analyze_video" or not st.get("ok"):
+            continue
+        v = getattr(ledger.get(st.get("cid")), "value", None)
+        # 闸门信封(配额/熔断拦下的调用)也是 ok=True,靠 gate="blocked" 识别(同 _run_one 的计数壳)
+        # —— 把一句"已达本请求视频分析上限"当成"看过的证据"回流给主脑是灾难。
+        if not isinstance(v, dict) or v.get("gate") == "blocked":
+            continue
+        ans = str(v.get("answer") or "").strip()
+        if not ans:
+            continue
+        vid = str(v.get("video_id") or (st.get("inputs") or {}).get("video_id") or "?")
+        if (vid, ans) in seen:          # 同视频同结论(缓存命中重跑)只回一份
+            continue
+        seen.add((vid, ans))
+        body = ans if len(ans) <= _SALVAGE_CELL else ans[:_SALVAGE_CELL] + "…(过长已截断)"
+        line = f"- video_id={vid}(enough={v.get('enough', '?')}):{body}"
+        if lines and used + len(line) > _SALVAGE_TOTAL:   # 总额度用尽:只报个数,别撑爆主脑上下文
+            dropped += 1
+            continue
+        lines.append(line)
+        used += len(line)
+    return lines, dropped
+
+
+def _no_answer_output(core: str, r) -> str:
+    """子 agent 没交出结论时回给主脑的 output = 那句实话 + 已经买到的原始材料。
+
+    文案必须让主脑看得出这【不是子 agent 的结论】,只是它花钱看过的原始分析。
+    捞不到材料 → 原样返回 f"({core})",与残值回收上线前逐字节一致。
+    """
+    lines, dropped = _salvage_analyses(r)
+    if not lines:
+        return f"({core})"
+    head = (f"({core}。以下是它【已经看过】的 {len(lines)} 条视频分析原始结果,"
+            f"未经它综合,请你自己判断)")
+    if dropped:
+        head += f"\n(另有 {dropped} 条已看过的结果因长度上限没带回来)"
+    return head + "\n" + "\n".join(lines)
+
+
+def _steps_for(task: dict) -> int:
+    """这个子任务给几步。基线 SUBAGENT_MAX_STEPS(=4)装不下"读任务 + 逐个看 N 个视频 + 汇总成文":
+    点名了 N 个视频就至少 N 步 analyze + 1 步收口,再留 1 步周转 → N+2。
+    封顶 SUBAGENT_MAX_STEPS_CAP:更多步 = 更多钱,不许主脑用"点名 50 个视频"把子 agent 预算撑开。
+    没点名 video_ids(N=0)→ 恒等于 SUBAGENT_MAX_STEPS,与动态化之前逐字节一致。
+    per-task(不是全局):每个子 agent 按自己那份活拿步数。
+    """
+    from pipeline import config
+    base = int(config.SUBAGENT_MAX_STEPS)
+    cap = max(int(config.SUBAGENT_MAX_STEPS_CAP), base)   # 防误配 CAP<基线 反把步数砍到基线以下
+    return min(cap, max(base, len(task.get("video_ids") or []) + 2))
+
+
 def _run_one(task: dict, *, execute, sandbox, trace, schema, session_id, owner,
              model: str, max_steps: int) -> dict:
     """跑一个子 agent 到收敛,返回 {instruction, output}。任一异常 → 软失败进 output(不炸整批)。"""
@@ -161,7 +244,10 @@ def _run_one(task: dict, *, execute, sandbox, trace, schema, session_id, owner,
             # 被全树成本护栏硬终止:r.answer 是面向最终用户的系统占位话术("调高成本上限"
             # 之类),不是子任务结论 —— 原样回流会被主脑当"证据"综合(K 个触闸 = K 份),
             # 记 ok 则让静默失败在这条新路径复活(review 确认,两者都不行)。
-            out = "(子 agent 因成本护栏终止,本子任务无结论)"
+            # 【残值仍要回收】:"系统话术"和"它已经花钱看过的视频结论"是两回事,后者带诚实标注
+            # 回流不构成"把话术当证据";而且触闸时全树都停,主脑更不可能自己补看 —— 丢掉纯亏。
+            # span 照旧记 softfail,静默失败没有换路复活。
+            out = _no_answer_output("子 agent 因成本护栏终止,本子任务无结论", r)
             if span:
                 span.soft("EXEC_NOT_CONVERGED", error="tree_guard")
         elif r.answer is not None:
@@ -178,11 +264,13 @@ def _run_one(task: dict, *, execute, sandbox, trace, schema, session_id, owner,
                                   if claimed else
                                   "\n(注:本子任务因成本护栏提前收口,以上结论未经完整核查)")
                 else:                      # 答案本体为空(防御:该形状通常已被硬终止路径接管)
-                    out = "(子 agent 因成本护栏终止,本子任务无结论)"
+                    out = _no_answer_output("子 agent 因成本护栏终止,本子任务无结论", r)
             if span:
                 span.ok(steps=getattr(r, "steps", None))
         else:                                             # 未收敛也是一种失败,要有码
-            out = f"(子 agent 未收敛:{r.terminated})"
+            # max_steps / repeat:ledger 里那几份花钱买来的 analyze 结论要交回主脑(残值回收),
+            # 捞不到才退回原来那句光秃秃的"未收敛"。
+            out = _no_answer_output(f"子 agent 未收敛:{r.terminated}", r)
             if span:
                 span.soft("EXEC_NOT_CONVERGED", error=str(r.terminated)[:120])
     except Exception as e:                                # 一个子 agent 崩不该拖垮整批(fail-open)
@@ -240,10 +328,10 @@ def run_fanout(tasks: Any, *, sandbox, trace, schema: dict | None = None,
                                f"只跑了前 {room} 个子任务。").strip()
                 cleaned = cleaned[:room]
             st["nodes"] += len(cleaned)
+    # max_steps 不进 kw:它是 per-task 的(_steps_for 按各自要看的视频数给),不是全批一个数。
     kw = dict(execute=execute, sandbox=sandbox, trace=trace, schema=schema,
               session_id=session_id, owner=owner,
-              model=(config.SUBAGENT_MODEL or config.LOOP_MODEL),
-              max_steps=config.SUBAGENT_MAX_STEPS)
+              model=(config.SUBAGENT_MODEL or config.LOOP_MODEL))
     n = len(cleaned)                                     # _clean_tasks 已保证 1 ≤ n ≤ max_fanout
     results: list[dict] = [None] * n                     # 预分配 → 按任务顺序回填(确定性)
     workers = min(n, max_fanout)
@@ -252,13 +340,14 @@ def run_fanout(tasks: Any, *, sandbox, trace, schema: dict | None = None,
             futs = {}
             for i, task in enumerate(cleaned):
                 ctx = copy_context()                     # 主线程快照(MODEL_OVERRIDE/_USAGE 随之进 worker)
-                futs[i] = pool.submit(ctx.run, _run_one, task, **kw)
+                futs[i] = pool.submit(ctx.run, _run_one, task, max_steps=_steps_for(task), **kw)
             for i, fut in futs.items():
                 results[i] = fut.result()
     else:
         # 单任务也要 copy_context:_run_one 会 set 深度/枝计数,直接跑会把状态漏进调用方上下文
         # (下一次 spawn 的 depth 就错了)。
-        results[0] = copy_context().run(_run_one, cleaned[0], **kw)
+        results[0] = copy_context().run(_run_one, cleaned[0],
+                                        max_steps=_steps_for(cleaned[0]), **kw)
     if note:
         results.append({"instruction": "⚠️(系统)", "output": note})
     return results

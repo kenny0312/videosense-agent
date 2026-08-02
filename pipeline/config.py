@@ -117,6 +117,11 @@ SELF_CHECK_MAX_ROUNDS = int(os.environ.get("SELF_CHECK_MAX_ROUNDS", "1"))
 USE_SUBAGENTS       = os.environ.get("USE_SUBAGENTS", "0").lower() in ("1", "true", "yes")
 SUBAGENT_MAX_FANOUT = int(os.environ.get("SUBAGENT_MAX_FANOUT", "6"))
 SUBAGENT_MAX_STEPS  = int(os.environ.get("SUBAGENT_MAX_STEPS", "4"))
+#   MAX_STEPS 是【基线】,实际步数按这个子任务要看几个视频动态给(subagents._steps_for):
+#   4 步装不下「读任务 + 逐个看 N 个视频 + 汇总成文」—— 点名 3 个视频的子 agent 会在看完最后一个
+#   那步被掐断,钱花了、结论没有。公式 min(CAP, max(MAX_STEPS, len(video_ids)+2));
+#   没点名 video_ids 时恒等于 MAX_STEPS(与动态化之前逐字节一致)。CAP = 硬顶(更多步 = 更多钱)。
+SUBAGENT_MAX_STEPS_CAP = int(os.environ.get("SUBAGENT_MAX_STEPS_CAP", "8"))
 SUBAGENT_MODEL      = os.environ.get("SUBAGENT_MODEL", LOOP_MODEL)   # 默认同主脑;可单独覆盖(如子 agent 用更强/更省档,见 SA-0 spike)
 # ── P0-6 长程引擎:裸 depth-2(实验对象,默认关;依赖 USE_SUBAGENTS=1)──────────
 # 只做深度穿透,不带 DAG/蒸馏/分层(红队 C2:实验测单变量)。关 = 全部路径与现状逐字节一致。
