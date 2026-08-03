@@ -294,15 +294,16 @@ def test_parallel_quota_exact_and_model_and_usage(monkeypatch):
     class _Resp:
         usage_metadata = _Meta()
 
-    def fake_analyze(req, gcs):
+    def fake_analyze(req, gcs, **kw):
         m = avc.MODEL_OVERRIDE.get()                         # worker 上下文里读模型
         with lk:
             seen_models.append(m)
         usage.add_usage(_Resp(), m or "gemini-2.5-flash")    # 模拟 _gemini_generate 的上报
         time.sleep(0.01)
-        return avc.AnalyzeResult(answer="ok", enough="yes", confidence=0.8)
+        return avc.AnalyzeOutcome(
+            result=avc.AnalyzeResult(answer="ok", enough="yes", confidence=0.8), attempts=1)
 
-    monkeypatch.setattr(avc, "analyze", fake_analyze)
+    monkeypatch.setattr(avc, "analyze_with_outcome", fake_analyze)
     try:
         conv = ScriptedConv([
             ([Call("analyze_video", {"video_id": f"v{i}", "question": f"q{i}"}, []) for i in range(6)], None),
@@ -335,10 +336,10 @@ def test_cache_hit_does_not_consume_quota(monkeypatch):
 
     class _R:
         def model_dump(self): return {"answer": "ok", "enough": "yes", "confidence": 0.8}
-    def fake(req, gcs):
+    def fake(req, gcs, **kw):
         calls["n"] += 1
-        return _R()
-    monkeypatch.setattr(avc, "analyze", fake)
+        return avc.AnalyzeOutcome(result=_R(), attempts=1)
+    monkeypatch.setattr(avc, "analyze_with_outcome", fake)
     try:
         conv = ScriptedConv([
             ([Call("analyze_video", {"video_id": "vid_1", "question": "q"}, [])], None),

@@ -16,6 +16,7 @@ from __future__ import annotations
 import contextvars
 import json
 import os
+from dataclasses import dataclass
 from typing import Callable, Literal
 
 from pydantic import BaseModel, field_validator
@@ -23,9 +24,13 @@ from pydantic import BaseModel, field_validator
 PERCEPTION_MODEL = os.environ.get("PERCEPTION_MODEL", "gemini-2.5-flash")   # 默认(快/省)
 PRO_MODEL = os.environ.get("PERCEPTION_PRO_MODEL", "gemini-2.5-pro")        # Pro 模式(准/慢)
 RETRY_LIMIT = 2
-# fail-open 失败信封的 answer 前缀 —— 调用方(node_executor 缓存)据此【不缓存】失败,避免把
-# 瞬时报错钉死成"答案"反复回放。
+# fail-open 失败信封的 answer 前缀。A4 之前调用方靠【匹配这个前缀】来判"这次是不是失败",
+# 现在改由 AnalyzeOutcome.error_code 显式交代 —— 前缀只留作人读的文案,不再是控制流。
 FAILURE_ANSWER_PREFIX = "(分析失败,无法看清这段视频)"
+
+# AnalyzeOutcome.error_code 取值。None = 真的看过了;其余一律【没看成】。
+ERROR_ANALYZE_FAILED = "ANALYZE_FAILED"   # 连试 RETRY_LIMIT+1 次都失败(网络/坏 JSON/配额…)
+ERROR_GUARD_BLOCKED = "GUARD_BLOCKED"     # 成本护栏拦下,这次 generate 根本没发出去
 
 # 本请求级模型覆盖:orchestrator 据 pro_video 在 run_query 开头 set;_gemini_generate 读。
 # run_query 全程同步同线程,深处的 analyze 也读得到;每请求开头都重设,跨请求不串。
@@ -160,17 +165,65 @@ def _gemini_generate(gcs_uri: str, prompt: str, time_range=None) -> str:
     return resp.text
 
 
-# ── 对外:看一段视频回答 question,返回最小信封 ──────────────────
-def analyze(req: AnalyzeRequest, gcs_uri: str, *,
-            generate: Callable[..., str] = _gemini_generate) -> AnalyzeResult:
-    """看 gcs_uri 这段视频回答 req.question → 最小信封。失败 fail-open → enough='no'。
-    generate(gcs_uri, prompt, time_range)->raw_json 可注入(离线单测传 fake)。"""
+# ── 对外:看一段视频回答 question,返回【带交代的】结果 ──────────────
+@dataclass
+class AnalyzeOutcome:
+    """一次 analyze 的完整交代 —— A4:失败不许再伪装成"看过了、结论是看不清"。
+
+    `error_code is None` 才代表【真的看过这段视频】。失败时 result 里仍是那个可读的
+    fail-open 信封(给日志和回喂大脑用),但调用方【不得】把它当成功证据:不写缓存、
+    不进语义索引、工具结果 ok=False —— 否则等于把"看不清"当证据永久存进生产库。
+    """
+    result: AnalyzeResult
+    attempts: int                        # 真实发出去的 generate 次数(0 = 被护栏拦下,一次都没发)
+    error_code: str | None = None        # None | ERROR_ANALYZE_FAILED | ERROR_GUARD_BLOCKED
+    error: str = ""                      # 最后一次异常文本,或护栏软失败信封原文
+
+    @property
+    def ok(self) -> bool:
+        return self.error_code is None
+
+
+def analyze_with_outcome(req: AnalyzeRequest, gcs_uri: str, *,
+                         generate: "Callable[..., str] | None" = None,
+                         admit: "Callable[[], str | None] | None" = None,
+                         settle: "Callable[[], None] | None" = None) -> AnalyzeOutcome:
+    """看 gcs_uri 这段视频回答 req.question → AnalyzeOutcome(结果 + 真实尝试次数 + 失败码)。
+
+    generate(gcs_uri, prompt, time_range)->raw_json 可注入(离线单测传 fake)。默认 None
+    → 【调用时】才取模块级 _gemini_generate:写成默认形参会在 def 那一刻把函数对象钉死,
+    monkeypatch 模块属性就注入不进来(故障注入测试要的正是"走完整重试循环+护栏"这条真路径)。
+
+    A7+ B 方案下沉:admit/settle 是【成本护栏挂钩】,挂在【每次真实 generate 之前/之后】。
+    重试原本整个藏在本函数内部,外层护栏只看得见"一次工具调用",实际最多发 3 次 LLM 调用 ——
+    admit 记 1 笔而真花 3 笔,记账错 3 倍。下沉之后笔数与调用次数天然一一对应,
+    【不需要】调大单次估价、也【不需要】乘 RETRY_LIMIT 系数(那会 20 倍高估、专罚看视频多的路径)。
+      · admit() -> None 放行 / 非空字符串 = 已触闸的软失败信封(本次 generate 不发)
+      · settle() 在每次 generate 结束后释放在飞预留(异常也释放,故放 finally)
+    不传 = 无护栏,行为与下沉之前逐字节一致。
+    """
+    gen = generate if generate is not None else _gemini_generate
     prompt = build_prompt(req)
     last_err = ""
+    attempts = 0
     for _ in range(RETRY_LIMIT + 1):
+        if admit is not None:
+            blocked = admit()                     # 触闸:这次 generate 根本不发,钱一分不花
+            if blocked:
+                return AnalyzeOutcome(
+                    result=AnalyzeResult(answer=f"{FAILURE_ANSWER_PREFIX}[{blocked[:120]}]",
+                                         enough="no", confidence=0.0),
+                    attempts=attempts, error_code=ERROR_GUARD_BLOCKED, error=blocked)
+        attempts += 1
         try:
-            return _parse(generate(gcs_uri, prompt, req.time_range))
+            return AnalyzeOutcome(result=_parse(gen(gcs_uri, prompt, req.time_range)),
+                                  attempts=attempts)
         except Exception as e:
             last_err = str(e)
-    return AnalyzeResult(answer=f"{FAILURE_ANSWER_PREFIX}[{last_err[:120]}]",
-                         enough="no", confidence=0.0)
+        finally:
+            if settle is not None:                # 与 admit 同一估价;成功路径也要释放
+                settle()
+    return AnalyzeOutcome(
+        result=AnalyzeResult(answer=f"{FAILURE_ANSWER_PREFIX}[{last_err[:120]}]",
+                             enough="no", confidence=0.0),
+        attempts=attempts, error_code=ERROR_ANALYZE_FAILED, error=last_err)

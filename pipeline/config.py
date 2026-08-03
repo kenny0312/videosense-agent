@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import logging
 import os
 
 
@@ -92,7 +93,14 @@ LOOP_REPEAT_LIMIT  = int(os.environ.get("LOOP_REPEAT_LIMIT", "2"))  # 同一(工
 # 两处挂点(缺一不可,红队 B1):工具执行前 + 主循环每步 generate 前 —— 只闸工具挡不住
 # "进入 Trap 循环只思考不调工具"的烧钱。
 # 默认 0 = 关(Part 0 不变量①:开关全关时行为与升级前逐字节等价)。
-MAX_TREE_COST_USD  = float(os.environ.get("MAX_TREE_COST_USD", "0"))   # 0=关;实验建议 0.80
+# 【下限约束,启动时校验,见本文件末 _validate_tree_guard_budget()】开启(>0)时必须
+#   MAX_TREE_COST_USD >= TREE_ANALYZE_ESTIMATE_USD × MAX_ANALYZE_PARALLEL(默认 0.30×3 = 0.90),
+#   否则一步内的并行 analyze 会把闸在【实花几乎为零】时顶掉(admit 一旦拦下就 _trip 整棵树,
+#   之后每个工具调用全被拦 —— 不是"这次不看",是整次请求瘫痪)。
+#   低于单次预留(< TREE_ANALYZE_ESTIMATE_USD)时 pro 档 analyze 永远进不来 → 直接 raise 拒绝启动;
+#   够单次但不够满并行时 → 启动告警(别再靠人肉发现"怎么第三个 analyze 就熄火了")。
+# 0=关;开启的实验值建议 0.90(旧注释写的 0.80 在 pro 档不满足上式,只在 flash 档安全)。
+MAX_TREE_COST_USD  = float(os.environ.get("MAX_TREE_COST_USD", "0"))
 MAX_TREE_WALL_S    = float(os.environ.get("MAX_TREE_WALL_S", "0"))     # 0=关;生产建议 900
 # 触闸判据是"预估后比 + 在飞预留":spent + pending + 本次估价 > cap 即拦(而非事后发现超了),
 # 否则最后一次调用总能越线、K 个并行调用在钱落账前互相看不见(超冲 K×,review 变异验证)。
@@ -231,6 +239,42 @@ SESSION_BACKEND = os.environ.get("SESSION_BACKEND", "sqlite").lower()
 REDIS_URL = os.environ.get("REDIS_URL", "")
 UPSTASH_REDIS_REST_URL = os.environ.get("UPSTASH_REDIS_REST_URL", "")
 UPSTASH_REDIS_REST_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "")
+
+
+# ── A7+ 启动校验:成本护栏别被配置配死 ──────────────────────────
+def _validate_tree_guard_budget(cost_cap: float, analyze_est: float, parallel: int) -> str:
+    """校验 per-tree 熔断线容不容得下 analyze。返回告警文本(空串 = 没问题);致命配置直接 raise。
+
+    为什么用 raise 而不是 assert:这是【安全约束】,而 `python -O` 会把 assert 整条优化掉 ——
+    偏偏生产更可能带 -O 跑,等于"最需要这条检查的场景恰好没有这条检查"。
+
+    分两档(见 MAX_TREE_COST_USD 上方注释):
+      · cap < 单次预留        → pro 档 analyze 【一次都进不来】,工具等于不存在 → raise,拒绝启动;
+      · cap < 单次预留 × 并行 → 满并行的一步会顶闸,而 admit 一旦拦下就 _trip 整棵树 → 告警。
+    cap<=0 是"熔断关闭",不受本约束管(不设闸 ≠ 把闸设死)。
+    """
+    if cost_cap <= 0 or analyze_est <= 0:
+        return ""
+    if cost_cap < analyze_est:
+        raise ValueError(
+            f"MAX_TREE_COST_USD={cost_cap:g} 小于单次 analyze 预留 "
+            f"TREE_ANALYZE_ESTIMATE_USD={analyze_est:g} —— pro 档 analyze_video 会被【静默】"
+            f"拦死(且第一次拦下就触闸,整棵树后续工具全被拦)。请把 MAX_TREE_COST_USD 提到 "
+            f">= {analyze_est * max(1, parallel):g}(= 单次预留 × MAX_ANALYZE_PARALLEL),"
+            f"或设 MAX_TREE_COST_USD=0 关闭熔断。")
+    need = analyze_est * max(1, parallel)
+    if cost_cap < need:
+        return (f"MAX_TREE_COST_USD={cost_cap:g} < 单次预留 {analyze_est:g} × "
+                f"MAX_ANALYZE_PARALLEL={parallel} = {need:g}:pro 档下一步内并行 analyze "
+                f"会在实花接近 $0 时顶掉熔断线并触闸(整棵树后续工具全被拦)。"
+                f"建议提到 >= {need:g}。")
+    return ""
+
+
+TREE_GUARD_CONFIG_WARNING = _validate_tree_guard_budget(
+    MAX_TREE_COST_USD, TREE_ANALYZE_ESTIMATE_USD, MAX_ANALYZE_PARALLEL)
+if TREE_GUARD_CONFIG_WARNING:
+    logging.getLogger("pipeline.config").warning(TREE_GUARD_CONFIG_WARNING)
 
 
 def alloydb_dsn() -> dict:

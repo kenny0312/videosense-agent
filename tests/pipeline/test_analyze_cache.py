@@ -67,13 +67,26 @@ class _Res:
     def model_dump(self): return dict(self._d)
 
 
+def _out(d, attempts=1):
+    """假 analyze_with_outcome 的【成功】返回(A4 之后库函数返回 AnalyzeOutcome)。"""
+    return avc.AnalyzeOutcome(result=_Res(d), attempts=attempts)
+
+
+def _fail_out(err="boom", attempts=avc.RETRY_LIMIT + 1):
+    """假 analyze_with_outcome 的【失败】返回。"""
+    return avc.AnalyzeOutcome(
+        result=_Res({"answer": avc.FAILURE_ANSWER_PREFIX + f"[{err}]",
+                     "enough": "no", "confidence": 0.0}),
+        attempts=attempts, error_code=avc.ERROR_ANALYZE_FAILED, error=err)
+
+
 def test_cache_hit_skips_second_analyze(monkeypatch):
     _patch_gcs(monkeypatch)
     calls = {"n": 0}
-    def fake(req, gcs):
+    def fake(req, gcs, **kw):
         calls["n"] += 1
-        return _Res({"answer": "great", "enough": "yes", "confidence": 0.9})
-    monkeypatch.setattr(avc, "analyze", fake)
+        return _out({"answer": "great", "enough": "yes", "confidence": 0.9})
+    monkeypatch.setattr(avc, "analyze_with_outcome", fake)
     node = Node(id="c0", tool="analyze_video", inputs={"video_id": "vid_1", "question": "how good?"})
     r1 = ne._run_analyze_video(node, {})
     r2 = ne._run_analyze_video(node, {})
@@ -85,23 +98,27 @@ def test_cache_hit_skips_second_analyze(monkeypatch):
 def test_failure_not_cached(monkeypatch):
     _patch_gcs(monkeypatch)
     calls = {"n": 0}
-    def fake(req, gcs):
+    def fake(req, gcs, **kw):
         calls["n"] += 1
-        return _Res({"answer": avc.FAILURE_ANSWER_PREFIX + "[boom]", "enough": "no", "confidence": 0.0})
-    monkeypatch.setattr(avc, "analyze", fake)
+        return _fail_out()
+    monkeypatch.setattr(avc, "analyze_with_outcome", fake)
     node = Node(id="c0", tool="analyze_video", inputs={"video_id": "vid_1", "question": "q"})
+    r1 = ne._run_analyze_video(node, {})
     ne._run_analyze_video(node, {})
-    ne._run_analyze_video(node, {})
-    assert calls["n"] == 2                             # 失败信封不缓存 → 第二次仍真调
+    assert calls["n"] == 2                             # 失败不缓存 → 第二次仍真调
+    # A4:失败不再伪装成成功信封 —— 工具结果就是失败,还带真实尝试次数与失败码
+    assert not r1.ok and r1.error_code == avc.ERROR_ANALYZE_FAILED
+    assert r1.attempts == avc.RETRY_LIMIT + 1
+    assert "没有被分析过" in r1.stderr
 
 
 def test_different_model_misses(monkeypatch):
     _patch_gcs(monkeypatch)
     calls = {"n": 0}
-    def fake(req, gcs):
+    def fake(req, gcs, **kw):
         calls["n"] += 1
-        return _Res({"answer": "x", "enough": "yes", "confidence": 0.8})
-    monkeypatch.setattr(avc, "analyze", fake)
+        return _out({"answer": "x", "enough": "yes", "confidence": 0.8})
+    monkeypatch.setattr(avc, "analyze_with_outcome", fake)
     node = Node(id="c0", tool="analyze_video", inputs={"video_id": "vid_1", "question": "q"})
     avc.MODEL_OVERRIDE.set("gemini-2.5-flash")
     ne._run_analyze_video(node, {})
@@ -114,10 +131,10 @@ def test_time_range_parsed_and_keys_cache(monkeypatch):  # M4.5
     _patch_gcs(monkeypatch)
     analyze_cache.clear()
     seen = []
-    def fake(req, gcs):
+    def fake(req, gcs, **kw):
         seen.append(req.time_range)
-        return _Res({"answer": "x", "enough": "yes", "confidence": 0.8})
-    monkeypatch.setattr(avc, "analyze", fake)
+        return _out({"answer": "x", "enough": "yes", "confidence": 0.8})
+    monkeypatch.setattr(avc, "analyze_with_outcome", fake)
     mk = lambda tr: Node(id="c0", tool="analyze_video",
                          inputs={"video_id": "vid_1", "question": "q", "time_range": tr})
     ne._run_analyze_video(mk([10, 20.5]), {})
