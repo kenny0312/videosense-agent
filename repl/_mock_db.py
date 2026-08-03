@@ -27,6 +27,8 @@ from perception.skydive_schema import (
     COLUMNS as SKY_COLUMNS, PhaseSpan, SkydiveExtraction,
     create_table_sql as sky_create_table_sql, mock_schema as sky_mock_schema, to_row as sky_to_row,
 )
+from pipeline import config
+from pipeline.sql_bounds import fetch_bounded, fill_meta
 
 # ── 单例 connection(线程安全) ──
 _lock = threading.Lock()
@@ -354,11 +356,56 @@ def mock_fetch_schema() -> dict:
     return _SCHEMA_FOR_LLM
 
 
-def mock_run_sql(sql: str) -> list[dict]:
+# ── B5:伪造 SQLSTATE ────────────────────────────────────────────────
+# 为什么必须做:全仓 grep `pgcode|SQLSTATE` 曾经 0 命中。上游(node_executor)
+# 要靠 `getattr(e, "pgcode", None)` 决定"这个错该不该叫 LLM 重写 SQL":
+#   42601/42703/42P01(写错了)→ 进 SqlFixer 自愈
+#   57014/55P03(超时/锁)     → 【不能】进 SqlFixer,否则 "超时 → 叫 LLM 改 SQL
+#                                → 再超时" 会变成烧钱死循环
+# 而 sqlite 的异常没有 pgcode → mock 下恒等于"没有 SQLSTATE",分支永远走同一边,
+# 整条自愈路径在离线题里变成【死代码】,测不出任何东西。
+# 所以这里把 sqlite 的错误信息映射回 PG 的 SQLSTATE,并且做成与 psycopg2 同形
+# (异常对象带 `.pgcode` 属性)—— 上游用同一行 getattr 同时吃真库和假库。
+
+class MockSqlError(Exception):
+    """伪 psycopg2 错误:带 `.pgcode`(SQLSTATE)。
+
+    与 psycopg2.Error 同形的部分只有 `.pgcode` —— 那是上游唯一读的字段。
+    刻意【不】继承 sqlite3.Error:上游不该按具体 DB 驱动的异常类分支,
+    它只该看 SQLSTATE。原始报错文本原样保留,SqlFixer 还得拿它去改 SQL。
     """
-    1. 只允许 SELECT
-    2. 把 PG 风格语法翻译成 SQLite 风格
-    3. 返回 list[dict] (跟 RealDictCursor 一致)
+
+    def __init__(self, message: str, pgcode: str | None = None):
+        super().__init__(message)
+        self.pgcode = pgcode
+
+
+# sqlite 报错文本 → PG SQLSTATE。顺序有意义:先匹配更具体的 no such table/column。
+_SQLSTATE_PATTERNS = [
+    ("no such table",     "42P01"),   # undefined_table
+    ("no such column",    "42703"),   # undefined_column
+    ("has no column",     "42703"),   # ALTER 风格措辞,归同一类
+    ("syntax error",      "42601"),   # syntax_error
+    ("incomplete input",  "42601"),
+    ("unrecognized token", "42601"),
+    ("no such function",  "42883"),   # undefined_function(不在 SqlFixer 白名单内,但别谎报成 42601)
+]
+
+
+def _sqlstate_for(message: str) -> str | None:
+    low = message.lower()
+    for needle, code in _SQLSTATE_PATTERNS:
+        if needle in low:
+            return code
+    return None
+
+
+def mock_cursor(sql: str):
+    """执行(翻译后的)SQL,返回【未读取】的 sqlite3 游标。
+
+    分成 cursor / 读取两步,是为了让 mcp_server 对真库和假库跑【同一套】
+    有界读取代码(pipeline.sql_bounds.fetch_bounded)——"同步语义"靠共用实现,
+    不靠两边各写一遍然后祈祷它们不漂移。
     """
     from pipeline.sql_guard import is_read_only
     if not is_read_only(sql):
@@ -366,10 +413,27 @@ def mock_run_sql(sql: str) -> list[dict]:
 
     translated = _translate(sql)
     conn = _get_conn()
-    cur = conn.execute(translated)
-    rows = cur.fetchall()
-    # sqlite3.Row → dict
-    return [dict(r) for r in rows]
+    try:
+        return conn.execute(translated)
+    except sqlite3.Error as e:
+        msg = str(e)
+        raise MockSqlError(msg, _sqlstate_for(msg)) from e
+
+
+def mock_run_sql(sql: str, meta: dict | None = None) -> list[dict]:
+    """
+    1. 只允许 SELECT
+    2. 把 PG 风格语法翻译成 SQLite 风格
+    3. 返回 list[dict] (跟 RealDictCursor 一致)
+
+    `meta` 是可选 out 参数,语义与 pipeline.mcp_client.query_db 完全一致
+    (截断时才填 truncated/total_seen/returned/reason)。评测台
+    (evals/world.py)把 mcp_client.query_db 直接换成本函数,所以两边签名
+    必须对得上,否则上游一传 meta= 就 TypeError。
+    """
+    res = fetch_bounded(mock_cursor(sql))
+    fill_meta(meta, res, report=config.USE_BOUNDED_SQL)
+    return res.rows
 
 
 # ── 自检 ──
