@@ -225,6 +225,15 @@ SQL_LOCK_TIMEOUT_MS      = int(os.environ.get("SQL_LOCK_TIMEOUT_MS", "2000"))   
 # 验证后生产强制开(§12 规则 2 的启动校验尚未落地,见交付报告)。
 USE_BOUNDED_SQL = os.environ.get("USE_BOUNDED_SQL", "0").lower() in ("1", "true", "yes")
 
+# ── B0-2a 评测写闸 ────────────────────────────────────────────────
+# 评测跑【不许】改动生产数据。实测教训:gate 实验的 1256 行 analyze 产物永久留在
+# 生产 content_embeddings 里(占 18.6%),用户检索会命中评测垃圾 —— 其中还有
+# "No, there is no one climbing a rock wall" 这种否定结论,作为"证据"命中无关视频。
+# 开 = 三个写入口(analyze 入索引 / update_memory / semantic_index.index_entry)
+# 抛 EvalWriteBlocked;关(默认)= 空操作,生产路径逐字节不变。
+# 见 pipeline/eval_write_guard.py 里"为什么是 raise 不是静默 return"那段。
+EVAL_READ_ONLY = os.environ.get("EVAL_READ_ONLY", "0").lower() in ("1", "true", "yes")
+
 # B2 客户端超时 —— 【顺序依赖:必须先有上面的 statement_timeout,再收紧这里】。
 # 反过来做会造出"客户端已经放弃、服务端 SQL 还在跑"的悬挂查询:连接不归还、
 # 锁不释放,而且上游拿到超时后会去重试 → 一条慢查询变成 N 条并发慢查询。

@@ -916,7 +916,14 @@ def _run_semantic_search(node: Node) -> NodeResult:
 
 def _index_analyze_result(video_id: str, dump: dict, content_key: str) -> None:
     """V1 写钩子:analyze 出结果顺手入语义索引 —— 每次付费观看永久变免费检索。
-    旁路 + 全程 fail-open:任何失败只损失这条索引,绝不影响本轮作答。"""
+    旁路 + 全程 fail-open:任何失败只损失这条索引,绝不影响本轮作答。
+
+    B0-2a:EVAL_READ_ONLY 挡下时【专门接住 EvalWriteBlocked】—— 这条是旁路,
+    让它一路抛上去会把已经花钱买到的 analyze 结果一起弄丢(那正是 A4 刚修掉的病)。
+    可区分性靠 eval_write_guard 的计数器,不靠让整次请求崩掉:
+    评测跑完 checksum 不变【且】blocked_count()>0,才说明闸有效而不是压根没跑到。
+    """
+    from pipeline.eval_write_guard import EvalWriteBlocked
     try:
         from pipeline import config as _cfg
         if not _cfg.USE_SEMANTIC_SEARCH:
@@ -929,6 +936,10 @@ def _index_analyze_result(video_id: str, dump: dict, content_key: str) -> None:
         vecs = embed_texts([entry[1]])
         if vecs:
             index_entry(video_id, "analyze", entry, vec_literal(vecs[0]))
+    except EvalWriteBlocked as e:
+        # B0-2a:闸挡下的,不是故障。用 ERROR 而不是 WARNING —— 评测里出现它是意料之中,
+        # 但如果【生产】日志里出现,说明有人把 EVAL_READ_ONLY 带上了线,那要立刻看得见。
+        log.error("[EVAL_READ_ONLY] 拦下一次语义索引写入 video_id=%s: %s", video_id, e)
     except Exception as e:
         # A8:仍然 fail-open(索引是旁路,绝不拖垮本轮作答),但【不许静音】——
         # 裸 pass 会让"索引一直没写进去"这类故障永远查不出来。
@@ -938,8 +949,12 @@ def _index_analyze_result(video_id: str, dump: dict, content_key: str) -> None:
 def _run_update_memory(node: Node, owner: str) -> NodeResult:
     """L2:写跨会话用户记忆(判据在工具声明里从严;后端见 pipeline/user_memory)。"""
     from pipeline import config as _cfg, user_memory
+    from pipeline.eval_write_guard import assert_writes_allowed
     if not _cfg.USE_USER_MEMORY:
         raise ValueError("update_memory 未开启(USE_USER_MEMORY=0)")
+    # B0-2a:这是【用户显式要求】的工具调用,不是旁路 —— 让它抛到工具层是对的,
+    # 大脑会看到"这一轮不能写记忆"并如实告诉用户,而不是以为写成了。
+    assert_writes_allowed("update_memory")
     new_text = user_memory.update(owner, str(node.inputs.get("text") or ""),
                                   str(node.inputs.get("mode") or "append"))
     return NodeResult(node.id, node.tool, ok=True,

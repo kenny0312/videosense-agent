@@ -172,7 +172,14 @@ def search(vec_lit: str, k: int, video_ids: "list[str] | None" = None) -> list[d
 
 
 def index_entry(video_id: str, source: str, entry: tuple, vec_lit: str) -> bool:
-    """写一条索引(analyze 写钩子/回填共用)。失败返回 False(fail-open,绝不影响作答)。"""
+    """写一条索引(analyze 写钩子/回填共用)。失败返回 False(fail-open,绝不影响作答)。
+
+    B0-2a:EVAL_READ_ONLY=1 时【抛 EvalWriteBlocked】,不走下面那个 fail-open ——
+    评测跑往生产索引里写东西必须是响亮的,不能被"失败返回 False"顺手吞掉
+    (吞掉之后"没写成"和"没触发"就分不清了,闸也就成了摆设)。
+    """
+    from pipeline.eval_write_guard import assert_writes_allowed
+    assert_writes_allowed("semantic_index.index_entry")     # 在 try 之【外】,不被吞
     try:
         _execute(UPSERT_SQL, upsert_params(entry, video_id, source, vec_lit))
         return True
