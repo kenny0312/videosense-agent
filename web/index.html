@@ -1205,6 +1205,28 @@ fetch('/v1/models').then(r=>r.ok?r.json():null).then(d=>{
   }
 }).catch(()=>{});
 
+// A8: read a local video file's duration (seconds) via an off-screen <video> that loads
+// metadata only -- no decoding, no playback. Returns null on anything unexpected.
+// Guards, in order: 3s cap so a weird file can't stall the call; !isFinite rejects the
+// Infinity that MediaRecorder-produced WebM reports (the backend also rejects it, but
+// don't send garbage in the first place); >0 rejects zero/negative.
+function videoDurationSec(file){
+  return new Promise(resolve=>{
+    let url=null;
+    const done=(v)=>{ if(url) URL.revokeObjectURL(url); resolve(v); };
+    try{
+      url=URL.createObjectURL(file);
+      const v=document.createElement('video');
+      const t=setTimeout(()=>done(null),3000);
+      v.preload='metadata';
+      v.onloadedmetadata=()=>{ clearTimeout(t);
+        done(Number.isFinite(v.duration)&&v.duration>0?Math.round(v.duration):null); };
+      v.onerror=()=>{ clearTimeout(t); done(null); };
+      v.src=url;
+    }catch(err){ done(null); }
+  });
+}
+
 // M5:上传自己的视频 → 拿 PUT 签名 URL 直传 GCS → 把临时 video_id 填进输入框,可直接提问
 $('#upFile').onchange=async(e)=>{
   const f=e.target.files[0]; if(!f) return;
@@ -1217,8 +1239,15 @@ $('#upFile').onchange=async(e)=>{
     const put=await fetch(d.upload_url,{method:'PUT',body:f,
       headers:{'Content-Type':d.content_type,'x-goog-content-length-range':'0,'+d.max_bytes}}); // 大小上限已签进 URL
     if(!put.ok){ alert('Upload failed: '+put.status+' (may exceed the size limit)'); return; }
-    fetch('/v1/enrich',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({video_id:d.video_id})}).catch(()=>{});  // V1.5: fire-and-forget enrichment (transcript+caption -> semantic index)
+    // V1.5: fire-and-forget enrichment (transcript+caption -> semantic index)
+    // A8: report the clip length so the backend can size its watchdog deadline
+    // (max(5min, min(60min, 2x length))). Without it the deadline is always the 60min cap.
+    // Strictly fail-open and off the critical path: never blocks or breaks the upload.
+    videoDurationSec(f).then(sec=>{
+      const body = sec ? {video_id:d.video_id, duration_sec:sec} : {video_id:d.video_id};
+      fetch('/v1/enrich',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify(body)}).catch(()=>{});
+    });
     const q=$('#q'); q.value=`I uploaded a video (${d.video_id}), `; q.focus(); // 预填 → 用户接着问
     btn.innerHTML='<i class="ti ti-check" aria-hidden="true"></i>';
   }catch(err){ alert('Upload error: '+err); }

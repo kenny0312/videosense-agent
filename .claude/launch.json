@@ -4,7 +4,15 @@
     {
       "name": "videosense-api",
       "runtimeExecutable": "C:\\Users\\User\\anaconda3\\python.exe",
-      "runtimeArgs": ["-m", "uvicorn", "api.server:app", "--host", "127.0.0.1", "--port", "8000"],
+      "runtimeArgs": [
+        "-m",
+        "uvicorn",
+        "api.server:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8000"
+      ],
       "port": 8000,
       "autoPort": false,
       "description": "VideoSense agent API + chat frontend (GET /)"
@@ -12,30 +20,59 @@
     {
       "name": "MCP Server (AlloyDB)",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["mcp_server/server.py"],
+      "runtimeArgs": [
+        "mcp_server/server.py"
+      ],
       "port": 0,
       "description": "stdio MCP Server — exposes get_schema() and query_db() for the Planner"
     },
     {
       "name": "Planner REPL",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["planner/dag_planner.py"],
+      "runtimeArgs": [
+        "planner/dag_planner.py"
+      ],
       "port": 0,
       "description": "Interactive natural language → DAG query engine"
     },
     {
       "name": "Gemini Perception Pipeline",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["perception/gemini_predicates.py"],
+      "runtimeArgs": [
+        "perception/gemini_predicates.py"
+      ],
       "port": 0,
       "description": "Batch predicate evaluation via Gemini 2.5 → writes to video_facts"
     },
     {
       "name": "Sandbox API (FastAPI)",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["-m", "uvicorn", "sandbox.server:app", "--host", "0.0.0.0", "--port", "8080", "--reload"],
+      "runtimeArgs": [
+        "-m",
+        "uvicorn",
+        "sandbox.server:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8080",
+        "--reload"
+      ],
       "port": 8080,
       "description": "Isolated code execution sandbox — Stage 5 (not yet implemented)"
+    },
+    {
+      "name": "web-static",
+      "runtimeExecutable": "C:\\Users\\User\\anaconda3\\python.exe",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8772",
+        "--directory",
+        "C:\\Users\\User\\antigravityProject\\videoUnderstanding\\web"
+      ],
+      "port": 8772,
+      "autoPort": false,
+      "description": "Static server for the VS front end (render-logic checks)"
     }
   ]
 }
