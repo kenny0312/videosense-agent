@@ -212,3 +212,38 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def test_items_path_does_not_silently_lose_label_and_score():
+    """选 items 标注类目,不许因此丢掉 label / score。
+
+    上游行集那条路一直带着这两个,而前端【真的在用】:
+      · score → 置信度 chip(web/index.html 的 chip)+ 片段条着色
+      · marks[].label → 时间标记上的字("开伞"而不是"62s")
+    契约第一版只给了 category / start_ts / end_ts,于是模型一旦开始标注类目,
+    这两样就静默消失 —— 而我们正把它往 items 这条路上引,那是净 UX 回退。
+    """
+    from pipeline.dag_schema import Node
+
+    node = Node(id="c0_0", tool="show_video", depends_on=[], inputs={"items": [
+        {"video_id": "v_aaa", "category": "skydiving", "start_ts": 62,
+         "label": "开伞", "score": 0.91},
+    ]})
+    got = nx._collect_items(node, {})
+    assert len(got) == 1
+    assert got[0]["label"] == "开伞", "时间标记会退化成只显示秒数"
+    assert got[0]["score"] == 0.91, "置信度 chip 和片段着色都会消失"
+
+
+def test_items_path_ignores_junk_label_and_score():
+    """脏值不许流到前端:score 要能进 toFixed(2),label 要能当文本渲染。"""
+    from pipeline.dag_schema import Node
+
+    node = Node(id="c0_0", tool="show_video", depends_on=[], inputs={"items": [
+        {"video_id": "v_aaa", "score": "很高", "label": ""},
+        {"video_id": "v_bbb", "score": True, "label": None},
+    ]})
+    got = nx._collect_items(node, {})
+    assert [g["score"] for g in got] == [None, None], (
+        "非数字/布尔的 score 流到了前端 —— v.score.toFixed(2) 会炸")
+    assert [g["label"] for g in got] == [None, None]

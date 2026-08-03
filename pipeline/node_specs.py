@@ -82,6 +82,12 @@ SPECS: dict[str, NodeSpec] = {
                                                      "(中文说法也认);拿不准就别填,别自造词"},
                          "start_ts": {"type": "number", "description": "片段起点(秒)"},
                          "end_ts": {"type": "number", "description": "片段终点(秒)"},
+                         "label": {"type": "string",
+                                   "description": "时间标记上显示的字(如「开伞」);"
+                                                  "不填就只显示秒数"},
+                         "score": {"type": "number",
+                                   "description": "这条有多贴题(0~1)。填了会出置信度 chip、"
+                                                  "片段条也按它着色 —— 用户一眼看出哪几条最靠谱"},
                      },
                      "required": ["video_id"],
                  },

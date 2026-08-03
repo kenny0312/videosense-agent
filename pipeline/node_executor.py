@@ -300,7 +300,14 @@ def _collect_items(node: Node, upstream: dict[str, Any]) -> list[dict]:
             if isinstance(it, str):               # 宽容一种最常见的手滑:items 写成了 video_ids 的形状
                 add(it)
             elif isinstance(it, dict):
+                # label/score 也要接:上游行集那条路本来就带它们(前端的时间标记文字、
+                # 置信度 chip、片段着色全靠这两个)。items 不接的话,模型一旦开始标注类目
+                # 就【静默丢掉】这两样 —— 而我们正把它往 items 这条路上引,那是净 UX 回退。
+                sc = it.get("score")
                 add(it.get("video_id"), _as_ts(it.get("start_ts")), _as_ts(it.get("end_ts")),
+                    label=(str(it["label"]) if it.get("label") else None),
+                    score=(sc if isinstance(sc, (int, float)) and not isinstance(sc, bool)
+                           else None),
                     category=it.get("category"))
         return items
 

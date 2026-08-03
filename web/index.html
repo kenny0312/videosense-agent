@@ -760,6 +760,16 @@ function renderVideos(list){
     head.appendChild(Object.assign(el('<span class="vnum"></span>'),{textContent:'#'+(i+1)}));  // 1..N,用户可说「第 N 个」
     head.appendChild(Object.assign(el('<span></span>'),{textContent:(v.title||('Video '+(i+1))),
       style:'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'}));
+    // B0-4: category chip. show_video's `items` lets the agent tag each clip with a
+    // controlled-vocabulary category; without rendering it, the tool description was
+    // promising a chip that did not exist. Only shown when the agent actually tagged it
+    // (an untagged clip stays exactly as before).
+    if(v.category){
+      const cc=el('<span class="confchip"></span>');
+      cc.style.cssText='background:var(--surface2);color:var(--muted);border-color:transparent';
+      cc.textContent=v.category; cc.title='Category';
+      head.appendChild(cc);
+    }
     if(typeof v.score==='number'){                       // P3c:置信度 chip(有分才显示)
       const band=v.score>=0.75?'high':v.score>=0.5?'med':'low';
       const chip=el('<span class="confchip"></span>'); chip.classList.add(band);
