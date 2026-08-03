@@ -168,9 +168,14 @@ def run_query(nl: str, *, quiet_trace: bool = False,
     # (视频/表格全没了)、劝用户把刚烧掉的 16 步全额重烧。这里改走【部分交付】:
     # 沿用下面的正常路径(带 results、落 transcript、记 loop 指标),只多一个 can_continue。
     answer = lo.answer
-    partial = lo.terminated == "max_steps"
-    if partial and not (answer or "").strip():
-        answer = loop_driver.MAX_STEPS_ANSWER      # loop_driver 已给诚实文案,这里只兜底
+    partial = lo.terminated in loop_driver.PARTIAL_TERMINATIONS
+    if partial and not (answer or "").strip():     # loop_driver 已给诚实文案,这里只兜底
+        answer = (loop_driver.MAX_STEPS_ANSWER if lo.terminated == "max_steps"
+                  else loop_driver.REPEAT_ANSWER)
+    # can_continue 只给 max_steps:那是【预算用完】,缩小范围接着问确实有意义。
+    # repeat 是【那条路不通】,原样再跑一次大概率还是同样结果 —— 给"可以继续"的信号
+    # 等于劝用户再烧一遍钱,跟 A1 要治的那个病是同一种。
+    can_continue = lo.terminated == "max_steps"
     if answer is None or not answer.strip():
         # E2:空串答案也兜住 —— 已识别的安全拦截在 conversation 层换成了体面拒答;
         # 走到这的空答是"没识别出原因的空生成",按瞬时波动给重试提示,绝不把空卡片交给用户。
@@ -193,5 +198,5 @@ def run_query(nl: str, *, quiet_trace: bool = False,
     replay_tok = (len(replay_ctx) // 3) if replay_ctx else 0   # 与 loop_memory._est_tokens 同口径
     return _result(True, trace=trace, results=lo.results, answer=answer,
                    session_id=sid, turn_type=ttype, loop_meta=loop_driver.loop_metrics(lo),
-                   can_continue=partial,
+                   can_continue=can_continue,
                    context={"replay_tokens": replay_tok, "budget": config.LOOP_CONTEXT_TOKEN_BUDGET})

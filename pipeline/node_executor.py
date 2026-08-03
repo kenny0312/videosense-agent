@@ -403,7 +403,12 @@ def _analyze_error_note(out, vid: str) -> str:
     from perception.analyze_video_contextual import ERROR_GUARD_BLOCKED
     if out.error_code == ERROR_GUARD_BLOCKED:
         # 护栏信封本身就是给大脑读的指令,放最前面(loop 回喂时按 300 字截尾,别让它被切掉)
-        return f"{out.error}(video_id={vid} 这次【没有被分析】,一分钱没花)"
+        # 钱要说实话:admit 挂在【每次重试之前】,所以护栏可能是在第 2/3 次尝试前才顶上的 ——
+        # 那时前面几次的钱已经 add_usage 落账了。无条件说"一分钱没花"直接违
+        # 「成本每轮可见全口径」红线。attempts=0 才是真的一次都没发。
+        paid = ("一分钱没花" if out.attempts == 0
+                else f"前 {out.attempts} 次尝试的钱已经花掉了")
+        return f"{out.error}(video_id={vid} 这次【没有被分析】,{paid})"
     return (f"analyze_video 没看成 video_id={vid}:连试 {out.attempts} 次都失败"
             f"[{str(out.error)[:120]}]。这个视频【没有被分析过】—— 不要当成"
             f"「看过了但看不清」,更不要拿它当证据下结论;要么换个视频/时间段再试,"

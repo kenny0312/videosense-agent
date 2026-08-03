@@ -208,6 +208,20 @@ MAX_STEPS_ANSWER = (
     "(指定视频、指定时间段,或先只问其中一部分)。"
     "系统不会自动替你接着跑,以免在你不知情的时候继续产生费用。")
 
+# 同一个工具+同一组参数连续失败到上限 → 也是"没交出结论但已经买到东西",同样不许回 None。
+# 与 max_steps 的区别在给用户的建议:那边是预算用完(缩小范围就能接着做),
+# 这边是那条路本身不通(原样重试大概率还是同样结果),所以文案指向【换一条路】。
+REPEAT_ANSWER = (
+    "这次没能给出最终结论:同一个调用连续失败了多次,多半是那段视频、或那次外部调用本身出了问题。"
+    "上面已经查到、已经展示出来的内容都是真实结果,可以直接看。"
+    "原样再问一遍大概率还是同样的结果;换个视频、换个时间段,或先只问其中一部分会更有机会。"
+    "系统不会自动替你接着跑,以免在你不知情的时候继续产生费用。")
+
+# A1/甲-1:这些终止方式都是【部分交付】—— 活没干完,但已经买到的东西必须照常交给用户。
+# 归到 orchestrator 的空答分支会同时造成三重伤害:谎报原因("服务波动")、丢掉整份 ledger
+# (视频/表格全没)、劝用户把刚烧掉的步数全额重烧。
+PARTIAL_TERMINATIONS = ("max_steps", "repeat")
+
 # A2:上游句柄指向了本轮账本里不存在的 result_id。旧写法在解析 upstream 时【静默丢弃】
 # (`if u in ledger` 直接跳过)→ 工具照跑,只是少了它以为拿到的那份数据,于是"按上一轮那批
 # 视频回答"变成"对着空数据回答",错得毫无痕迹。改成硬失败 + 明确文案,走既有错误回灌路径。
@@ -413,7 +427,12 @@ def run_loop(user_query: str, conversation, execute: Callable, *,
                     return LoopResult(_GUARD_STOP_ANSWER + guard.final_note(mark_claim=False),
                                       step, "tree_guard", trace, ledger, llm_calls,
                                       step_walls, turns)
-                return LoopResult(None, step, "repeat", trace, ledger, llm_calls, step_walls, turns)
+                # 同 A1:回 None 就会掉进 orchestrator 的"瞬时波动"网 —— 谎报原因 + 丢掉整份
+                # ledger + 劝用户重烧。上面那条注释说的正是这个坑,但当时只补了 guard.tripped
+                # 一个子情形;A4 把 analyze 失败从"假成功"改成 ok=False 之后,最贵工具的最常见
+                # 失败模式(坏 JSON / 429 / GCS 权限)正好接到了这条没补的绳子上。
+                return LoopResult(REPEAT_ANSWER, step, "repeat", trace, ledger, llm_calls,
+                                  step_walls, turns)
             # A2:引用了本轮账本里没有的 result_id → 硬失败(旧写法静默丢弃,工具照跑,
             # 于是"按那批视频回答"悄悄变成"对着空数据回答")。不执行,直接判失败回灌。
             missing = [u for u in call.uses if u not in ledger]

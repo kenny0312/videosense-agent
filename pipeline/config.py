@@ -260,8 +260,11 @@ def _validate_tree_guard_budget(cost_cap: float, analyze_est: float, parallel: i
             f"MAX_TREE_COST_USD={cost_cap:g} 小于单次 analyze 预留 "
             f"TREE_ANALYZE_ESTIMATE_USD={analyze_est:g} —— pro 档 analyze_video 会被【静默】"
             f"拦死(且第一次拦下就触闸,整棵树后续工具全被拦)。请把 MAX_TREE_COST_USD 提到 "
-            f">= {analyze_est * max(1, parallel):g}(= 单次预留 × MAX_ANALYZE_PARALLEL),"
-            f"或设 MAX_TREE_COST_USD=0 关闭熔断。")
+            f">= {analyze_est * max(1, parallel):g}(= 单次预留 × MAX_ANALYZE_PARALLEL)。"
+            f"只跑 flash 档的部署,也可以把 TREE_ANALYZE_ESTIMATE_USD 调【小】到实际单次成本"
+            f"(禁令只禁调大,调小到真实值是对的)。"
+            f"【不要】用 MAX_TREE_COST_USD=0 绕过本报错:那是把请求内唯一的美元熔断整个关掉,"
+            f"不是本报错的补救方案。")
     need = analyze_est * max(1, parallel)
     if cost_cap < need:
         return (f"MAX_TREE_COST_USD={cost_cap:g} < 单次预留 {analyze_est:g} × "

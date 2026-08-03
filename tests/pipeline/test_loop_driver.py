@@ -158,12 +158,31 @@ def test_loop_metrics_counts_successful_repeats():
 
 
 def test_repeat_failure_termination():
+    """同一签名连续失败到上限 → terminated="repeat",且交【诚实的部分收口文案】不是 None。
+
+    这条原来断言 `answer is None`,锁的正是要治的那个病:回 None 会掉进 orchestrator 的
+    "瞬时波动"网 —— 谎报原因、丢掉整份 ledger、劝用户把刚烧掉的步数全额重烧。
+    A4 把 analyze 失败从"假成功"改成 ok=False 之后,最贵工具的最常见失败模式
+    (坏 JSON / 429 / GCS 权限)正好接到了这条绳子上,这个坑就从理论变成了常见路径。
+    """
     conv = ScriptedConv([([Call("sql_query", {"sql": "bad"}, [])], None)] * 10)
     ex = make_exec(fail={"sql_query"})
     r = run_loop("q", conv, ex, max_steps=8, repeat_limit=2)
-    assert r.terminated == "repeat" and r.answer is None
+    assert r.terminated == "repeat"
+    assert r.answer == ld.REPEAT_ANSWER, "repeat 仍在回 None —— 会被当成瞬时波动"
+    assert "服务波动" not in (r.answer or ""), "别把'那条路不通'谎报成'服务抖动'"
+    assert r.ledger, "已经买到的东西必须还在 ledger 里,交付得出去"
     # 重复上限=2:执行了 2 次后第 3 次循环前被拦
     assert sum(1 for c in ex.seen if c["name"] == "sql_query") == 2
+
+
+def test_repeat_is_partial_delivery_not_a_transient_blip():
+    """orchestrator 侧:repeat 必须与 max_steps 一样走【部分交付】,而不是"服务波动"。
+
+    但 can_continue 只给 max_steps —— 那边是预算用完(缩小范围接着问有意义),
+    这边是那条路不通(原样再跑还是同样结果),给"可以继续"等于劝用户再烧一遍钱。
+    """
+    assert "repeat" in ld.PARTIAL_TERMINATIONS and "max_steps" in ld.PARTIAL_TERMINATIONS
 
 
 def test_failed_step_feeds_error_not_crash():

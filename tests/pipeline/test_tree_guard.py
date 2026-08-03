@@ -779,17 +779,25 @@ def test_admit_count_equals_real_llm_calls_in_analyze_retries(monkeypatch):
     g = TreeGuard(cost_cap=10.0, call_estimate=0.05)      # cap 给足,不让它中途触闸
     n = _count_admits(g, monkeypatch)
 
-    res = ne.execute_node(_analyze_node(), {}, None, _FakeTrace(), guard=g)
+    # 【必须走生产闭包】,不能直接 ne.execute_node —— 那样会绕开 execute() 里的外层
+    # admit,于是这条用例对"外层有没有豁免 analyze_video"完全无感:实测 1 vs 3(修之前)、
+    # 3 vs 3(修之后)、4 vs 3(把豁免撤掉)三种形状它【全都绿】,等于没有守卫。
+    res = _executor(g)("c0", "analyze_video", {"video_id": "v1", "question": "q"}, {}, [])
 
     assert calls["n"] == AV.RETRY_LIMIT + 1               # 真实发了 3 次 LLM 调用
-    assert n["admit"] == calls["n"], f"记账 {n['admit']} 笔 vs 真实 {calls['n']} 次调用"
+    assert n["admit"] == calls["n"], (
+        f"记账 {n['admit']} 笔 vs 真实 {calls['n']} 次调用 —— "
+        "多出来的那笔多半是 execute() 外层没豁免 analyze_video(外 1 + 内 N)")
     assert n["settle"] == calls["n"]                      # 配对释放
     assert g._pending == 0.0                              # 在飞预留没泄漏
-    assert not res.ok and res.attempts == calls["n"]      # A4:失败就是失败,attempts 说真话
+    assert not res.ok                                     # A4:失败就是失败,不伪装成成功
 
 
 def test_no_guard_param_keeps_old_behaviour(monkeypatch):
-    """不传 guard(= 今天 loop_driver 的调用形状)时一笔都不记,行为与下沉前逐字节一致。"""
+    """不传 guard 时一笔都不记,行为与下沉前逐字节一致。
+
+    (loop_driver 现在【是】传 guard 的 —— 这条守的是向后兼容:直连 execute_node 的
+    离线单测、脚本、回放路径不该因为下沉而开始记账。)"""
     import perception.analyze_video_contextual as AV
     from pipeline import node_executor as ne
     calls = _inject_failing_generate(monkeypatch)
@@ -848,8 +856,13 @@ def test_guard_block_stops_analyze_without_spending(monkeypatch):
 
 # ── A4:失败不写成功缓存、不进语义索引 ──────────────────────────────────
 def test_failed_analyze_never_reaches_cache_or_semantic_index(monkeypatch):
-    """假成功最毒的一处:失败信封曾被 _index_analyze_result 写进 content_embeddings ——
-    等于把"看不清"当证据永久存进生产库,以后每次检索都召回一条假证据。"""
+    """失败的 analyze 绝不许进成功缓存或语义索引 —— 否则等于把"看不清"当证据
+    永久存进生产库,以后每次检索都召回一条假证据。
+
+    口径更正:这【不是】已经发生过的事故。基线靠 `startswith(FAILURE_ANSWER_PREFIX)`
+    同时罩住 analyze_cache.put 和 _index_analyze_result,两条都进不去。A4 删掉了那个
+    前缀判据(失败改走 ok=False),于是 `if not out.ok` 早退成了【唯一】一道防线 ——
+    所以这条测试从"锦上添花"变成了"唯一的锁"。"""
     import perception.analyze_video_contextual as AV
     from pipeline import analyze_cache, node_executor as ne
     calls = _inject_failing_generate(monkeypatch)
@@ -883,3 +896,62 @@ def test_startup_check_warns_when_parallel_burst_would_trip():
 def test_startup_check_silent_when_satisfied_or_disabled():
     assert config._validate_tree_guard_budget(0.90, 0.30, 3) == ""
     assert config._validate_tree_guard_budget(0, 0.30, 3) == ""      # 0 = 熔断关,不受约束
+
+
+def test_guard_blocked_note_tells_the_truth_about_money():
+    """护栏在【重试中途】顶上时,不许对大脑说"一分钱没花"。
+
+    admit 挂在每次重试之前,所以护栏可能是第 2/3 次尝试前才顶的 —— 那时前面几次的钱
+    已经 add_usage 落账了。无条件说"一分钱没花"直接违「成本每轮可见全口径」红线,
+    而且会让大脑以为这条路是免费的、接着重试。
+    """
+    import perception.analyze_video_contextual as AV
+    from pipeline import node_executor as ne
+
+    class _Out:
+        def __init__(self, attempts):
+            self.error_code = AV.ERROR_GUARD_BLOCKED
+            self.error = "(系统)触发成本护栏"
+            self.attempts = attempts
+
+    assert "一分钱没花" in ne._analyze_error_note(_Out(0), "v1")
+    for n in (1, 2, 3):
+        note = ne._analyze_error_note(_Out(n), "v1")
+        assert "一分钱没花" not in note, f"attempts={n} 却声称一分钱没花"
+        assert f"前 {n} 次" in note, "没说清已经花掉了几次的钱"
+
+
+def test_startup_error_does_not_recommend_disabling_the_breaker():
+    """进程起不来时,报错文本是运维手上唯一的 runbook —— 那一刻杠杆最大。
+
+    任务书 §A7+ 明令【删掉】"或明确关闭 Guard"这条兜底:关掉成本熔断比低估危险得多。
+    实现里一度把它写成与"抬高 cap"并列的中性选项。这条钉住:报错里出现
+    MAX_TREE_COST_USD=0 时,必须是【劝阻】而不是【建议】。
+    """
+    import importlib
+    import os
+
+    from pipeline import config as cfg
+
+    old = os.environ.get("MAX_TREE_COST_USD")
+    os.environ["MAX_TREE_COST_USD"] = "0.20"
+    try:
+        with pytest.raises(ValueError) as ei:
+            importlib.reload(cfg)
+        msg = str(ei.value)
+    finally:
+        if old is None:
+            os.environ.pop("MAX_TREE_COST_USD", None)
+        else:
+            os.environ["MAX_TREE_COST_USD"] = old
+        importlib.reload(cfg)
+
+    # 注意别用 index():报错开头的 "MAX_TREE_COST_USD=0.2"(当前配置值)会先命中。
+    # 要找的是【建议里那个】独立的 =0。
+    import re
+    hits = [m.start() for m in re.finditer(r"MAX_TREE_COST_USD=0(?![.\d])", msg)]
+    assert hits, "报错里没提这个选项,那这条测试的前提要重看"
+    for i in hits:
+        assert any(w in msg[max(0, i - 25):i + 45] for w in ("不要", "不是", "禁止")), (
+            f"把'关掉熔断'当成了补救方案推荐 —— 任务书明令删掉这条兜底。上下文:"
+            f"{msg[max(0, i - 25):i + 45]!r}")
