@@ -68,9 +68,20 @@ def test_invalid_is_refusal_not_zero():
 
 @pytest.mark.parametrize("term", ["error", "max_steps", "tree_guard", "repeat"])
 def test_all_non_text_terminations_are_invalid(term):
-    """`VALID_TERMINATED` 只有 text:其余形态交的都是【系统占位文案】而不是 agent 的结论。"""
+    """只有 error 判无效 —— 它是【测量本身崩了】,我们对 agent 的能力一无所知。
+
+    max_steps / repeat / tree_guard 是【有产出的结局】:A1 之后它们交的是诚实的部分收口
+    + 完整 ledger,而判分从台账取数,不受占位文案影响。实测 204 行里 max_steps 有 22 行、
+    其中 7 行真的 show_video 摆出了 2~8 个视频;error 12 行里交付了任何东西的是 0 行。
+    把 max_steps 一起剔掉既丢信号,又系统性利好"更容易烧穿步数"的臂
+    (实测 v2 的 T1/A 因此跳 +0.099,是全表最大的 Δ,而那是排除规则的产物)。
+    """
     r = S.score_item(T1, "随便什么答案", VOCAB, judge=None, surfaced=["v_x"], terminated=term)
-    assert r["invalid"] and r["invalid_reason"] == term
+    if term == "error":
+        assert r["invalid"] and r["invalid_reason"] == term
+    else:
+        assert not r.get("invalid"), f"{term} 是有产出的结局,不该被剔出判分"
+        assert r.get("set_f1") is not None
 
 
 def test_normal_run_still_scored():
@@ -100,10 +111,12 @@ def test_verdict_aggregate_drops_invalid_and_counts_them():
         _row(T1, arm="C", rep=11, terminated="max_steps", surfaced=["v_a"]),
     ]
     per, invalid = V.aggregate(rows, ITEMS, VOCAB)
-    assert sum(sum(c.values()) for c in invalid.values()) == 3
+    # 只有 error 无效;max_steps 那行是【有产出的结局】,照常进 per[]
+    assert sum(sum(c.values()) for c in invalid.values()) == 2
     assert invalid[("PROBE", "B")]["error"] == 1
     assert invalid[("PROBE", "C")]["error"] == 1
-    assert invalid[("T1", "C")]["max_steps"] == 1
+    assert ("T1", "C") not in invalid, "max_steps 被剔出去了 —— 那是有交付的结局,不是崩溃"
+    assert len(per[(T1["id"], "C")]) == 1
     # C 臂探针一次有效跑次都没有 → 那一格是【无样本】,不是 0 分,更不是 1.0
     assert ("probe-golf", "C") not in per
     assert [x["score"] for x in per[("probe-golf", "B")]] == [1.0]
@@ -221,11 +234,15 @@ def test_surfaced_meta_alone_supplies_the_id_set():
 
 
 def test_answer_contract_follows_the_real_tool_signature(monkeypatch):
-    """契约随工具真实签名走:show_video 没声明 items 之前,一个字都不许多说。
+    """契约随工具真实签名走 —— 签名有 items 就说,没有就一个字都不多说。
 
     产品侧改动与本文件分属两个代理,合入时序不保证。写死 items 会在合入之前
     让模型发出一个被 schema 拒收的参数 —— 把好端端的跑次变成 terminated=error,
     正是 B0-3 刚修掉的那种"数据"。
+
+    【测的是行为,不是当时的现状】:第一版断言"今天还没有 items",产品侧一合进来
+    这条就红了 —— 而机制其实是对的。锁现状会让"功能按预期生效"表现成回归。
+    所以两个方向都用 monkeypatch 造签名来验。
     """
     import dataclasses
 
@@ -233,15 +250,22 @@ def test_answer_contract_follows_the_real_tool_signature(monkeypatch):
     from pipeline import node_specs
 
     spec = node_specs.SPECS["show_video"]
+
+    def _with_props(props):
+        params = json.loads(json.dumps(spec.parameters))       # 深拷贝,不动全局
+        params["properties"] = props
+        patched = dict(node_specs.SPECS)                       # NodeSpec 是 frozen dataclass
+        patched["show_video"] = dataclasses.replace(spec, parameters=params)
+        monkeypatch.setattr(node_specs, "SPECS", patched)
+
+    # ① 签名【没有】 items → 契约与今天逐字节一致,绝不多说
+    _with_props({"video_ids": {"type": "array"}})
     base = R.answer_contract()
-    assert base == R.ANSWER_CONTRACT, "今天的 show_video 还没有 items 参数"
+    assert base == R.ANSWER_CONTRACT
     assert "items" not in base
 
-    params = json.loads(json.dumps(spec.parameters))          # 深拷贝,不动全局
-    params["properties"]["items"] = {"type": "array"}
-    patched = dict(node_specs.SPECS)                          # NodeSpec 是 frozen dataclass
-    patched["show_video"] = dataclasses.replace(spec, parameters=params)
-    monkeypatch.setattr(node_specs, "SPECS", patched)
+    # ② 签名【有】 items → 追加那一段
+    _with_props({"video_ids": {"type": "array"}, "items": {"type": "array"}})
     upgraded = R.answer_contract()
     assert upgraded.startswith(R.ANSWER_CONTRACT)              # 只新增,不改已有措辞
     assert "items" in upgraded and "category" in upgraded and "start_ts" in upgraded
@@ -287,6 +311,14 @@ def test_historical_v3_recompute_matches_acceptance():
         assert S.score_item(ITEMS[r["id"]], r.get("answer") or "", VOCAB,
                             surfaced=r.get("surfaced"),
                             terminated=r["terminated"])["invalid"] is True
-    assert sum(sum(c.values()) for c in invalid.values()) == 13     # 6 error + 7 max_steps
+    # 无效 = 只有 error。数字【从数据算】而不是写死 —— 写死的期望值在口径一改就会
+    # 变成"测试红了所以口径错了",而实际是口径对了、期望值过期了(本文件已经踩过一次)。
+    n_err = sum(1 for r in rows if r["terminated"] == "error")
+    n_ms = sum(1 for r in rows if r["terminated"] == "max_steps")
+    assert sum(sum(c.values()) for c in invalid.values()) == n_err
+    assert n_ms > 0, "这批里本来就有 max_steps,不然下面这条断言是空转的"
+    assert all("max_steps" not in c for c in invalid.values()), (
+        "max_steps 被剔出判分了 —— 那是有交付的结局(实测 7 行真的摆出了 2~8 个视频),"
+        "剔掉它既丢信号,又系统性利好更容易烧穿步数的臂")
     flat = [x for runs in per.values() for x in runs]
     assert sum(1 for x in flat if x["parse_failure"]) == 0, "验收:parse failure = 0"

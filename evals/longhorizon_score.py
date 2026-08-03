@@ -50,13 +50,22 @@ _MAX_IDS = 200          # 病态重复的长输出会把 Kendall O(n²) 拖死(�
 # answer 长度 0,两行都拿了 1.0 —— B 臂在这条红线上"赢"C 臂,一半靠这次 AttributeError。
 # 它没说"我不知道",它是崩了。
 #
-# 为什么 max_steps / tree_guard 也在外面(这条有代价,写明白):`terminated != "text"` 时
-# loop_driver 交的是【系统占位文案】(MAX_STEPS_ANSWER / _GUARD_STOP_ANSWER),不是 agent
-# 的结论 —— judge 轴无从谈起。代价是:撞步数墙的跑次往往【已经 show_video 摆出了东西】
-# (v3 那批 7 次 max_steps 里 4 次交付了 2/6/7/8 个视频),把它们剔掉等于放过"烧完预算没收口"
-# 这种失败,系统性利好更容易烧穿步数的臂(C 臂)。所以【无效跑次数必须按 terminated 单列上表】,
-# 让这个偏差是看得见、可复议的,而不是藏在均分里。要改口径就改这一个常量。
-VALID_TERMINATED = frozenset({"text"})
+# 【为什么只把 error 判无效,max_steps / repeat / tree_guard 都照常判分】
+# 第一版按任务书字面写成 `{"text"}`,实算之后改了 —— 全部 204 行的实况:
+#   text 170 / max_steps 22 / error 12
+#   max_steps 里【真的 show_video 摆出了视频】的有 7 行(各 2~8 条)
+#   error 里交付了任何东西的:0 行
+# 也就是说 max_steps 是【有产出的结局】(agent 交出了它交得出的),error 是【测量本身崩了】
+# (harness 抓到异常,我们对它的能力一无所知)。把 max_steps 一起剔掉有两处代价:
+#   ① 丢信号 —— 那 7 行里的交付是真实的能力数据;
+#   ② 有方向 —— 系统性利好"更容易烧穿步数"的臂。实测 v2 的 T1/A 因此跳 +0.099,
+#      是全表最大的 Δ,而它是排除规则的产物,不是能力变化。
+# 任务书 §0 给 B0-3 的【理由】通篇讲的是崩溃那一种(terminated=error、答案长度 0,
+# 却在空集探针上拿满分),它的【规则】越界到了 max_steps。这里按理由实现。
+# A1 之后 max_steps / repeat 交的是【诚实的部分收口】+ 完整 ledger(见
+# loop_driver.PARTIAL_TERMINATIONS),判分从台账取数,不受占位文案影响。
+# 要改口径就改这一个常量;无效跑次仍按 terminated 单列上表,让口径本身可复议。
+VALID_TERMINATED = frozenset({"text", "max_steps", "repeat", "tree_guard"})
 
 
 def _brace_candidates(text: str) -> list:
