@@ -13,8 +13,9 @@
 
 三条不变量(改这个文件前先读):
   1. 上界(行/字节/超时)是【安全项】,恒生效,不由 USE_BOUNDED_SQL 控制;
-     开关只决定"要不要把截断这件事报出去"。因此本模块【不读开关】——
-     开关只出现在调用方决定 wire 形状的那一处。
+     【截断的上报同样恒生效】(§12 规则 3:正确性字段永不受开关控制)——
+     上界既然恒生效,关掉开关不会让行回来、只会让上游不知道行被扔了。
+     开关只管"零行时报不报列名"。本模块【不读开关】,report 由调用方传入。
   2. 同一条 SQL 在开关开/关时必须返回【完全相同的行集】。所以字节预算里
      恒定扣掉信封开销(哪怕这次不发信封),否则开关就偷偷变成了安全项。
   3. 没截断时,调用方拿到的 rows 必须与"裸 fetchall + [dict(r) ...]"逐字节等价。
@@ -88,7 +89,10 @@ def fetch_bounded(
       · 按最终 JSON 的 UTF-8 字节累计,超 max_bytes 停;
       · 第一行就超限 → rows=[] + reason="single_row_too_large"(不返回半行:
         半行 JSON 既解析不了,截一半的 dict 又会让大脑以为那就是全部字段)。
-    截断后【不把游标读干】—— 读干就等于没有上界,内存该顶穿还是顶穿。
+    截断后【不把游标读干】—— 省掉的是 Python 侧把剩余行物化成 dict 的那一层。
+    注意别把它当成 RSS 上界:真库走的是 psycopg2 默认(客户端)游标,
+    execute() 就已经把全量结果拉进子进程了。要压进程峰值内存得换 named
+    (server-side)cursor,那条按任务书 v1.1 §5 的脚注【本期不做,先量再改】。
     """
     max_rows = config.SQL_MAX_ROWS if max_rows is None else max_rows
     max_bytes = config.SQL_MAX_BYTES if max_bytes is None else max_bytes

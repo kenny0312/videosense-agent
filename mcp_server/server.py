@@ -205,9 +205,10 @@ async def call_tool(name: str, arguments: dict):
                 log.warning("query_db() 触发上界: reason=%s 扫到>=%d 行,只返回 %d 行",
                             res.reason, res.total_seen, res.returned)
 
-            # wire 三形状之一。USE_BOUNDED_SQL 关(默认)且未截断 → 裸 JSON 数组,
-            # 与今天【逐字节等价】;开关只放行"报告截断/零行列名"这个展示行为,
-            # 上面的行数/字节/超时上界不受它控制(§12:回滚只回滚展示,不回滚安全)。
+            # wire 三形状之一。未截断且不需要单独报列名 → 裸 JSON 数组,与今天【逐字节等价】。
+            # 【截断恒发信封,不受 USE_BOUNDED_SQL 控制】(§12 规则 3:正确性字段永不受开关控制)
+            # —— 上界既然恒生效,关掉开关不会让行回来、只会让上游不知道行被扔了。
+            # 开关只管"零行时报不报列名"这一件纯展示的事。
             payload = (build_envelope(res)
                        if needs_envelope(res, report=config.USE_BOUNDED_SQL)
                        else res.rows)

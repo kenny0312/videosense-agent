@@ -133,8 +133,12 @@ def _truncated_shell(rows: list, meta: dict) -> dict:
     returned = int(meta.get("returned") or len(rows))
     total = max(int(meta.get("total_seen") or 0), returned)
     why = _TRUNCATION_WHY.get(str(meta.get("reason") or ""), "达到单次返回上限")
-    note = (f"【结果被截断】{why}:本次只带回 {returned} 行,库里至少还有 {total} 行"
-            f"(真实总数未知)。不要把 {returned} 当成总数去回答「一共有多少」——"
+    # 措辞要害:说"还有 N 行"会被读成"另外还有" → 大脑推出总数 ≥ returned+N,虚报一倍。
+    # 而 total 本身【已经含】带回的那些(服务端多读一行确认截断,所以 total ≡ returned+1),
+    # 真正有依据的只是"总共至少 total 行"。截断话术上多说一行都是假陈述。
+    note = (f"【结果被截断】{why}:本次只带回 {returned} 行,符合条件的行"
+            f"【总共至少 {total} 行】(这个数已经包含带回的 {returned} 行,不是另外还有这么多;"
+            f"真实总数未知)。不要把 {returned} 当成总数去回答「一共有多少」——"
             "要总数就单独发一条 SELECT COUNT(*);要更多明细就加过滤条件"
             "(时间段 / video_id / 类目)或用 LIMIT 分批取。")
     return {"rows": rows, "_truncated": True, "_total": total, "_returned": returned,
@@ -181,9 +185,20 @@ def _sql_error_note(err: str, pgcode: "str | None", repairs: int) -> str:
                 "改写 SQL 或原样重发都只会再被取消一次。请把查询【变轻】:加过滤条件"
                 "(时间段 / video_id / 类目)、加 LIMIT、只 SELECT 真正需要的列;"
                 "只要总数就单独发一条 SELECT COUNT(*)。实在取不到就如实告诉用户这次没查成。")
+    if pgcode:
+        # 【拿到码了,只是不在上面两张表里】。PG 的 42*/22* 绝大多数就是"这条 SQL 写错了"
+        # (42803 漏 GROUP BY、42883 函数不存在、22P02 类型转换失败…)。
+        # 落进下面那条兜底会同时说三句假话:说"不是 SQL 写错了"、说"连 SQLSTATE 都没给出"
+        # (同一步的 trace 里明明记着码)、还叫大脑"别把 SQL 改来改去"—— 恰好堵死唯一能救的动作。
+        # 我们不替它自动重写(白名单之外不动 SqlFixer 的钱),但要把改写权明确交回给大脑。
+        return (f"数据库拒绝了这条 SQL(SQLSTATE {pgcode}):{err}。"
+                "这个码不在自动重写白名单里,所以我们【没有】替你改写 —— "
+                "请照报错原文核对函数名 / 类型 / 列限定符 / 分组字段,自己改一版再发;"
+                "别把同一条原样重发。改不动就如实告诉用户这次没查成。")
     return ("【这不是 SQL 写错了】—— 查询没有正常返回(连接中断 / 超时 / 响应解析失败,"
-            f"数据库连 SQLSTATE 都没给出):{err}。别把 SQL 改来改去,也别把同一条大查询"
-            "原样重发;先缩小范围(加过滤条件 / LIMIT)再试,或者如实告诉用户这次没查成。")
+            f"数据库连 SQLSTATE 都没给出):{err}。别把同一条大查询原样重发;"
+            "如果上面的报错文本已经说明了原因(例如「只允许只读查询」),就按它改写,"
+            "否则先缩小范围(加过滤条件 / LIMIT)再试,或者如实告诉用户这次没查成。")
 
 
 def _run_sql_query(node: Node, schema: dict, trace: Trace) -> NodeResult:
@@ -388,8 +403,13 @@ def _run_show_table(node: Node, upstream: dict[str, Any]) -> NodeResult:
         note = "" if n <= SHOW_TABLE_MAX_ROWS else f"(共 {n} 条,展示前 {SHOW_TABLE_MAX_ROWS} 条)"
     caption = node.inputs.get("caption") or ""
     table = {"columns": cols, "rows": norm, "n": n, "shown": len(norm), "caption": str(caption)}
-    if truncated:                                  # 侧信道也别谎报总数(只加字段,前端可择期用)
+    if truncated:
+        # 侧信道也别谎报总数。注意 `n` 的语义在本批次【变了】:改之前服务端裸 fetchall(),
+        # n 恒等于真实总数;现在它只是"取回了多少"。前端那句 `t.n + ' rows'` 因此从
+        # "确切总数"变成了"假总数",而它比答案区更醒目 —— 所以这两个字段必须一起给,
+        # 前端也必须同一次改(见 web/index.html 的表头渲染)。
         table["truncated"] = True
+        table["at_least"] = at_least
     # ③:value 带前若干条【有序编号 id】(优先 video_id 列,否则首列)→ 进 transcript 供下一轮「第 N 个」映射。
     id_col = "video_id" if "video_id" in cols else (cols[0] if cols else None)
     items = ([{"n": i + 1, "id": str(r.get(id_col, ""))} for i, r in enumerate(norm[:30])]
@@ -584,7 +604,9 @@ def _run_sandbox_node(node: Node, upstream: dict[str, Any],
     for attempt in range(CODE_MAX_RETRIES + 1):
         step = trace.step(f"[{node.id}/{node.tool}] gen code (try {attempt + 1})")
         try:
-            code = gen.generate(node, upstream) if attempt == 0 else gen.repair(
+            # B4:把上游截断信息一并交给生成器 —— 只注入 data_<id>_meta 变量而不在
+            # prompt 里提它,那个变量就是死的(模型看不见变量,只看得见这段文字)。
+            code = gen.generate(node, upstream, up_meta) if attempt == 0 else gen.repair(
                 last.stderr, last.exit_code
             )
             step.ok(code_len=len(code))

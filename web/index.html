@@ -798,7 +798,12 @@ function renderTable(t){
   const wrap=el('<div class="tbl"></div>');
   const bar=el('<div class="tbar"></div>');
   const cnt=el('<span></span>');
-  cnt.textContent=(t.caption?t.caption+' · ':'')+t.n+' rows'+(t.shown<t.n?(' · showing '+t.shown):'');
+  // B4: `t.n` is how many rows we got back, NOT the true total -- the server now caps
+  // reads (2000 rows / 1 MiB). Rendering it as a bare count would show a confident wrong
+  // number right next to the answer text that correctly says "at least N".
+  const cntTxt = t.truncated ? ('≥'+(t.at_least||t.n)+' rows (capped, got '+t.n+')')
+                             : (t.n+' rows');
+  cnt.textContent=(t.caption?t.caption+' · ':'')+cntTxt+(t.shown<t.n?(' · showing '+t.shown):'');
   bar.appendChild(cnt);
   const csvBtn=el('<span class="lnk"></span>');
   csvBtn.innerHTML='<i class="ti ti-download" aria-hidden="true"></i>CSV';

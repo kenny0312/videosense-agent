@@ -31,7 +31,18 @@ def record_loop_turn(store, owner, session_id, turn_no, nl, trace, ledger, answe
         ev = {"type": "tool_result", "turn": turn_no, "event_id": s["cid"],
               "tool": s["tool"], "ok": bool(s["ok"])}
         if res is not None and res.ok:
-            ev["value"] = res.value                       # 大本体由 append_event 溢出
+            # B4 连带:被截断的 sql_query 结果是【薄壳 dict】。原样落盘会让 append_event 的
+            # _preview 走 dict 分支(n 恒为 1)→ 下一轮回放渲染成「结果(共1行)」,
+            # 而实际是 2000 行 —— 一次假计数,且此后【每一轮】回放都带着它。
+            # 拆开落:行集按裸形状进溢出/预览(与升级前逐字节一致),截断信息单开两个键。
+            val = res.value
+            if (isinstance(val, dict) and val.get("_truncated") is True
+                    and isinstance(val.get("rows"), list)):
+                ev["value"] = val["rows"]
+                ev["truncated"] = True
+                ev["total"] = val.get("_total")
+            else:
+                ev["value"] = val                         # 大本体由 append_event 溢出
         elif res is not None:
             ev["error"] = (res.stderr or "")[:300]
         append_event(store, owner, session_id, ev, blob_put=blob_put)
@@ -62,7 +73,9 @@ def _render_turn(turn_no, evs) -> str:
         elif ty == "tool_result":
             if e.get("ok"):
                 prev = e.get("preview", e.get("value"))
-                n = f"(共{e['n']}行)" if e.get("n") else ""
+                # 截断过的那一步不能说"共 N 行" —— N 只是取回来的量,不是总数
+                n = (f"(至少{e['total']}行,已达返回上限未取全)" if e.get("truncated")
+                     else (f"(共{e['n']}行)" if e.get("n") else ""))
                 # show_video/show_table 的 value 带【有序编号 items】(供下一轮「第 N 个」映射)→ 放宽截断,别剪掉 id
                 cap = 800 if e.get("tool") in ("show_video", "show_table") else 200
                 lines.append(f"    {e['event_id']} 结果{n}:{json.dumps(prev, ensure_ascii=False)[:cap]}")

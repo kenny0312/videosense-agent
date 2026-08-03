@@ -207,17 +207,21 @@ ALLOYDB_PASSWORD = os.environ.get("ALLOYDB_PASSWORD", "")
 # 没有字节上界。一条 `SELECT * FROM video_fact_instances` 就能把 MCP 子进程的内存
 # 和大脑的 context 一起顶穿,而且没人知道发生过。
 #
-# 【这四个常量是安全项,恒生效,不受 USE_BOUNDED_SQL 控制】——
-# 见 §12「不允许普通 flag 关掉(回滚只回滚展示,不回滚安全)」。开关只决定
-# "要不要把'我截断了'这件事报给上游",不决定"要不要截断"。
+# 【这几个常量是安全项,恒生效,不受 USE_BOUNDED_SQL 控制】——
+# 见 §12「不允许普通 flag 关掉(回滚只回滚展示,不回滚安全)」。
+# 【截断这件事本身也恒报,同样不受开关控制】(§12 规则 3:正确性字段永不受开关控制)——
+# 上界既然恒生效,关掉开关并不会让行回来,只会让上游【不知道行被扔了】,
+# 那比不加上界更隐蔽,等于把安全项做成了静默丢数据。
 SQL_MAX_ROWS   = int(os.environ.get("SQL_MAX_ROWS", "2000"))              # 最多保存 2000 行;第 2001 行只用于确认截断
 SQL_MAX_BYTES  = int(os.environ.get("SQL_MAX_BYTES", str(1024 * 1024)))   # 最终 JSON 的 UTF-8 字节上界(1 MiB)
 SQL_FETCH_BATCH = int(os.environ.get("SQL_FETCH_BATCH", "128"))           # fetchmany 批大小
 SQL_STATEMENT_TIMEOUT_MS = int(os.environ.get("SQL_STATEMENT_TIMEOUT_MS", "10000"))  # SET LOCAL statement_timeout
 SQL_LOCK_TIMEOUT_MS      = int(os.environ.get("SQL_LOCK_TIMEOUT_MS", "2000"))        # SET LOCAL lock_timeout
 
-# USE_BOUNDED_SQL —— 只管【展示】:截断信息 / 零行时的列名要不要报给上游。
-# 关(默认)= wire 与今天逐字节等价(裸 JSON 数组),但上面的上界照样勒着。
+# USE_BOUNDED_SQL —— 只管一件纯展示的事:【零行时报不报列名】。
+# 上界恒生效、截断恒报,两者都不受它控制(见上)。所以:
+#   关(默认)+ 没截断 → wire 与升级前逐字节等价(裸 JSON 数组);
+#   关(默认)+ 截断了 → wire 仍是信封 —— 别指望把它翻回 0 来"恢复旧 wire"。
 # 验证后生产强制开(§12 规则 2 的启动校验尚未落地,见交付报告)。
 USE_BOUNDED_SQL = os.environ.get("USE_BOUNDED_SQL", "0").lower() in ("1", "true", "yes")
 
