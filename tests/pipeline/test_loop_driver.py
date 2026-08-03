@@ -66,9 +66,95 @@ def test_handle_resolution_passes_upstream_in_order():
 
 
 def test_max_steps_termination():
+    """A1:步数耗尽是【交付点】不是故障 —— 绝不回 answer=None。
+    回 None 会被 orchestrator 归到"可能是临时的服务波动,请再发一次",于是归因是假的、
+    整份账本被丢掉、还等于劝用户把刚烧掉的这些步全额重烧一遍。"""
     conv = ScriptedConv([([Call("sql_query", {"sql": "x"}, [])], None)] * 10)
     r = run_loop("q", conv, make_exec(), max_steps=3)
-    assert r.terminated == "max_steps" and r.answer is None and r.steps == 3
+    assert r.terminated == "max_steps" and r.steps == 3        # 归因没被文案掩盖
+    assert r.answer == ld.MAX_STEPS_ANSWER
+    assert "服务波动" not in r.answer and "再发一次" not in r.answer
+    assert r.ledger                                            # 整份账本留下来,交给上层交付
+
+
+# ── A2:result_id 带请求短前缀 + 上游句柄失效硬失败 ──────────────
+def test_result_id_carries_request_prefix():
+    """跨轮撞号是静默错数据的源头:上一轮的 c0_0 与本轮的 c0_0 长得一模一样,
+    模型从回放里抄一个旧 id 过来,以前会稳稳落在本轮某个【不相干】的结果上。"""
+    conv = ScriptedConv([([Call("sql_query", {"sql": "x"}, [])], None), ([], "done")])
+    r = run_loop("q", conv, make_exec(), max_steps=4, req_short="ab12cd34")
+    assert [s["cid"] for s in r.trace] == ["r_ab12cd34_c0_0"]
+    assert list(r.ledger) == ["r_ab12cd34_c0_0"]
+    # 不给前缀(离线纯控制流的默认)→ 与升级前逐字节一致
+    conv2 = ScriptedConv([([Call("sql_query", {"sql": "x"}, [])], None), ([], "done")])
+    assert [s["cid"] for s in run_loop("q", conv2, make_exec(), max_steps=4).trace] == ["c0_0"]
+
+
+def test_stale_result_id_hard_fails_instead_of_silent_drop():
+    """A2:引用了不在本轮账本里的 result_id → 硬失败 + 明确文案,那一步【根本不执行】。
+    旧写法静默丢弃句柄、工具照跑 —— "按上一轮那批视频回答"悄悄变成"对着空数据回答"。"""
+    conv = ScriptedConv([
+        ([Call("show_video", {}, ["r_deadbeef_c0_0"])], None),
+        ([], "收口"),
+    ])
+    ex = make_exec()
+    r = run_loop("q", conv, ex, max_steps=4, req_short="ab12cd34")
+    assert ex.seen == []                                    # 没进执行器:不白花钱、不出假结果
+    bad = r.ledger["r_ab12cd34_c0_0"]
+    assert bad.ok is False
+    assert "已失效" in bad.stderr and "r_deadbeef_c0_0" in bad.stderr
+    fed = conv.sent[-1]                                     # 走既有错误回灌路径,原文喂回大脑
+    assert fed[0][0] == "show_video" and "已失效" in fed[0][1]["error"]
+
+
+def test_trace_carries_explicit_turn_and_console_reads_it():
+    """A2:轮号写成显式 turn 字段;Loop Console 不再靠反解析 cid 字符串倒推
+    —— id 格式一变(加了请求前缀)旧写法整列静默错成第 0 轮。"""
+    from pipeline import loop_console as lc
+    conv = ScriptedConv([
+        ([Call("sql_query", {"sql": "a"}, [])], "先查库"),
+        ([Call("sql_query", {"sql": "b"}, [])], "再查一遍"),
+        ([], "答案"),
+    ])
+    r = run_loop("q", conv, make_exec(), max_steps=6, req_short="ab12cd34")
+    assert [s["turn"] for s in r.trace] == [0, 1]
+
+    class LO:                                               # run_query_loop 的最小替身
+        answer, steps, terminated = r.answer, r.steps, r.terminated
+        trace, step_walls, id_scrub_hits, turns = r.trace, r.step_walls, 0, r.turns
+    lc._RING.clear()
+    lc.record(query="q", owner="t", lo=LO, ledger=r.ledger)
+    full = lc.get_trace(lc.list_traces()[0]["id"])
+    assert [s["turn"] for s in full["steps"]] == [0, 1]      # 前缀 id 下轮号依然对
+    by_i = {t["i"]: t for t in full["turns"]}                # 决策对话流没被压进第 0 轮
+    assert by_i[0]["brain"] == "先查库" and '"sql": "a"' in by_i[0]["steps"][0]["args"]
+    assert by_i[1]["brain"] == "再查一遍" and '"sql": "b"' in by_i[1]["steps"][0]["args"]
+
+
+# ── A5:成功的重复调用 —— 只记录/提醒,不终止 ──────────────────
+def test_repeated_success_warns_but_never_terminates():
+    """失败重复才终止(seen);成功重复以前一个数字都不留(`if res.ok:` 分支完全不动 seen)。
+    补上观测半边,但【不】接进 repeat_limit 的终止逻辑 —— 那会误杀合法的重复查询。"""
+    conv = ScriptedConv([([Call("sql_query", {"sql": "x"}, [])], None)] * 5 + [([], "答案")])
+    ex = make_exec()
+    r = run_loop("q", conv, ex, max_steps=8, repeat_limit=2)
+    assert r.terminated == "text" and r.answer == "答案"           # 没被误杀
+    assert sum(1 for c in ex.seen if c["name"] == "sql_query") == 5  # 5 次都真跑了
+    nudges = [t["nudge"] for t in r.turns if t.get("nudge")]
+    assert any("完全相同的参数" in n for n in nudges)               # 提醒记下来了
+    notices = [resp for msg in conv.sent if isinstance(msg, list)
+               for _n, resp in msg if "_system_notice" in resp]
+    assert notices and "完全相同的参数" in notices[0]["_system_notice"]   # 也回喂给了大脑
+
+
+def test_loop_metrics_counts_successful_repeats():
+    lo = ld.LoopOutcome(answer="x", steps=2, terminated="text", final_tool="sql_query",
+                        final_value=None, preview_value=None, results={},
+                        trace=[{"tool": "sql_query", "inputs": {"sql": "a"}, "uses": [], "ok": True},
+                               {"tool": "sql_query", "inputs": {"sql": "a"}, "uses": [], "ok": True},
+                               {"tool": "sql_query", "inputs": {"sql": "b"}, "uses": [], "ok": True},
+                               {"tool": "sql_query", "inputs": {"sql": "a"}, "uses": [], "ok": False}])
+    assert ld.loop_metrics(lo)["repeat_ok_calls"] == 1        # 只数成功那一对,失败的归 seen
 
 
 def test_repeat_failure_termination():
