@@ -95,17 +95,41 @@ def cmd_export(a):
     return len(rows)
 
 
+def keys_to_delete(export_text: str) -> list[str]:
+    """从导出文件内容解析出【允许删除】的 key 列表;任何不安全形态 → ValueError。
+
+    抽成纯函数是为了能离线测:这是一把删生产数据的刀,防呆逻辑必须有测试覆盖,
+    而 cmd_delete 本身连着真库、测不了。
+    """
+    keys = []
+    for i, line in enumerate(export_text.splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            k = json.loads(line)["content_key"]
+        except Exception as e:
+            raise ValueError(f"导出文件第 {i} 行读不出 content_key({e})—— 文件可能被改过") from e
+        keys.append(k)
+    if not keys:
+        raise ValueError("导出文件是空的:没有东西可删")
+    bad = [k for k in keys if not str(k).startswith(RESIDUE_PREFIX)]
+    if bad:                                    # 导出文件被换过 / 前缀写错 → 立刻停
+        raise ValueError(f"导出文件里有 {len(bad)} 条不带 {RESIDUE_PREFIX} 前缀的 key,"
+                         f"例如 {bad[0]!r}。这会删到生产索引。")
+    if len(set(keys)) != len(keys):            # 重复不致命,但说明文件不是 export 直出的
+        raise ValueError(f"导出文件里有重复 key({len(keys)} 行 / {len(set(keys))} 个)"
+                         "—— 不是 export 直出的文件,拒绝执行")
+    return keys
+
+
 def cmd_delete(a):
     exp = ROOT / a.yes_i_exported
     if not exp.exists():
         sys.exit(f"拒绝执行:导出文件 {a.yes_i_exported} 不存在。先跑 export。")
-    keys = [json.loads(l)["content_key"] for l in exp.read_text(encoding="utf-8").splitlines() if l.strip()]
-    if not keys:
-        sys.exit("拒绝执行:导出文件是空的。")
-    bad = [k for k in keys if not k.startswith(RESIDUE_PREFIX)]
-    if bad:                                    # 防呆:导出文件被换过/前缀写错 → 立刻停
-        sys.exit(f"拒绝执行:导出文件里有 {len(bad)} 条不带 {RESIDUE_PREFIX} 前缀的 key,"
-                 f"例如 {bad[0]!r}。这会删到生产索引。")
+    try:
+        keys = keys_to_delete(exp.read_text(encoding="utf-8"))
+    except ValueError as e:
+        sys.exit(f"拒绝执行:{e}")
     si = _db()
     before = si._execute("SELECT COUNT(*) FROM content_embeddings", ())[0][0]
     # 按【导出文件里的具体 key】删,不按 LIKE 删 —— 导出与删除必须是同一批行,
