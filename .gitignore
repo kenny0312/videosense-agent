@@ -59,3 +59,7 @@ evals/suites.json               # 套件分层：从本地真跑归档派生，�
 
 # GEPA 运行产物(报告/状态/流水,只有结论进 PR)
 evals/gepa/runs/
+
+# DVD 复现的跑批状态(费用账本 budget_state.json / 暂停单 PAUSED.json,机器态)
+dvd_repro/results/
+evals/runs/index-gate-residue.jsonl
