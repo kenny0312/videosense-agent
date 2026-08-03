@@ -122,6 +122,24 @@ def _preview(value: Any, rows: int = 3, cols: int = 8, cell: int = 80):
     return [{"value": cap(value)}], 1
 
 
+def _preview_sql(value: Any, rows: int):
+    """B4:sql_query 的预览。结果被服务端截断时 value 是薄壳
+    `{rows, _truncated, _total, _returned, _reason, _note}`。
+
+    直接丢给 _preview 会把整个薄壳当成【一个 dict】压成一行:行集被 str() 成一格再截到
+    80 字(预览等于没了),`_note`(那句"别把这个数当总数")也被腰斩在半句。
+    所以这里:行集照常按 sql 预算预览,`_note` 【单独成一格】且不截断。
+    没截断 → 与升级前逐字节一致(裸 list 直接进 _preview)。"""
+    if (isinstance(value, dict) and value.get("_truncated") is True
+            and isinstance(value.get("rows"), list)):
+        pv, n = _preview(value["rows"], rows=rows)
+        note = str(value.get("_note") or "")
+        if note:
+            pv = list(pv) + [{"_note": note}]        # 单独成格,不进 cap()
+        return pv, n
+    return _preview(value, rows=rows)
+
+
 def _to_py(v):
     """proto Map/Repeated → 纯 python(可 JSON 序列化)。"""
     if isinstance(v, dict):
@@ -850,7 +868,7 @@ def _make_executor(sandbox, trace, schema, session_id, owner: str = "anon",
         elif name == "semantic_search":
             pv, n = _preview(nr.value, rows=20, cell=300)               # k≤20 行全给,snippet 别砍太狠
         elif name == "sql_query":
-            pv, n = _preview(nr.value, rows=SQL_PREVIEW_ROWS)           # 列举类:看到更多行,别只看 3 行就编/漏
+            pv, n = _preview_sql(nr.value, rows=SQL_PREVIEW_ROWS)       # 列举类:看到更多行,别只看 3 行就编/漏
         else:
             pv, n = _preview(nr.value)
         return ExecResult(ok=nr.ok, value=nr.value, preview=pv, n=n, stderr=nr.stderr,
