@@ -60,10 +60,32 @@ SPECS: dict[str, NodeSpec] = {
             "—— 那是要个答案,(必要时先 sql_query COUNT 一下)直接文字答「有,N 个」,别因为句子里出现「视频」"
             "二字就来 show_video 把它们全播出来】。用户要看/要播的,【最终必须由本工具交付】——"
             "哪怕是靠 analyze_video 挑出来的(analyze 是你自己看,不产生用户可见的视频)。最多 8 个。"
+            "【要逐个标注就用 inputs.items(给了以它为准,顺序即展示顺序)】:标了 category "
+            "每个视频下面会出一个类目 chip(用户一眼看出这批是什么、能按类目筛);标了 start_ts/end_ts "
+            "用户点进去直接跳到那一段,不用自己拖进度条。"
         ),
         parameters=_obj(
             {"video_ids": {"type": "array", "items": {"type": "string"},
-                           "description": "要展示的 video_id 列表;省略则取上游节点结果行里的 video_id"}},
+                           "description": "要展示的 video_id 列表;省略则取上游节点结果行里的 video_id"},
+             "items": {
+                 "type": "array",
+                 "description": "可选:带标注的展示清单;给了就【以它为准】(顺序即展示顺序),"
+                                "此时忽略 video_ids 和上游行。你已经知道每个视频是什么类、"
+                                "该看哪一段时用它 —— 这些标注只有放进这里前端才看得见。",
+                 "items": {
+                     "type": "object",
+                     "properties": {
+                         "video_id": {"type": "string",
+                                      "description": "真实 video_id(不是「第 N 个」这种对用户的说法)"},
+                         "category": {"type": "string",
+                                      "description": "该视频所属大类,从【受控大类词表】里挑"
+                                                     "(中文说法也认);拿不准就别填,别自造词"},
+                         "start_ts": {"type": "number", "description": "片段起点(秒)"},
+                         "end_ts": {"type": "number", "description": "片段终点(秒)"},
+                     },
+                     "required": ["video_id"],
+                 },
+             }},
         ),
     ),
     "show_table": NodeSpec(
