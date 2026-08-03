@@ -46,6 +46,7 @@ class NodeResult:
     table: dict = field(default_factory=dict)      # show_table 的侧信道:{columns, rows, n} 原样出表格
     stat: dict = field(default_factory=dict)       # show_stat 的侧信道:{items:[{label,value,unit}], caption}
     cache_hit: bool = False                        # M4.2:analyze_video 命中缓存(供度量)
+    error_code: str = ""                           # A4:机器可判的失败码(如 ANALYZE_FAILED),空=无
 
 
 # ── 上游数据注入 ──────────────────────────────
@@ -322,10 +323,38 @@ def _resolve_gcs(vid: str) -> str | None:
     return rows[0].get("gcs_uri") if rows else None
 
 
-def _run_analyze_video(node: Node, upstream: dict[str, Any]) -> NodeResult:
+def _analyze_estimate(model: str) -> float:
+    """A7+:本次 analyze 向成本护栏预留多少钱 —— 按【本请求实际生效的档位】选,
+    与 loop_driver._is_pro_analyze() 同口径(这里直接读已解析出的 model,更准)。
+
+    【明令禁止】调大 TREE_ANALYZE_ESTIMATE_USD、或乘 RETRY_LIMIT 系数:一律按 pro 悲观估价
+    会让【一步内并行 3 个 analyze】在实花 $0.13 时就顶掉 $0.80 的闸(Phase 1 主跑实测,
+    20 倍高估),而且专挑"看视频多"的路径罚 —— 反了。下沉之后每次真实 generate 各预留一次,
+    笔数天然对得上,不需要任何系数。
+    """
+    from pipeline import config as _cfg
+    return (_cfg.TREE_ANALYZE_ESTIMATE_USD if "pro" in (model or "").lower()
+            else _cfg.TREE_CALL_ESTIMATE_USD)
+
+
+def _guard_hooks(guard, model: str, vid: str):
+    """把 TreeGuard 包成 analyze 重试循环认得的 (admit, settle) 一对。guard=None → (None, None),
+    行为与下沉之前逐字节一致。"""
+    if guard is None:
+        return None, None
+    est = _analyze_estimate(model)
+    what = f"工具 analyze_video(video_id={vid})"
+    return (lambda: guard.admit(estimate=est, what=what)), (lambda: guard.settle(est))
+
+
+def _run_analyze_video(node: Node, upstream: dict[str, Any], guard=None) -> NodeResult:
     """主进程节点:用多模态模型【现场看一段视频】回答 inputs.question,返回最小信封。
-    缓存命中直接返回(不查 gcs / 不调 Gemini);miss 才解析 gcs_uri 并 analyze(库内 fail-open)。"""
-    from perception.analyze_video_contextual import AnalyzeRequest, analyze, FAILURE_ANSWER_PREFIX
+    缓存命中直接返回(不查 gcs / 不调 Gemini);miss 才解析 gcs_uri 并真看。
+
+    A4:没看成就是【没看成】—— ok=False + error_code,不再回一个"看过了但看不清"的成功信封。
+    A7+:guard 非空时,成本护栏的 admit/settle 下沉进重试循环,每次真实 generate 记一笔。
+    """
+    from perception.analyze_video_contextual import AnalyzeRequest, analyze_with_outcome
     from pipeline import analyze_cache
 
     parsed = _analyze_inputs(node, upstream)
@@ -335,10 +364,11 @@ def _run_analyze_video(node: Node, upstream: dict[str, Any]) -> NodeResult:
                               stderr="analyze_video 需要 inputs.question")
         return NodeResult(node.id, node.tool, ok=False, attempts=1,
                           stderr="analyze_video 需要一个具体 video_id(inputs.video_id 或上游含 video_id)")
-    question, vid, time_range, _model, ckey = parsed
+    question, vid, time_range, model, ckey = parsed
 
     dump = analyze_cache.get(ckey)                    # M4.1 缓存:命中不再调 Gemini(也不查 gcs)
     cache_hit = dump is not None
+    attempts = 0                                      # 缓存命中 = 一次 LLM 都没发,如实记 0
     if dump is None:
         try:
             gcs = _resolve_gcs(vid)
@@ -350,13 +380,34 @@ def _run_analyze_video(node: Node, upstream: dict[str, Any]) -> NodeResult:
                               stderr=f"找不到 video_id={vid} 的 gcs_uri")
         req = AnalyzeRequest(question=question, context=node.inputs.get("context"),
                              rubric=node.inputs.get("rubric"), time_range=time_range)
-        dump = analyze(req, gcs).model_dump()         # 看视频 → 最小信封
-        if not str(dump.get("answer", "")).startswith(FAILURE_ANSWER_PREFIX):
-            analyze_cache.put(ckey, dump)             # 失败信封不缓存(避免钉死瞬时报错)
-            _index_analyze_result(vid, dump, ckey)    # V1:顺手入语义索引(旁路,fail-open)
+        admit, settle = _guard_hooks(guard, model, vid)
+        out = analyze_with_outcome(req, gcs, admit=admit, settle=settle)   # 看视频
+        attempts = out.attempts
+        if not out.ok:
+            # A4 的要害:失败【不写成功缓存、不进语义索引】——否则"看不清"会被当证据
+            # 永久存进 content_embeddings,以后每次检索都召回一条假证据。
+            return NodeResult(node.id, node.tool, ok=False, attempts=attempts,
+                              error_code=out.error_code or "",
+                              stderr=_analyze_error_note(out, vid))
+        dump = out.result.model_dump()
+        analyze_cache.put(ckey, dump)
+        _index_analyze_result(vid, dump, ckey)        # V1:顺手入语义索引(旁路,fail-open)
     # value:video_id 在前、answer 紧随 → loop preview 露出"哪个视频 + 结论(前置)+ enough"
-    return NodeResult(node.id, node.tool, ok=True, attempts=1, cache_hit=cache_hit,
+    return NodeResult(node.id, node.tool, ok=True, attempts=attempts, cache_hit=cache_hit,
                       value={"video_id": vid, **dump})
+
+
+def _analyze_error_note(out, vid: str) -> str:
+    """回喂大脑的失败说明。核心是那句"【没有被分析过】"—— 假成功的真实危害是下游把它
+    当成"看过了、结论是看不清",于是既不重试也不换路,还可能拿它当证据下结论。"""
+    from perception.analyze_video_contextual import ERROR_GUARD_BLOCKED
+    if out.error_code == ERROR_GUARD_BLOCKED:
+        # 护栏信封本身就是给大脑读的指令,放最前面(loop 回喂时按 300 字截尾,别让它被切掉)
+        return f"{out.error}(video_id={vid} 这次【没有被分析】,一分钱没花)"
+    return (f"analyze_video 没看成 video_id={vid}:连试 {out.attempts} 次都失败"
+            f"[{str(out.error)[:120]}]。这个视频【没有被分析过】—— 不要当成"
+            f"「看过了但看不清」,更不要拿它当证据下结论;要么换个视频/时间段再试,"
+            f"要么如实说这个视频未核查。")
 
 
 # ── 沙箱类(CodeGen + 沙箱执行 + 自愈)───────────────
@@ -693,8 +744,10 @@ def _index_analyze_result(video_id: str, dump: dict, content_key: str) -> None:
         vecs = embed_texts([entry[1]])
         if vecs:
             index_entry(video_id, "analyze", entry, vec_literal(vecs[0]))
-    except Exception:
-        pass
+    except Exception as e:
+        # A8:仍然 fail-open(索引是旁路,绝不拖垮本轮作答),但【不许静音】——
+        # 裸 pass 会让"索引一直没写进去"这类故障永远查不出来。
+        log.warning("语义索引写入失败(已跳过,不影响本轮作答) video_id=%s: %r", video_id, e)
 
 
 def _run_update_memory(node: Node, owner: str) -> NodeResult:
@@ -712,8 +765,12 @@ def execute_node(node: Node, upstream: dict[str, Any],
                  sandbox: SandboxClient, trace: Trace,
                  schema: dict | None = None,
                  *, session_id: str | None = None, owner: str = "anon",
-                 loop_execute=None) -> NodeResult:
+                 loop_execute=None, guard=None) -> NodeResult:
     # loop_execute:父 loop 的 execute 闭包(仅 spawn_agents 需要 —— 子 agent 复用它以共享 analyze 配额)。
+    # guard:A7+ B 方案下沉用的 TreeGuard。默认 None = 不下沉,行为与升级前逐字节一致;
+    #   传进来时 analyze 的 admit/settle 挂到【每次真实 generate】上(记账笔数 = LLM 调用次数)。
+    #   调用侧(loop_driver._make_executor)必须【同时】把 analyze_video 排除出外层那次 admit,
+    #   否则外 1 笔 + 内 N 笔 = 记账多算一笔。
     # sql_query:自管 trace + 自愈(对称 _run_sandbox_node)
     if node.tool == "sql_query":
         return _run_sql_query(node, schema or {}, trace)
@@ -729,7 +786,7 @@ def execute_node(node: Node, upstream: dict[str, Any],
             elif node.tool == "show_stat":
                 res = _run_show_stat(node, upstream)
             elif node.tool == "analyze_video":
-                res = _run_analyze_video(node, upstream)
+                res = _run_analyze_video(node, upstream, guard=guard)
             elif node.tool == "web_search":
                 res = _run_web_search(node)
             elif node.tool == "update_memory":

@@ -16,8 +16,16 @@ except (AttributeError, OSError):
     pass
 
 from perception.analyze_video_contextual import (
-    AnalyzeRequest, AnalyzeResult, analyze, build_prompt,
+    ERROR_ANALYZE_FAILED, ERROR_GUARD_BLOCKED, RETRY_LIMIT,
+    AnalyzeRequest, AnalyzeResult, analyze_with_outcome, build_prompt,
 )
+
+
+def analyze(req, gcs_uri, **kw):
+    """本文件的便利壳 —— A4 之后库函数是 analyze_with_outcome();下面这批老用例只关心
+    【解析/容错】行为,取 .result 即可。失败码与尝试次数的断言见本文件末尾的 outcome 专项。
+    (这是测试内的壳,不是生产 facade:生产调用点只有 analyze_with_outcome 一条路。)"""
+    return analyze_with_outcome(req, gcs_uri, **kw).result
 
 
 def _gen(payload):
@@ -115,6 +123,57 @@ def test_missing_answer_fails_open():
     r = analyze(AnalyzeRequest(question="x"), "gs://b/v.mp4",
                 generate=_gen({"enough": "yes", "confidence": 0.9}))
     assert r.enough == "no"
+
+
+# ── A4:失败要有交代(error_code + 真实 attempts),不许伪装成"看过了"──────────
+def test_outcome_ok_on_success():
+    out = analyze_with_outcome(AnalyzeRequest(question="x"), "gs://b/v.mp4",
+                               generate=_gen({"answer": "a", "enough": "yes"}))
+    assert out.ok and out.error_code is None and out.attempts == 1
+
+
+def test_outcome_reports_failure_and_real_attempts():
+    def boom(gcs_uri, prompt, time_range=None):
+        raise RuntimeError("API down")
+    out = analyze_with_outcome(AnalyzeRequest(question="x"), "gs://b/v.mp4", generate=boom)
+    assert not out.ok and out.error_code == ERROR_ANALYZE_FAILED
+    assert out.attempts == RETRY_LIMIT + 1        # 真实次数,不是写死的 1
+    assert "API down" in out.error
+
+
+# ── A7+:admit/settle 下沉到每次真实 generate ──────────────────────────────
+def test_admit_settle_called_once_per_generate():
+    calls = {"gen": 0, "admit": 0, "settle": 0}
+
+    def boom(gcs_uri, prompt, time_range=None):
+        calls["gen"] += 1
+        raise RuntimeError("boom")
+
+    def admit():
+        calls["admit"] += 1
+        return None
+
+    def settle():
+        calls["settle"] += 1
+    out = analyze_with_outcome(AnalyzeRequest(question="x"), "gs://b/v.mp4",
+                               generate=boom, admit=admit, settle=settle)
+    assert calls["gen"] == RETRY_LIMIT + 1
+    assert calls["admit"] == calls["gen"]          # 记账笔数 == 真实 LLM 调用次数
+    assert calls["settle"] == calls["gen"]         # 预留全部释放,不泄漏
+    assert out.attempts == calls["gen"]
+
+
+def test_admit_block_stops_before_generate():
+    calls = {"gen": 0}
+
+    def gen(gcs_uri, prompt, time_range=None):
+        calls["gen"] += 1
+        return '{"answer":"a"}'
+    out = analyze_with_outcome(AnalyzeRequest(question="x"), "gs://b/v.mp4",
+                               generate=gen, admit=lambda: "[系统·成本护栏] 没钱了")
+    assert calls["gen"] == 0                       # 一次都没发出去 = 一分钱没花
+    assert not out.ok and out.error_code == ERROR_GUARD_BLOCKED and out.attempts == 0
+    assert "成本护栏" in out.error
 
 
 # ── M4.5/P1:time_range 硬裁剪(genai 的 Part 真带上 VideoMetadata 偏移)────────

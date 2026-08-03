@@ -716,3 +716,170 @@ class _NRok:
     ok, value, stderr, code, artifact, videos, table, stat, cache_hit = \
         True, {"answer": "看了", "enough": "yes"}, "", None, {}, [], {}, {}, False
     attempts = 1
+
+
+# ── A7+ B 方案下沉:admit/settle 进 analyze 的重试循环 ────────────────────────
+class _FakeTrace:
+    class _S:
+        def ok(self, **k): pass
+        def fail(self, **k): pass
+        def soft(self, *a, **k): pass
+        def bill(self, **k): pass
+    def step(self, *a, **k): return self._S()
+
+
+def _analyze_node(vid="v1"):
+    from pipeline.dag_schema import Node
+    return Node(id="c0", tool="analyze_video", inputs={"video_id": vid, "question": "q"})
+
+
+def _count_admits(g, monkeypatch):
+    """把 guard.admit/settle 包一层计数(仍走真实实现)。返回计数字典。"""
+    n = {"admit": 0, "settle": 0}
+    real_admit, real_settle = g.admit, g.settle
+
+    def counting_admit(**kw):
+        n["admit"] += 1
+        return real_admit(**kw)
+
+    def counting_settle(*a, **kw):
+        n["settle"] += 1
+        return real_settle(*a, **kw)
+    monkeypatch.setattr(g, "admit", counting_admit)
+    monkeypatch.setattr(g, "settle", counting_settle)
+    return n
+
+
+def _inject_failing_generate(monkeypatch):
+    """注入一个必失败的 generate,并统计【真实 LLM 调用次数】。"""
+    import perception.analyze_video_contextual as AV
+    from pipeline import analyze_cache, mcp_client as mc
+    analyze_cache.clear()
+    monkeypatch.setattr(mc, "query_db", lambda sql: [{"gcs_uri": "gs://b/v.mp4"}])
+    calls = {"n": 0}
+
+    def boom(gcs_uri, prompt, time_range=None):
+        calls["n"] += 1
+        raise RuntimeError("API down")
+    monkeypatch.setattr(AV, "_gemini_generate", boom)
+    return calls
+
+
+def test_admit_count_equals_real_llm_calls_in_analyze_retries(monkeypatch):
+    """A7+ 验收:注入必失败的 generate → 断言 TreeGuard.admit 的【调用笔数】==【真实 LLM
+    调用次数】。下沉之前是 1 vs 3(admit 每工具调用记一笔,而 3 次重试藏在 analyze 函数
+    内部、对 guard 完全不可见)—— 记账错 3 倍。
+
+    刻意【不】断言 usage.summarize()["cost_usd"]:那个今天跑就是绿的(每次 generate 都
+    add_usage 事后落账),断言对象写错这条就白做。
+    """
+    import perception.analyze_video_contextual as AV
+    from pipeline import node_executor as ne
+    calls = _inject_failing_generate(monkeypatch)
+    g = TreeGuard(cost_cap=10.0, call_estimate=0.05)      # cap 给足,不让它中途触闸
+    n = _count_admits(g, monkeypatch)
+
+    res = ne.execute_node(_analyze_node(), {}, None, _FakeTrace(), guard=g)
+
+    assert calls["n"] == AV.RETRY_LIMIT + 1               # 真实发了 3 次 LLM 调用
+    assert n["admit"] == calls["n"], f"记账 {n['admit']} 笔 vs 真实 {calls['n']} 次调用"
+    assert n["settle"] == calls["n"]                      # 配对释放
+    assert g._pending == 0.0                              # 在飞预留没泄漏
+    assert not res.ok and res.attempts == calls["n"]      # A4:失败就是失败,attempts 说真话
+
+
+def test_no_guard_param_keeps_old_behaviour(monkeypatch):
+    """不传 guard(= 今天 loop_driver 的调用形状)时一笔都不记,行为与下沉前逐字节一致。"""
+    import perception.analyze_video_contextual as AV
+    from pipeline import node_executor as ne
+    calls = _inject_failing_generate(monkeypatch)
+    g = TreeGuard(cost_cap=10.0, call_estimate=0.05)
+    n = _count_admits(g, monkeypatch)
+
+    res = ne.execute_node(_analyze_node(), {}, None, _FakeTrace())   # 不传 guard
+
+    assert calls["n"] == AV.RETRY_LIMIT + 1
+    assert n["admit"] == 0 and n["settle"] == 0
+    assert not res.ok
+
+
+def test_analyze_estimate_follows_model_tier_not_retry_count(monkeypatch):
+    """预留口径不许因为下沉而变大:仍按【实际生效档位】二选一,且【不乘 RETRY_LIMIT 系数】。
+    一律按 pro 估价会让一步内并行 3 个 analyze 在实花 $0.13 时顶掉 $0.80 的闸(20 倍高估)。"""
+    import perception.analyze_video_contextual as AV
+    from pipeline import node_executor as ne
+    monkeypatch.setattr(config, "TREE_CALL_ESTIMATE_USD", 0.05)
+    monkeypatch.setattr(config, "TREE_ANALYZE_ESTIMATE_USD", 0.30)
+    assert ne._analyze_estimate("gemini-2.5-flash") == 0.05
+    assert ne._analyze_estimate("gemini-2.5-pro") == 0.30
+    # 关键:单次预留 == 单次估价,没有被 RETRY_LIMIT+1 放大
+    assert ne._analyze_estimate("gemini-2.5-pro") == config.TREE_ANALYZE_ESTIMATE_USD
+
+    calls = _inject_failing_generate(monkeypatch)
+    seen = []
+    g = TreeGuard(cost_cap=10.0, call_estimate=0.05)
+    real_admit = g.admit
+    monkeypatch.setattr(g, "admit",
+                        lambda **kw: (seen.append(kw.get("estimate")), real_admit(**kw))[1])
+    tok = AV.MODEL_OVERRIDE.set("gemini-2.5-pro")
+    try:
+        ne.execute_node(_analyze_node(), {}, None, _FakeTrace(), guard=g)
+    finally:
+        AV.MODEL_OVERRIDE.reset(tok)
+    assert calls["n"] == AV.RETRY_LIMIT + 1
+    assert seen == [0.30] * calls["n"]                    # 每笔都是【单次】pro 估价
+
+
+def test_guard_block_stops_analyze_without_spending(monkeypatch):
+    """已超支时 analyze 一次 LLM 都不发,并把护栏信封原文交回(大脑要读得到收口指令)。"""
+    import perception.analyze_video_contextual as AV
+    from pipeline import node_executor as ne
+    calls = _inject_failing_generate(monkeypatch)
+    g = TreeGuard(cost_cap=0.10, call_estimate=0.05)
+    _spend(0.50)                                          # 已经超支 → 第一次 admit 必拦
+
+    res = ne.execute_node(_analyze_node(), {}, None, _FakeTrace(), guard=g)
+
+    assert calls["n"] == 0                                # 一分钱没花
+    assert not res.ok and res.error_code == AV.ERROR_GUARD_BLOCKED
+    assert res.attempts == 0
+    assert "成本护栏" in res.stderr and res.stderr.index("成本护栏") < 20   # 信封在最前,别被截尾切掉
+
+
+# ── A4:失败不写成功缓存、不进语义索引 ──────────────────────────────────
+def test_failed_analyze_never_reaches_cache_or_semantic_index(monkeypatch):
+    """假成功最毒的一处:失败信封曾被 _index_analyze_result 写进 content_embeddings ——
+    等于把"看不清"当证据永久存进生产库,以后每次检索都召回一条假证据。"""
+    import perception.analyze_video_contextual as AV
+    from pipeline import analyze_cache, node_executor as ne
+    calls = _inject_failing_generate(monkeypatch)
+    indexed = []
+    monkeypatch.setattr(ne, "_index_analyze_result",
+                        lambda vid, dump, key: indexed.append(vid))
+
+    res = ne.execute_node(_analyze_node(), {}, None, _FakeTrace())
+
+    assert calls["n"] == AV.RETRY_LIMIT + 1
+    assert indexed == [], "失败结果绝不能进语义索引"
+    assert analyze_cache.size() == 0, "失败结果绝不能写成功缓存"
+    assert not res.ok and res.error_code == AV.ERROR_ANALYZE_FAILED
+    assert "没有被分析过" in res.stderr          # 下游不许再当成"看过了、结论是看不清"
+
+
+# ── A7+ 启动校验:配置别把 analyze 配死 ─────────────────────────────────
+def test_startup_check_rejects_cap_below_one_analyze():
+    """cap < 单次预留 → pro 档 analyze 一次都进不来,且第一次拦下就触闸整棵树 → 拒绝启动。"""
+    with pytest.raises(ValueError) as e:
+        config._validate_tree_guard_budget(0.20, 0.30, 3)
+    assert "MAX_TREE_COST_USD" in str(e.value) and "0.9" in str(e.value)
+
+
+def test_startup_check_warns_when_parallel_burst_would_trip():
+    """够单次但不够满并行 → 不拒绝启动,但必须告警(以前是【静默】拦死,没有任何提示)。"""
+    w = config._validate_tree_guard_budget(0.80, 0.30, 3)
+    assert w and "0.9" in w and "MAX_ANALYZE_PARALLEL" in w
+
+
+def test_startup_check_silent_when_satisfied_or_disabled():
+    assert config._validate_tree_guard_budget(0.90, 0.30, 3) == ""
+    assert config._validate_tree_guard_budget(0, 0.30, 3) == ""      # 0 = 熔断关,不受约束

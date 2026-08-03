@@ -47,15 +47,18 @@ def _label_once(video_id: str, predicate: str, model: str) -> dict:
     """看一遍视频出一次标注。异常 → {'error': ...}(不炸整批)。"""
     from pipeline.agentops import usage
     from pipeline.node_executor import _resolve_gcs
-    from perception.analyze_video_contextual import MODEL_OVERRIDE, AnalyzeRequest, analyze
+    from perception.analyze_video_contextual import (
+        MODEL_OVERRIDE, AnalyzeRequest, analyze_with_outcome)
     gcs = _resolve_gcs(video_id)
     if not gcs:
         return {"error": "no gcs_uri"}
     q = PROMPT.format(pred_zh=PRED_ZH.get(predicate, predicate))
     tok = MODEL_OVERRIDE.set(model)          # 预标走 pro(红队 C4:别用 flash 考 flash)
     try:
-        res = analyze(AnalyzeRequest(question=q), gcs)
-        raw = getattr(res, "answer", None) or str(res)
+        out = analyze_with_outcome(AnalyzeRequest(question=q), gcs)   # A4:analyze 改签名
+        if not out.ok:                            # 没看成就是没看成,别把失败信封当标注
+            return {"error": f"{out.error_code}: {str(out.error)[:160]}"}
+        raw = getattr(out.result, "answer", None) or str(out.result)
     except Exception as e:
         return {"error": repr(e)[:200]}
     finally:

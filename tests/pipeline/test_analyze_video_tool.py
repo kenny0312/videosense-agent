@@ -37,22 +37,27 @@ def test_registered_everywhere():
 
 
 # ── _run_analyze_video(桩 mcp + analyze)────────────
+def _ok(result):
+    """A4:库函数返回 AnalyzeOutcome —— 桩里包一层"看成了"的信封。"""
+    return AVC.AnalyzeOutcome(result=result, attempts=1)
+
+
 def _stub(query_db, analyze):
-    saved = (NE.mcp_client.query_db, AVC.analyze)
+    saved = (NE.mcp_client.query_db, AVC.analyze_with_outcome)
     NE.mcp_client.query_db = query_db
-    AVC.analyze = analyze
+    AVC.analyze_with_outcome = analyze
     return saved
 
 
 def _restore(saved):
-    NE.mcp_client.query_db, AVC.analyze = saved
+    NE.mcp_client.query_db, AVC.analyze_with_outcome = saved
 
 
 def test_run_happy_path():
     saved = _stub(
         lambda sql: [{"gcs_uri": "gs://b/v.mp4"}],
-        lambda req, gcs, **k: AVC.AnalyzeResult(answer="8/10 近地穿越", enough="yes",
-                                                confidence=0.8, evidence_ts=42.0))
+        lambda req, gcs, **k: _ok(AVC.AnalyzeResult(answer="8/10 近地穿越", enough="yes",
+                                                    confidence=0.8, evidence_ts=42.0)))
     try:
         node = Node(id="c0", tool="analyze_video",
                     inputs={"video_id": "GX010533", "question": "多帅?", "rubric": "近地=帅"})
@@ -75,7 +80,7 @@ def test_run_video_id_from_upstream():
 
     def fake_analyze(req, gcs, **k):
         captured["gcs"] = gcs
-        return AVC.AnalyzeResult(answer="ok", enough="yes")
+        return _ok(AVC.AnalyzeResult(answer="ok", enough="yes"))
     saved = _stub(lambda sql: [{"gcs_uri": "gs://b/up.mp4"}], fake_analyze)
     try:
         node = Node(id="c0", tool="analyze_video", inputs={"question": "在干嘛?"})
