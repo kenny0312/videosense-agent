@@ -90,6 +90,146 @@ def test_enrich_endpoint_validation(monkeypatch):
     assert c.post("/v1/enrich", json={"video_id": "good_1"}).json()["status"] == "started"
 
 
+# ── A8(P0-5):enrich 判死 —— 死线按素材时长 / 状态位 / 查询端点 ───────────────
+def _srv():
+    import api.server as srv
+    return srv
+
+
+def _clear_enrich_status():
+    srv = _srv()
+    with srv._ENRICH_LOCK:
+        srv._ENRICH_STATUS.clear()
+
+
+def test_enrich_deadline_scales_with_duration():
+    """死线口径 max(5min, min(60min, 2×时长))—— 关键是它【看时长】:
+    taskstate.TASK_LEASE_MIN 那种常数会给 10 秒短片和 3 小时讲座同一个数。"""
+    srv = _srv()
+    f, cap = srv.ENRICH_DEADLINE_FLOOR_SEC, srv.ENRICH_DEADLINE_CAP_SEC
+    assert srv._enrich_deadline_sec(10) == f                 # 10s 短片:下限兜着
+    assert srv._enrich_deadline_sec(600) == 1200             # 10min:正好 2×
+    assert srv._enrich_deadline_sec(3 * 3600) == cap         # 3h:封顶
+    assert srv._enrich_deadline_sec(30) != srv._enrich_deadline_sec(3600)   # 常数做不到这条
+
+
+def test_enrich_deadline_unknown_duration_gets_full_leash():
+    """测不到时长 → 给上限,绝不误杀。判死是为了让卡住的活有终点,不是为了砍慢活。"""
+    srv = _srv()
+    cap = srv.ENRICH_DEADLINE_CAP_SEC
+    bad_values = (None, 0, -5, "abc", "", float("nan"), float("inf"), [1])
+    for bad in bad_values:
+        # 端到端口径(端点走的这条):脏值先被 _hinted_duration_sec 归一
+        assert srv._enrich_deadline_sec(srv._hinted_duration_sec(bad)) == cap
+        # 直喂口径:_enrich_deadline_sec 自己也必须扛住脏值,不许依赖上游先洗一遍
+        assert srv._enrich_deadline_sec(bad) == cap, f"{bad!r} 应归到测不到一档 → 给满绳"
+    assert srv._hinted_duration_sec(42.5) == 42.5            # 正常值原样透传
+    assert srv._hinted_duration_sec("42.5") == 42.5
+
+
+def _enrich_client(monkeypatch, *, enrich_fn, already=lambda vid: False):
+    from fastapi.testclient import TestClient
+    from pipeline import config, enrichment as en, node_executor as ne
+    srv = _srv()
+    monkeypatch.setattr(srv, "_ACCESS_KEYS", [])                 # 关掉鉴权中间件(同既有端点单测)
+    monkeypatch.setattr(config, "USE_SEMANTIC_SEARCH", True)
+    monkeypatch.setattr(en, "already_enriched", already)
+    monkeypatch.setattr(ne, "_resolve_gcs", lambda vid: "gs://b/x.mp4")
+    monkeypatch.setattr(en, "enrich_video", enrich_fn)
+    _clear_enrich_status()
+    return TestClient(srv.app)
+
+
+def _poll_status(c, vid: str, want: str, timeout: float = 5.0) -> dict:
+    import time
+    js: dict = {}
+    end = time.time() + timeout
+    while time.time() < end:
+        js = c.get(f"/v1/enrich/{vid}").json()
+        if js.get("status") == want:
+            return js
+        time.sleep(0.02)
+    return js
+
+
+def test_enrich_status_ok_path(monkeypatch):
+    """跑完了:状态位落 ok,结果原样可查(旧实现只 log 一行,外面查不到任何东西)。"""
+    c = _enrich_client(monkeypatch, enrich_fn=lambda vid, gcs: {"rows": 7})
+    r = c.post("/v1/enrich", json={"video_id": "up_ok1", "duration_sec": 600}).json()
+    assert r["status"] == "started" and r["deadline_sec"] == 1200      # 2×10min
+    js = _poll_status(c, "up_ok1", "ok")
+    assert js["status"] == "ok" and js["result"] == {"rows": 7} and js["deadline_sec"] == 1200
+
+
+def test_enrich_status_failed_path(monkeypatch):
+    """里面炸了:状态位落 failed 带错因,且【worker 不崩】(端点仍能继续服务)。"""
+    def boom(vid, gcs):
+        raise RuntimeError("genai 挂了")
+    c = _enrich_client(monkeypatch, enrich_fn=boom)
+    assert c.post("/v1/enrich", json={"video_id": "up_bad1"}).json()["status"] == "started"
+    js = _poll_status(c, "up_bad1", "failed")
+    assert js["status"] == "failed" and "genai 挂了" in js["error"] and not js.get("timeout")
+    # worker 没死:同一个 client 还能再接一单
+    assert c.post("/v1/enrich", json={"video_id": "up_bad2"}).json()["status"] == "started"
+
+
+def test_enrich_deadline_kills_hung_work_and_records_late_outcome(monkeypatch):
+    """卡住的活到点判死 → failed(timeout);它日后真跑完 → 只补记 late_status,不翻案。"""
+    import threading
+    srv = _srv()
+    release = threading.Event()
+
+    def hang(vid, gcs):
+        release.wait(10)
+        return {"rows": 1}
+
+    c = _enrich_client(monkeypatch, enrich_fn=hang)
+    monkeypatch.setattr(srv, "_enrich_deadline_sec", lambda d: 0.2)    # 别让单测真等 5 分钟
+    assert c.post("/v1/enrich", json={"video_id": "up_hang"}).json()["deadline_sec"] == 0.2
+    js = _poll_status(c, "up_hang", "failed")
+    assert js["status"] == "failed" and js["timeout"] is True and "deadline exceeded" in js["error"]
+    release.set()                                                      # 放它跑完
+    end = __import__("time").time() + 5.0
+    while __import__("time").time() < end:
+        js = c.get("/v1/enrich/up_hang").json()
+        if js.get("late_status"):
+            break
+        __import__("time").sleep(0.02)
+    assert js["late_status"] == "ok" and js["status"] == "failed"      # 迟到的成功不翻案
+
+
+def test_enrich_status_endpoint_validation_and_fallback(monkeypatch):
+    """查询端点:非法 id 422;进程内没记录 → 退回"富化过没有"的探测;只读、不触发富化。"""
+    fired = []
+    c = _enrich_client(monkeypatch,
+                       enrich_fn=lambda vid, gcs: fired.append(vid),
+                       already=lambda vid: vid == "seen_1")
+    assert c.get("/v1/enrich/bad' id").status_code == 422
+    assert c.get("/v1/enrich/seen_1").json()["status"] == "already"    # 跨实例兜底
+    assert c.get("/v1/enrich/never_1").json()["status"] == "unknown"
+    assert fired == []                                                 # GET 一次也没触发富化
+
+
+def test_enrich_status_disabled_when_semantic_off(monkeypatch):
+    from fastapi.testclient import TestClient
+    from pipeline import config
+    srv = _srv()
+    monkeypatch.setattr(srv, "_ACCESS_KEYS", [])
+    monkeypatch.setattr(config, "USE_SEMANTIC_SEARCH", False)
+    assert TestClient(srv.app).get("/v1/enrich/whatever").json() == {"status": "disabled"}
+
+
+def test_enrich_status_table_is_bounded(monkeypatch):
+    """长跑进程的状态位不许无限涨(否则一个观测设施变成内存泄漏)。"""
+    srv = _srv()
+    _clear_enrich_status()
+    for i in range(srv._ENRICH_STATUS_MAX + 40):
+        srv._enrich_set(f"v{i}", "ok")
+    assert len(srv._ENRICH_STATUS) == srv._ENRICH_STATUS_MAX
+    assert "v0" not in srv._ENRICH_STATUS                              # 最早登记的先淘汰
+    _clear_enrich_status()
+
+
 def test_m2_parse_verdicts():
     """M2 证据先行重抽的解析:按谓词对齐、烂项丢弃、区间非法丢弃。"""
     from perception.setup_timestamps_v2 import parse_verdicts

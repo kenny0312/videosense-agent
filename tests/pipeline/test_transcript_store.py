@@ -177,3 +177,44 @@ def test_seq_fallback_never_reuses_names(monkeypatch):
     n1, n2 = st._next_seq_name("o:s"), st._next_seq_name("o:s")
     assert n1.startswith("t") and n2.startswith("t") and n1 != n2
     assert n1 > "999999999"                             # 字典序在所有数字名之后
+
+
+# ── A6:溢出对象按 turn 分层 —— 同一会话第二轮不再覆盖第一轮 ──────────────
+from pipeline.transcript_store import _blob_name, _event_key
+
+
+def test_event_key_carries_turn_and_rejects_junk():
+    assert _event_key({"event_id": "c0_1", "turn": 0}) == "0/c0_1"
+    assert _event_key({"event_id": "c0_1", "turn": 3}) == "3/c0_1"
+    assert _event_key({"turn": 2}) == "2/evt"                       # 无 event_id 走占位名
+    assert _event_key({"event_id": "c0_1"}) == "c0_1"               # 无 turn → 退回裸 id(fail-open)
+    assert _event_key({"event_id": "c0_1", "turn": -1}) == "c0_1"   # 负轮号不进路径
+    assert _event_key({"event_id": "c0_1", "turn": True}) == "c0_1"  # bool 是 int 的子类,得挡掉
+    assert _event_key({"event_id": "c0_1", "turn": "2/../../x"}) == "c0_1"   # 字符串不许拼进对象路径
+
+
+def test_blob_name_layout_has_turn_segment():
+    """路径口径:tool-results/{owner}/{sid}/{turn}/{event_id}.json。"""
+    key = _event_key({"event_id": "c1_0", "turn": 2})
+    assert _blob_name("alice", "s1", key) == "tool-results/alice/s1/2/c1_0.json"
+    assert _blob_name("alice", "s1", _event_key({"event_id": "c1_0"})) == \
+        "tool-results/alice/s1/c1_0.json"                            # 无 turn 时与老路径一致
+
+
+def test_two_turns_with_same_cid_do_not_overwrite():
+    """真实回归:cid 按【本轮步序】编号(c{step}_{i}),所以第二轮的第一个工具结果
+    与第一轮的必然重名 —— 不带 turn 的路径会把第一轮那份大本体原地覆盖掉。"""
+    st = InMemoryTranscriptStore()
+    keys = []
+
+    def bp(o, s, e, v):
+        keys.append(e)
+        return f"gs://b/{e}"
+
+    big = [{"k": "x" * 200} for _ in range(50)]
+    refs = [append_event(st, "a", "s1",
+                         {"type": "tool_result", "turn": t, "event_id": "c0_0", "value": big},
+                         blob_put=bp, overflow_bytes=1024)["result_ref"]
+            for t in (1, 2)]
+    assert keys == ["1/c0_0", "2/c0_0"]
+    assert len(set(keys)) == 2 and len(set(refs)) == 2               # 两轮各自一个对象,不撞名
