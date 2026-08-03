@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+import uuid
 from typing import Any, TYPE_CHECKING
 
 from pipeline import config, mcp_client
@@ -53,7 +54,8 @@ def _result(ok: bool, *, trace: Trace, dag: DAG | None = None,
             fail_node: str | None = None, error: str = "",
             status: str | None = None, reason: str = "",
             session_id: str | None = None, turn_type: str = "new",
-            loop_meta: dict | None = None, context: dict | None = None) -> dict:
+            loop_meta: dict | None = None, context: dict | None = None,
+            can_continue: bool = False) -> dict:
     _maybe_dump_trace(trace, session_id, status or ("ok" if ok else "error"))
     results = results or {}
     generated_code = {nid: r.code for nid, r in results.items() if r.code}
@@ -79,6 +81,9 @@ def _result(ok: bool, *, trace: Trace, dag: DAG | None = None,
         "trace": trace.as_list(),
         "trace_summary": trace.summary_line(),
         "loop": loop_meta,                                # M6:loop 审计指标(steps/terminated/tool_calls);dag 路径为 None
+        # A1:这一轮是【部分交付】(步数用完了,不是出错),用户可以自己决定要不要接着问。
+        # 只是个标志 —— 系统绝不据此自动把剩下的活转成后台任务继续跑(没点头就花钱是红线)。
+        "can_continue": can_continue,
         "context": context,                               # 前端 context 监控环:{replay_tokens, budget}(仅 loop 路径)
         "usage": usage.summarize(),                       # 本轮 LLM token 总计 + 估算成本(含自愈重试)
     }
@@ -142,19 +147,31 @@ def run_query(nl: str, *, quiet_trace: bool = False,
     # 瞬时失败(重试后仍抖 / 未收敛)→ 给【优雅的重试提示】而非原始崩溃卡片。
     # (Pandora 对照测的镜像教训:别把抖动伪装成"库空"的假结果,也别把它甩成 error;诚实说"这次没成,再试一次"。)
     _RETRY_MSG = "抱歉,这次没能完成 —— 可能是临时的服务波动。请再发一次,或把问题说得更具体一点。"
+    # A2:本请求的短前缀,拼进 result_id —— 上一轮的 id 一眼可辨,不再与本轮的 c{步}_{i} 撞号。
+    req_short = uuid.uuid4().hex[:8]
     try:
         lo = loop_driver.run_query_loop(nl, schema=schema, replay_context=replay_ctx,
                                         sandbox=sandbox, trace=trace, session_id=sid,
                                         on_step=on_step, runtime_facts=rt_facts, owner=owner,
                                         image=image, model=model,
-                                        use_critic=(True if critic else None))
+                                        use_critic=(True if critic else None),
+                                        req_short=req_short)
         lstep.ok(steps=lo.steps, terminated=lo.terminated)
     except Exception as e:
         lstep.fail(error=repr(e))
         log.warning("loop 抛错(优雅降级为重试提示): %r", e)
         return _result(True, trace=trace, status="ok", answer=_RETRY_MSG,
                        session_id=sid, turn_type=ttype)
-    if lo.answer is None or not lo.answer.strip():
+    # A1:步数耗尽【单独分流】,不许再落进下面那张"瞬时波动"网。步数用完是成本护栏正常
+    # 工作的结果,不是服务抖动;而且这条路上工具往往已经跑完、show_video 已经把视频摆到
+    # 了屏幕上(实证 7 例里 4 例如此)。归到空答分支的三重代价:谎报原因、丢掉整份 ledger
+    # (视频/表格全没了)、劝用户把刚烧掉的 16 步全额重烧。这里改走【部分交付】:
+    # 沿用下面的正常路径(带 results、落 transcript、记 loop 指标),只多一个 can_continue。
+    answer = lo.answer
+    partial = lo.terminated == "max_steps"
+    if partial and not (answer or "").strip():
+        answer = loop_driver.MAX_STEPS_ANSWER      # loop_driver 已给诚实文案,这里只兜底
+    if answer is None or not answer.strip():
         # E2:空串答案也兜住 —— 已识别的安全拦截在 conversation 层换成了体面拒答;
         # 走到这的空答是"没识别出原因的空生成",按瞬时波动给重试提示,绝不把空卡片交给用户。
         log.warning("loop 未收敛或空答(%s)→ 重试提示", lo.terminated)
@@ -166,7 +183,7 @@ def run_query(nl: str, *, quiet_trace: bool = False,
         try:
             turn_no = session.next_turn()
             loop_memory.record_loop_turn(TX_STORE, owner, sid, turn_no, nl,
-                                         lo.trace, lo.results, lo.answer, blob_put=gcs_blob_put)
+                                         lo.trace, lo.results, answer, blob_put=gcs_blob_put)
         except Exception as e:
             log.warning("record_loop_turn 失败(fail-open): %r", e)
         try:
@@ -174,6 +191,7 @@ def run_query(nl: str, *, quiet_trace: bool = False,
         except Exception as e:
             log.warning("usage 累计失败(fail-open): %r", e)
     replay_tok = (len(replay_ctx) // 3) if replay_ctx else 0   # 与 loop_memory._est_tokens 同口径
-    return _result(True, trace=trace, results=lo.results, answer=lo.answer,
+    return _result(True, trace=trace, results=lo.results, answer=answer,
                    session_id=sid, turn_type=ttype, loop_meta=loop_driver.loop_metrics(lo),
+                   can_continue=partial,
                    context={"replay_tokens": replay_tok, "budget": config.LOOP_CONTEXT_TOKEN_BUDGET})

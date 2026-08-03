@@ -15,6 +15,7 @@ import logging
 import os
 import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 from dataclasses import dataclass, field
@@ -176,6 +177,39 @@ _GUARD_STOP_ANSWER = ("这次没能完成:系统在中途触发了成本护栏�
                       "而模型在给出的收口机会内没有基于已有证据作答,所以本次没有可交付的结论。"
                       "建议把问题缩小(指定视频或时间段)后再问,或调高本次请求的成本上限。")
 
+# A1:步数耗尽同样是【交付点】而不是故障 —— 这里也【绝不能返回 None】。旧写法回 None,
+# orchestrator 把它当"瞬时波动"回一句「可能是临时的服务波动。请再发一次」,三重损害:
+#   ① 归因是假的(步数用完跟服务抖动毫无关系);
+#   ② 等于劝用户把刚烧掉的 max_steps 步【全额重烧一遍】(与 _GUARD_STOP_ANSWER 同一个病);
+#   ③ 走空答分支就拿不到 results,整份 ledger 被丢在半路 —— 实证:78 次跑里 7 次
+#      terminated=max_steps 且答案长度 0,其中 4 次屏幕上明明已经 show_video 摆出了
+#      2/6/7/8 个视频,用户看得见视频、系统却说"服务波动"。
+# 交一句诚实的部分收口文案;已经产出的 show_* 结果由 orchestrator 随 results 一起交付。
+# 【红线】不在这里、也不在 orchestrator 自动把剩下的活转成后台任务继续跑 —— 用户没点头
+# 就接着花钱,跟"劝你重烧一遍"是同一类错误,只是换成了系统替他掏钱。只给 can_continue 标志。
+MAX_STEPS_ANSWER = (
+    "这次没能给出最终结论:本轮可用的工具调用步数已经用完,还差最后把结果归纳成回答这一步。"
+    "上面已经查到、已经展示出来的内容都是真实结果,可以直接看。"
+    "原样再问一遍只会把同样的步数再烧一次;要接着往下做,请把范围缩小"
+    "(指定视频、指定时间段,或先只问其中一部分)。"
+    "系统不会自动替你接着跑,以免在你不知情的时候继续产生费用。")
+
+# A2:上游句柄指向了本轮账本里不存在的 result_id。旧写法在解析 upstream 时【静默丢弃】
+# (`if u in ledger` 直接跳过)→ 工具照跑,只是少了它以为拿到的那份数据,于是"按上一轮那批
+# 视频回答"变成"对着空数据回答",错得毫无痕迹。改成硬失败 + 明确文案,走既有错误回灌路径。
+_STALE_HANDLE_ERR = ("上游句柄失效:result_id {ids} 不在【本轮】的结果账本里"
+                     "(这类 id 多半属于上一轮对话,跨轮不通用,已失效)。"
+                     "请先在本轮重新调用能产出这份数据的工具、拿到新的 result_id 再引用;"
+                     "或者直接用工具自己的参数(例如 show_video 的 video_ids)。")
+
+
+def _repeat_note(tool: str, n: int) -> str:
+    """A5:同一(工具,参数,上游)【成功】重复调用的提醒。只提醒,【不】终止 ——
+    成功的重复查询可能完全合法(比如分别为两个子问题查同一张表),接进 repeat_limit
+    的终止逻辑会误杀。失败重复才终止(那条路在 `seen` 里,与这里各管一半)。"""
+    return (f"[系统] 提醒:{tool} 这已经是第 {n} 次用【完全相同的参数】调用了,结果与之前几次一样。"
+            "重复调用会重复计费、也白烧步数 —— 换参数/换工具往前走,或就用已经拿到的这份结果收口。")
+
 
 def _attach_envelope(msg: Any, envelope: str) -> Any:
     """把成本护栏的软收口指令【并入】本轮输入,而不是顶掉它。
@@ -224,13 +258,17 @@ def _soft_note(note: str) -> "ExecResult":
 def run_loop(user_query: str, conversation, execute: Callable, *,
              max_steps: int | None = None, repeat_limit: int | None = None,
              on_step=None, critic=None, max_critic: int | None = None,
-             guard=None) -> LoopResult:
+             guard=None, req_short: str = "") -> LoopResult:
+    """req_short(A2):本请求的 8 位短串,拼进 result_id 前缀,让【上一轮的 id】一眼可辨、
+    不再与本轮的 c{step}_{i} 撞号。带默认值的 keyword 形参 = run_loop 仍是【纯控制流】
+    (不生成 id、不读环境、离线可测);空串 = 不加前缀,与升级前逐字节一致。"""
     max_steps = config.MAX_LOOP_STEPS if max_steps is None else max_steps
     repeat_limit = config.LOOP_REPEAT_LIMIT if repeat_limit is None else repeat_limit
     max_critic = config.SELF_CHECK_MAX_ROUNDS if max_critic is None else max_critic
     ledger: dict[str, ExecResult] = {}
     trace: list[dict] = []
     seen: dict = {}
+    success_seen: dict = {}       # A5:成功的重复调用只记录/提醒(与 seen 的失败终止各管一半)
     step_walls: list[float] = []
     turns: list[dict] = []        # 大脑每轮的"原话"(调工具前说的为什么)—— 以前被丢弃,Console 要看
     msg: Any = user_query
@@ -348,8 +386,9 @@ def run_loop(user_query: str, conversation, execute: Callable, *,
 
         # ① 准备(主线程):算 cid/sig/upstream;重复失败 → 即时终止
         prepared = []
+        preflight: dict[str, ExecResult] = {}     # A2:句柄失效的步 —— 不执行,直接判失败
         for i, call in enumerate(calls):
-            cid = f"c{step}_{i}"
+            cid = f"r_{req_short}_c{step}_{i}" if req_short else f"c{step}_{i}"
             sig = (call.name,
                    json.dumps(call.inputs, sort_keys=True, ensure_ascii=False, default=str),
                    tuple(call.uses))
@@ -361,16 +400,25 @@ def run_loop(user_query: str, conversation, execute: Callable, *,
                                       step, "tree_guard", trace, ledger, llm_calls,
                                       step_walls, turns)
                 return LoopResult(None, step, "repeat", trace, ledger, llm_calls, step_walls, turns)
-            upstream = {u: ledger[u].value for u in call.uses if u in ledger}
+            # A2:引用了本轮账本里没有的 result_id → 硬失败(旧写法静默丢弃,工具照跑,
+            # 于是"按那批视频回答"悄悄变成"对着空数据回答")。不执行,直接判失败回灌。
+            missing = [u for u in call.uses if u not in ledger]
+            if missing:
+                preflight[cid] = ExecResult(
+                    ok=False, stderr=_STALE_HANDLE_ERR.format(ids="、".join(map(str, missing))))
+                upstream: dict = {}
+            else:
+                upstream = {u: ledger[u].value for u in call.uses}
             prepared.append((cid, call, sig, upstream))
 
         # ② 执行:同一步内 analyze_video 互不依赖(uses 只指前序步)→ 线程池并发;其余串行。
         #    每个 worker 经 copy_context().run 携带本请求的 MODEL_OVERRIDE/_USAGE(否则 Pro 降级 + token 漏算)。
         step_t0 = time.perf_counter()
-        results: dict[str, ExecResult] = {}
-        analyze_grp = [(cid, call, up) for (cid, call, _s, up) in prepared if call.name == "analyze_video"]
+        results: dict[str, ExecResult] = dict(preflight)     # A2:句柄失效的那几步不进执行器
+        analyze_grp = [(cid, call, up) for (cid, call, _s, up) in prepared
+                       if call.name == "analyze_video" and cid not in results]
         for cid, call, _s, up in prepared:                   # 非 analyze:主线程串行(不扩并发面)
-            if call.name != "analyze_video":
+            if call.name != "analyze_video" and cid not in results:
                 results[cid] = execute(cid, call.name, call.inputs, up, call.uses)
         if len(analyze_grp) > 1 and config.MAX_ANALYZE_PARALLEL > 1:
             workers = min(len(analyze_grp), config.MAX_ANALYZE_PARALLEL)
@@ -391,12 +439,22 @@ def run_loop(user_query: str, conversation, execute: Callable, *,
         for cid, call, sig, _up in prepared:
             res = results[cid]
             ledger[cid] = res
+            # turn=step:这一步属于第几轮【显式写进事件】。以前 Loop Console 靠反解析 cid
+            # 字符串("c{轮}_{i}" 切片)倒推轮号 —— id 的格式一变(A2 加了请求前缀)整列就错。
             trace.append({"cid": cid, "tool": call.name, "inputs": call.inputs,
-                          "uses": call.uses, "ok": res.ok,
+                          "uses": call.uses, "ok": res.ok, "turn": step,
                           "ms": round(res.ms, 1), "cache_hit": res.cache_hit})
             step_tools.append({"tool": call.name, "cid": cid, "ok": res.ok})
             if res.ok:
-                responses.append((call.name, {"result_id": cid, "preview": res.preview, "n": res.n}))
+                payload = {"result_id": cid, "preview": res.preview, "n": res.n}
+                # A5:成功的重复调用 —— 计数 + 提醒,【不】接进 repeat_limit 的终止逻辑
+                # (合法的重复查询不该被误杀)。以前这一支完全不动 seen,重复成功零观测。
+                success_seen[sig] = success_seen.get(sig, 0) + 1
+                if success_seen[sig] >= max(2, repeat_limit):
+                    note = _repeat_note(call.name, success_seen[sig])
+                    payload["_system_notice"] = note      # 与护栏信封同一载体(协议合法、大脑必读)
+                    turns.append({"step": step, "nudge": note})
+                responses.append((call.name, payload))
             else:
                 seen[sig] = seen.get(sig, 0) + 1
                 responses.append((call.name, {"result_id": cid, "error": (res.stderr or "")[:300]}))
@@ -412,7 +470,10 @@ def run_loop(user_query: str, conversation, execute: Callable, *,
             return LoopResult(_GUARD_STOP_ANSWER + guard.final_note(mark_claim=False),
                               max_steps, "tree_guard", trace, ledger, llm_calls,
                               step_walls, turns)
-    return LoopResult(None, max_steps, "max_steps", trace, ledger, llm_calls, step_walls, turns)
+    # A1:步数耗尽 → 诚实的部分收口文案(照 tree_guard 硬终止那条路的形状:占位文案 +
+    # 现算披露),【不】再回 None。terminated 仍是 "max_steps",归因不被文案掩盖。
+    return LoopResult(MAX_STEPS_ANSWER, max_steps, "max_steps", trace, ledger, llm_calls,
+                      step_walls, turns)
 
 
 # ── 瞬时错误重试(429/503/超时等)——一次抖动不该让整轮硬崩成 error 卡片 ──
@@ -1007,7 +1068,8 @@ def run_query_loop(nl: str, *, schema: dict, replay_context: "str | None", sandb
                    runtime_facts: "str | None" = None, owner: str = "anon",
                    image: "tuple[bytes, str] | None" = None,
                    use_critic: "bool | None" = None,
-                   model: "str | None" = None) -> LoopOutcome:
+                   model: "str | None" = None,
+                   req_short: str = "") -> LoopOutcome:
     """orchestrator 的 loop 入口:建会话 + 执行器 → run_loop → 收产物(纯 handle,无合成 DAG)。
     replay_context(M5)= 从 transcript 回放出的多轮上下文(取代旧 recipe 块)。
     on_step(M6b)= 每步回调,供 SSE 流式。runtime_facts(U3)= 运行时状态注入节(自我认知)。
@@ -1015,7 +1077,10 @@ def run_query_loop(nl: str, *, schema: dict, replay_context: "str | None", sandb
     image(粘贴截图,bytes+mime)= 附在首轮用户消息作多模态输入。
     use_critic = 请求级 critic 模式(None=跟随 USE_SELF_CHECK_CRITIC 全局默认;True/False=本请求强制)。
     model(阶段A)= 本请求的大脑模型;None = config.LOOP_MODEL。白名单校验在 API 层,这里不重复。
+    req_short(A2)= 本请求的 8 位短串,拼进 result_id 前缀;调用方不给就在这儿现生成
+    (per-request 唯一即可,不建 request_scope 模块、不引全局状态)。
     注:子代理(subagents)仍走 SUBAGENT_MODEL/LOOP_MODEL 默认,不随本参数切换。"""
+    req_short = req_short or uuid.uuid4().hex[:8]
     notice, notice_ids = task_done_notice(owner)          # S-9:销账等交付确认(见下方)
     conv = make_conversation(model or config.LOOP_MODEL,
                              loop_function_declarations(owner=owner),
@@ -1030,7 +1095,8 @@ def run_query_loop(nl: str, *, schema: dict, replay_context: "str | None", sandb
     _critic_on = config.USE_SELF_CHECK_CRITIC if use_critic is None else use_critic
     critic = make_self_check_critic() if _critic_on else None   # 自检 B:请求级模式(默认跟全局)
     _t0 = time.perf_counter()
-    r = run_loop(nl, conv, execute, on_step=on_step, critic=critic, guard=guard)
+    r = run_loop(nl, conv, execute, on_step=on_step, critic=critic, guard=guard,
+                 req_short=req_short)
     _total_ms = (time.perf_counter() - _t0) * 1000
     # L1 机械兜底:答案里的裸 id 清洗(能映射「第N个」就换,不能就删);命中数进指标 →
     # 长期为 0 说明模型已自觉,教训 L01 可退役(prompt-constitution-lessons.md §5 闭环)。
@@ -1039,7 +1105,9 @@ def run_query_loop(nl: str, *, schema: dict, replay_context: "str | None", sandb
         answer, scrub_hits = scrub_ids(r.answer, (er.value for er in r.ledger.values()))
     # S-9 销账:答案【确实产出】了才把通知记为已通报 —— 崩了/空答/用户 Stop 的请求
     # 不销账,下一轮还会再通知一次(review-HIGH:旧写法丢了就永远丢)。
-    if notice_ids and answer and answer.strip():
+    # A1 连带:terminated != "text" 时交的是【系统占位文案】(步数耗尽 / 护栏硬终止),
+    # 里面不可能提到"后台任务已完成" —— 拿它当已通报销账,通知就被静静吞掉了。
+    if notice_ids and answer and answer.strip() and r.terminated == "text":
         try:
             from pipeline import task_store
             task_store.mark_notified(notice_ids)
@@ -1076,6 +1144,25 @@ def run_query_loop(nl: str, *, schema: dict, replay_context: "str | None", sandb
     return lo
 
 
+def _count_repeat_ok(tr: list) -> int:
+    """成功步里"完全相同的(工具,参数,上游)"重复了几次(首次不算重复)。
+    与 run_loop 里 success_seen 的口径一致,但从 trace 现算 —— 不给 LoopResult/LoopOutcome
+    再加一路要在 7 个 return 点手工同步的字段(漏一个就默默报 0)。"""
+    seen, dup = set(), 0
+    for s in tr:
+        if not s.get("ok"):
+            continue
+        try:
+            k = json.dumps([s.get("tool"), s.get("inputs"), s.get("uses")],
+                           sort_keys=True, ensure_ascii=False, default=str)
+        except Exception:
+            continue
+        if k in seen:
+            dup += 1
+        seen.add(k)
+    return dup
+
+
 def loop_metrics(lo: "LoopOutcome") -> dict:
     """M6/M4.2 审计指标:步数、终止原因、工具直方图 + per-tool 计时 / 并行加速 / 缓存命中。"""
     from collections import Counter
@@ -1089,6 +1176,10 @@ def loop_metrics(lo: "LoopOutcome") -> dict:
          "wall_ms": round(wall_ms, 1),
          "analyze_calls": len(analyze),
          "analyze_cache_hits": sum(1 for s in analyze if s.get("cache_hit")),
+         # A5 观测半边:【成功】的重复调用(工具+参数+上游全同)有多少次。失败重复早就有
+         # repeat_limit 兜着并计入 terminated="repeat";成功重复以前一个数字都不留 ——
+         # 不终止它是对的(合法重复查询会被误杀),但也不能看不见。
+         "repeat_ok_calls": _count_repeat_ok(tr),
          "id_scrub_hits": getattr(lo, "id_scrub_hits", 0)}
     if wall_ms > 0:                                            # 并行加速比 = Σtool_ms / 墙钟
         m["parallel_speedup"] = round(tool_ms / wall_ms, 2)
