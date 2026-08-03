@@ -200,16 +200,22 @@ def _run_one(task: dict, *, execute, sandbox, trace, schema, session_id, owner,
     if not (usable - {"spawn_agents"}):
         usable |= {t for t in _SUBAGENT_DEFAULT if t in enabled}
     decls = [d for d in loop_decls if d["name"] in usable]
+    # A3 前缀顺序:【固定大块在前、易变段在后】。隐式缓存按前缀【逐字符从头比】,
+    # 一处不同后面全部作废。schema 是几 KB 的共享固定块(同一批子 agent 拿的是同一份、
+    # 跨请求也基本不变),video_ids / 工具集提示是每个子 agent 都不同的易变段 —— 易变段排前面
+    # 等于把后面那几 KB 顶出命中区,白丢一次命中。主 loop 的 _loop_system 本来就是这个口径
+    # (schema 紧跟固定宪法,runtime_facts/task_notice/replay 全在其后);
+    # 这条顺序由 tests/pipeline/test_prompt_order.py 钉成不变量,改回去会红。
     system = _SUBAGENT_SYSTEM
+    if "sql_query" in usable and schema:                 # 要写 SQL 就得看库结构(镜像主 loop 的 _loop_system)
+        import json as _json
+        system += "\n\n# 数据库结构(sql_query 用)\n" + _json.dumps(schema, ensure_ascii=False)
     if "spawn_agents" in usable:                         # P0-6:握有再拆权的 depth-1 子 agent
         system += ("\n\n你握有 spawn_agents:那是你自己确实做不动时的【最后手段】。"
                    "先用自己的工具做 —— 至少成功执行 2 次工具之后,才被允许把剩下"
                    "确实做不动的部分再拆一层(拆早了会被闸门退回)。")
     if task["video_ids"]:
         system += f"\n\n【只针对这些视频作答】:{task['video_ids']}"
-    if "sql_query" in usable and schema:                 # 要写 SQL 就得看库结构(镜像主 loop 的 _loop_system)
-        import json as _json
-        system += "\n\n# 数据库结构(sql_query 用)\n" + _json.dumps(schema, ensure_ascii=False)
     # T-1/T-2:每个子 agent 开一个 exec 层 span。此前子 agent 崩只被吞成一句文本
     # (trace 上零痕迹),triage 会报"0 失败"—— 静默失败正是因由码制度要消灭的东西。
     span = trace.step(f"subagent: {instruction[:40]}", component="exec") \

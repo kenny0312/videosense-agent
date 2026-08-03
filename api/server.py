@@ -682,12 +682,82 @@ def resign(req: ResignRequest, request: Request):
 
 class EnrichRequest(BaseModel):
     video_id: str = Field(..., description="要富化的视频 id(上传 PUT 成功后调用)")
+    duration_sec: float | None = Field(
+        None, description="素材时长(秒),可选。前端直传时 <video>.duration 现成 —— 给了就按它算死线,"
+                          "不给则走死线上限。只影响本次死线,且已被上下限夹住(见 _enrich_deadline_sec)")
+
+
+# ── A8(P0-5)enrich 判死:按素材时长算死线 + 状态位 + 查询端点 ────────────────
+# 现状病灶:enrich 起一个 daemon 线程就返回 {"status":"started"},之后【没有任何终点】——
+# 卡住的 generate_content 会一直挂着,调用方永远等不到下文,也没处查它到底成没成。
+#
+# 死线口径:max(5min, min(60min, 2×时长))。为什么按时长而不是像 taskstate.TASK_LEASE_MIN 那样
+# 用一个常数:一个 10 秒的短片和一个 3 小时的讲座,合理耗时差两个数量级,同一个常数要么把长片
+# 误杀、要么给短片留半小时的无谓等待。上下限是防呆(时长脏数据/极端素材)。
+ENRICH_DEADLINE_FLOOR_SEC = 5 * 60
+ENRICH_DEADLINE_CAP_SEC = 60 * 60
+_ENRICH_STATUS: "dict[str, dict]" = {}      # video_id → 状态记录(进程内;跨实例见 GET 端点兜底)
+_ENRICH_LOCK = threading.RLock()            # 可重入:判死/收工都要在锁内"读状态再写"(见下)
+_ENRICH_STATUS_MAX = 256                    # 有界:长跑进程别把状态位攒成内存泄漏
+
+
+def _enrich_deadline_sec(duration_sec) -> int:
+    """按素材时长给死线。时长【测不到】→ 给上限 60min:判死是为了让卡住的活有终点,
+    不是为了砍慢活 —— 宁可多等 60 分钟,也不要把一份 3 小时素材的合法富化误杀。"""
+    try:
+        d = float(duration_sec)
+    except (TypeError, ValueError):
+        return ENRICH_DEADLINE_CAP_SEC
+    if not (d > 0):                                   # 0 / 负数 / NaN 全归"测不到"
+        return ENRICH_DEADLINE_CAP_SEC
+    return int(max(ENRICH_DEADLINE_FLOOR_SEC, min(ENRICH_DEADLINE_CAP_SEC, 2.0 * d)))
+
+
+def _hinted_duration_sec(hinted) -> "float | None":
+    """时长只认请求体带来的那一个数,不去查库。理由(实测过调用面,不是省事):
+    本端点【只】被前端直传流程调用(web/index.html 上传成功后 fire-and-forget),
+    传进来的恒是 up_ 临时视频 —— 它按设计【不进 video_metadata】,查库必然空手而归,
+    却要在请求路径上白挂一次 MCP 子进程往返。库内视频的批量富化走的是
+    perception/setup_enrichment.py 那个脚本,根本不经过这里。
+    脏值(None / 非数 / ≤0 / NaN)→ None,由 _enrich_deadline_sec 归到"测不到"。"""
+    try:
+        d = float(hinted)
+    except (TypeError, ValueError):
+        return None
+    return d if d > 0 else None
+
+
+def _enrich_set(vid: str, status: str, **fields) -> None:
+    """写状态位(started/ok/failed)。同一 vid 的记录就地更新,超过上限按最早登记的先淘汰。"""
+    with _ENRICH_LOCK:
+        rec = _ENRICH_STATUS.get(vid) or {"video_id": vid}
+        rec.update(fields)
+        rec["status"] = status
+        rec["updated_at"] = time.time()
+        _ENRICH_STATUS[vid] = rec
+        while len(_ENRICH_STATUS) > _ENRICH_STATUS_MAX:
+            _ENRICH_STATUS.pop(next(iter(_ENRICH_STATUS)))
+
+
+def _enrich_finish(vid: str, box: dict) -> None:
+    """干活线程收工时落终态。已经被判死的:只补记【迟到的下场】,不翻案 ——
+    死线判决一旦下了就算数(调用方可能早就按 failed 走了别的路),悄悄改回 ok 比 failed 更坏。"""
+    ok = "result" in box                              # 按"拿到结果"判,不按"没抛异常"判
+    with _ENRICH_LOCK:                                # 读状态+写状态在同一把锁内 —— 与判死互斥
+        cur = (_ENRICH_STATUS.get(vid) or {}).get("status")
+        if cur == "started" or cur is None:
+            _enrich_set(vid, "ok" if ok else "failed",
+                        result=box.get("result"), error=box.get("error"))
+        else:
+            _enrich_set(vid, cur, late_status="ok" if ok else "failed",
+                        late_error=box.get("error"))
 
 
 @app.post("/v1/enrich")
 def enrich(req: EnrichRequest, request: Request):
     """V1.5:入库富化(转录+caption → 语义索引)。前端直传 GCS 成功后调用;幂等
-    (已富化直接返回);后台线程执行不阻塞。语义层关闭时 no-op。全程 fail-open。"""
+    (已富化直接返回);后台线程执行不阻塞。语义层关闭时 no-op。全程 fail-open。
+    A8:后台活带死线 + started/ok/failed 状态位,查询走 GET /v1/enrich/{video_id}。"""
     from pipeline.node_executor import _VIDEO_ID_RE, _resolve_gcs
     if not config.USE_SEMANTIC_SEARCH:
         return {"status": "disabled"}
@@ -703,14 +773,71 @@ def enrich(req: EnrichRequest, request: Request):
         gcs = None
     if not gcs:
         return Response(status_code=404, content="找不到该视频")
+    duration = _hinted_duration_sec(req.duration_sec)
+    deadline = _enrich_deadline_sec(duration)
 
     def work():
-        try:
-            log.info("enrich 完成: %s", enrichment.enrich_video(vid, gcs))
-        except Exception:
-            log.warning("enrich 失败(fail-open): %s", vid, exc_info=True)
-    threading.Thread(target=work, daemon=True).start()
-    return {"status": "started"}
+        box: dict = {}
+
+        def run():
+            try:
+                box["result"] = enrichment.enrich_video(vid, gcs)
+                log.info("enrich 完成: %s", box["result"])
+            except Exception as e:
+                box["error"] = repr(e)[:300]
+                log.warning("enrich 失败(fail-open): %s", vid, exc_info=True)
+            finally:
+                _enrich_finish(vid, box)              # finally:干活线程无论怎么退场都留下终态
+
+        _enrich_set(vid, "started", started_at=time.time(),
+                    deadline_sec=deadline, duration_sec=duration,
+                    result=None, error=None)
+        t = threading.Thread(target=run, daemon=True, name=f"enrich-{vid[:16]}")
+        t.start()
+        t.join(deadline)
+        if not t.is_alive():
+            return
+        # 判死。注意这【不是】强杀:Python 杀不掉线程,里面挂着的是一次阻塞式
+        # generate_content。它是 daemon,进程退出即回收;这里只负责【下结论】,
+        # 让调用方不必无限等。它若日后真跑完,_enrich_finish 记 late_status,不翻案。
+        # 锁内再确认一次"还是 started":join 超时与干活线程恰好收工是并发的,
+        # 不确认会把一个【已经成功】的记录改写成 failed。
+        with _ENRICH_LOCK:
+            if (_ENRICH_STATUS.get(vid) or {}).get("status") != "started":
+                return
+            _enrich_set(vid, "failed", timeout=True,
+                        error=f"deadline exceeded ({deadline}s)")
+        log.warning("enrich 超时判死(死线 %ss,时长 %s): %s", deadline, duration, vid)
+
+    # 外层线程只负责"等 + 判死",本身不阻塞请求(与改动前一样,端点立刻返回)。
+    threading.Thread(target=work, daemon=True, name=f"enrich-watch-{vid[:16]}").start()
+    return {"status": "started", "video_id": vid, "deadline_sec": deadline}
+
+
+@app.get("/v1/enrich/{video_id}")
+def enrich_status(video_id: str, request: Request):
+    """A8:查一次富化的下场(只读,绝不触发富化)。
+
+    进程内状态位优先;查不到(跨实例 / 进程重启后)退回"这视频到底富化过没有"的探测 ——
+    这条兜底让答案在多实例下仍然有用,只是丢掉 started/failed 的细节。
+    owner 隔离口径与 POST /v1/enrich、/v1/resign 一致(都不做)—— 单用户下无影响。"""
+    from pipeline.node_executor import _VIDEO_ID_RE
+    if not config.USE_SEMANTIC_SEARCH:
+        return {"status": "disabled"}
+    vid = str(video_id or "")
+    if not _VIDEO_ID_RE.match(vid):
+        return Response(status_code=422, content="非法 video_id")
+    with _ENRICH_LOCK:
+        rec = _ENRICH_STATUS.get(vid)
+    if rec is not None:
+        return dict(rec)
+    from pipeline import enrichment
+    try:
+        if enrichment.already_enriched(vid):
+            return {"video_id": vid, "status": "already"}
+    except Exception:
+        log.warning("enrich 状态兜底探测失败(fail-open): %s", vid, exc_info=True)
+    return {"video_id": vid, "status": "unknown"}
 
 
 @app.post("/v1/video_vibe_query/stream")
