@@ -12,7 +12,7 @@
 
 ## 一、失败形态分布
 
-| 形态 | 次数 | 占 48 次错误的比例 |
+| 形态 | 次数 | 占 54 次错误的比例 |
 |---|---|---|
 | 超发 | 33 | 61% |
 | 漏 | 21 | 39% |
@@ -34,51 +34,60 @@
 
 ## 一之二、【重要】gold 本身有缺陷 —— 裁决的核心证据不成立
 
-逐题看 6 次跑(3 臂 × 2 rep)的 F1,发现异常规律:
+逐题看每一次跑的 F1,发现异常规律:
 
-| 题 | gold 条数 | 6 次跑的 F1 | 均值 |
+| 题 | gold 条数 | 各次跑的 F1 | 均值 | 跑了几次 |
+|---|---|---|---|---|
+| t1-driving-car | 7 | [0.29, 0.15, 0.8, 0.0, 0.0, 0.31, 0.36, 0.0] | 0.24 | 8 |
+| t1-cheering | 7 | [0.0, 0.4, 0.0, 0.4, 0.4, 0.4, 0.53, 0.33] | 0.31 | 8 |
+| t2-celebrating | 8 | [0.0, 0.75, 0.75, 0.62, 0.62, 0.0] | 0.46 | 6 |
+| t2-performing-gymnastics | 3 | [0.67, 0.67, 0.55, 0.67, 0.55, 0.55] | 0.61 | 6 |
+| t2-diving | 3 | [0.6, 0.67, 0.67, 0.6, 0.67, 0.44, 0.67, 0.6] | 0.61 | 8 |
+| t2-rock-climbing | 3 | [1.0, 0.0, 1.0, 1.0, 0.0, 1.0] | 0.67 | 6 |
+| t1-playing-drums | 6 | [0.86, 0.71, 0.86, 0.86, 0.71, 0.86] | 0.81 | 6 |
+| t1-riding-horse | 5 | [0.83, 0.83, 0.83, 0.83, 0.83, 0.83] | 0.83 | 6 |
+| t1-throwing-ball | 6 | [0.83, 1.0, 1.0, 0.86, 1.0, 1.0] | 0.95 | 6 |
+| t1-shoveling-snow | 3 | [1.0, 1.0, 1.0, 1.0, 1.0, 1.0] | 1.00 | 6 |
+| t2-playing-water-polo | 3 | [1.0, 1.0, 1.0, 1.0, 1.0, 1.0] | 1.00 | 6 |
+| t2-playing-tennis | 3 | [1.0, 1.0, 1.0, 1.0, 1.0, 1.0] | 1.00 | 6 |
+
+**异常信号**:下面这些题【多次跑分数一模一样且都不满分】 —— 随机性不会产生这种结果,只有【每次都交付同一批、每次都被扣同样的分】才会:
+
+- `t1-riding-horse`:6 次跑全部 0.83
+
+
+**系统量化**:35 个被判「多发」的(题, 视频)里,**26 个(74%)库内就带同词根谓词** —— 是 gold 漏的,不是 agent 错的。
+
+典型例子(从审计明细里取,不是手写的):
+
+| 题 | gold 谓词 | 被判「多发」 | 库内同词根谓词 |
 |---|---|---|---|
-| t1-driving-car | 7 | [0.29, 0.15, 0.8, 0.0, 0.0, 0.31, 0.36, 0.0] | 0.24 |
-| t1-cheering | 7 | [0.0, 0.4, 0.0, 0.4, 0.4, 0.4, 0.53, 0.33] | 0.31 |
-| t2-celebrating | 8 | [0.0, 0.75, 0.75, 0.62, 0.62, 0.0] | 0.46 |
-| t2-performing-gymnastics | 3 | [0.67, 0.67, 0.55, 0.67, 0.55, 0.55] | 0.61 |
-| t2-diving | 3 | [0.6, 0.67, 0.67, 0.6, 0.67, 0.44, 0.67, 0.6] | 0.61 |
-| t2-rock-climbing | 3 | [1.0, 0.0, 1.0, 1.0, 0.0, 1.0] | 0.67 |
-| t1-playing-drums | 6 | [0.86, 0.71, 0.86, 0.86, 0.71, 0.86] | 0.81 |
-| t1-riding-horse | 5 | [0.83, 0.83, 0.83, 0.83, 0.83, 0.83] | 0.83 |
-| t1-throwing-ball | 6 | [0.83, 1.0, 1.0, 0.86, 1.0, 1.0] | 0.95 |
-| t1-shoveling-snow | 3 | [1.0, 1.0, 1.0, 1.0, 1.0, 1.0] | 1.00 |
-| t2-playing-water-polo | 3 | [1.0, 1.0, 1.0, 1.0, 1.0, 1.0] | 1.00 |
-| t2-playing-tennis | 3 | [1.0, 1.0, 1.0, 1.0, 1.0, 1.0] | 1.00 |
+| t1-driving-car | `driving car` | `v_-OH1BDqao9w` | `car care`、`drying car`、`getting out of car` |
+| t1-driving-car | `driving car` | `v_9pJBfTZOcxI` | `driving a car` |
+| t1-driving-car | `driving car` | `v_CbfgZlo0Ut4` | `car care`、`cleaning car exterior`、`driving car into car wash` |
+| t1-driving-car | `driving car` | `v_DBGsPnuwdnU` | `bumping cars`、`driving bumper car` |
+| t1-driving-car | `driving car` | `v_zvXi08rTq3Y` | `bumping cars`、`driving bumper cars`、`riding bumper cars` |
+| t1-playing-drums | `playing drums` | `v_-zZJmRT9udU` | `playing conga drums` |
 
-`t1-riding-horse` **六次跑全部 0.83,一模一样** —— 这不是随机,是系统性的:每次都交付 7 条、命中全部 5 条 gold、多出同样的 2 条。查这 2 条:
-
-| 被判「多发」 | 标题 | 库内谓词 |
-|---|---|---|
-| `v_0EepbsAtiDk` | Horseback Riding on a Foggy Sandy Beach | **`horse riding`** |
-| `v_6NQl2Vcf0P0` | Cowboy Ropes Calf in Rodeo | `mounting horse`、`dismounting horse`、`running to horse` |
-
-第一条的谓词是 `horse riding`,而我的 gold 谓词是 `riding horse` —— **只是词序不同**,精确匹配漏了它。第二条是牛仔骑马套小牛,也明显是骑马。**agent 是对的,gold 是错的。**
-
-体操题同理:被判多发的是 `performing gymnastics on parallel bars`、`performing gymnastics on uneven bars`(比 gold 谓词更具体)、以及垫上翻腾 —— 而题面问的正是「在垫上或器械上做翻腾平衡动作」。
-
-**系统量化**:35 个被判「多发」的视频里,**25 个(71%)库内就带同词根谓词**,是 gold 漏的,不是 agent 错的。
+> 同词根的判定规则(可复现):小写→切非字母→去停用词(含长度≤2)→削 ing/ed/es/s;两边词干集合交集非空即算同词根
 
 ### 后果:核心证据的方向会翻转
 
 | | 次数 | F1(严格 gold) | F1(宽松 gold) | 精确率(严格) | 精确率(宽松) |
 |---|---|---|---|---|---|
-| **拆了** | 17 | 0.653 | 0.368 | 0.565 | **0.858** |
-| **没拆** | 31 | 0.733 | 0.281 | 0.709 | **0.841** |
-| **拆了−没拆** | | **−0.080** | **+0.086** | | |
+| **拆了** | 19 | 0.633 | 0.788 | 0.549 | **0.834** |
+| **没拆** | 35 | 0.694 | 0.758 | 0.670 | **0.850** |
+| **拆了−没拆** | | **-0.061** | **+0.030** | -0.121 | -0.016 |
 
-> 宽松 gold = 严格 gold ∪ {库内带同词根谓词的视频}。
+> 宽松 gold = 严格 gold ∪ {本题里被判多发、但库内带同词根谓词的视频}。
 
-**同一批数据,换个 gold 口径,结论方向就反过来。** 而宽松 gold 下两臂精确率都是 ~0.85 —— 说明「拆分导致精确率掉 20%」**完全是 gold 缺陷造成的假象**:拆分的臂找得更全,而找全反被扣分。
+**同一批数据,换个 gold 口径,F1 差的方向就反过来。** 精确率差也从 -0.121 收窄到 -0.016 —— 说明「拆分导致精确率大幅下降」很大程度是 gold 缺陷造成的:拆分的臂找得更全,而找全反被扣分。
 
-两个 gold 都不对:严格的太窄(漏词序变体与更具体的谓词),宽松的太宽(把所有同词根谓词都算进来,召回率崩掉)。真相在中间,而**目前没有一把可信的尺子**。
+> 宽松 gold 是【上界】:它会把 mounting horse 这类同场景近义也算进来。严格 gold 是【下界】:精确谓词匹配漏词序变体与更具体谓词。两把尺子都不可信,真值在中间 —— 要靠 E1 gold 重建。
 
-**因此**:裁决里「拆了更差」这条【撤回】。不依赖 gold 的硬事实只剩下 —— 拆分**贵 2.4 倍($0.399 vs $0.168)、慢 1.6 倍(248s vs 158s)**。
+> 【内生性,读数时必须记住】宽松 gold 是从【被评的这些跑次自己的输出】里长出来的 —— 只有被某次跑摆出来过的视频才有机会进宽松 gold。所以:①【绝对数字虚高】,库里真相关但从没被摆出来过的视频,两把尺子都漏,召回率被系统性高估;② 但宽松 gold 是【按题取全体跑次的并集】、两臂共用同一把尺子,所以【臂间比较仍然可用】,不存在某一臂给自己开小灶。③ 残余偏差:摆得多的臂对并集贡献更大,那些只有它摆过的视频会变成它自己的 TP。实测这一项影响很小 —— 召回率差在严格/宽松两把尺子下几乎不变(+0.042 vs +0.043)。
+
+**因此**:裁决里「拆了更差」这条【撤回】。不依赖 gold 的硬事实只剩成本与耗时 —— 拆了 $0.398/244s vs 没拆 $0.175/161s(**2.3 倍成本、1.5 倍耗时**)。
 
 
 ---
@@ -94,21 +103,18 @@
 | 上限 | 值 | 作用域 |
 |---|---|---|
 | `MAX_LOOP_STEPS` | 16 | 主脑自己的步数 |
-| `SUBAGENT_MAX_STEPS` | **4** | 每个子 agent 自己的步数 |
+| `SUBAGENT_MAX_STEPS` | **6** | 每个子 agent 自己的步数 |
 | `MAX_VIDEOS_PER_REQUEST` | 12 | **整棵树共享**的视频分析配额 |
 
-`pipeline/subagents.py:12-13` 的原注释:
+`pipeline/subagents.py` 模块头的原注释:
 
 > 【父请求的 execute 闭包】—— 子 agent 复用它 → analyze_video 计入同一配额(MAX_VIDEOS_PER_REQUEST,不绕过成本闸)
 
-这本身是对的(防止拆分绕过成本闸)。问题在另一半 —— `pipeline/subagents.py:184`:
+这本身是对的(防止拆分绕过成本闸)。问题在另一半 —— 未收敛时 `_run_one` 曾经只回一句`(子 agent 未收敛:{terminated})`,把 `r.ledger` 里那几份**已经花钱买到**的 analyze结论直接丢弃。
 
-```python
-else:                       # 未收敛也是一种失败,要有码
-    out = f"(子 agent 未收敛:{r.terminated})"
-```
+> 代码位置随版本移动,以 `pipeline/subagents.py` 里 `_run_one` 的**无结论分支**为准(现已改为调用 `_no_answer_output` 做残值回收)。
 
-**子 agent 只有 4 步**,却要装下「读任务 + 逐个看视频 + 汇总成文」。装不下就撞墙,撞墙就返回上面那句空话。
+**当时子 agent 只有 6 步**,却要装下「读任务 + 逐个看视频 + 汇总成文」。装不下就撞墙,撞墙就返回那句空话。
 
 于是形成一个**不对称的账**:
 
@@ -147,37 +153,33 @@ else:                       # 未收敛也是一种失败,要有码
 
 > 这是**下界**,不是真实发生率:`main-v3` 那批只存了前 6 轮思考,子 agent 通常在第 6 步之后才回来,所以那批里发生了也看不见。
 
-### 一次完整的双输(`t1-cheering` C 臂 · fulltrace)
+### 一次完整的双输(`t1-cheering` C 臂 · rep21 · `fulltrace`)
 
-这一次拆了,gold 7 条,最后只交付 5 条。大脑自己把原因说得很清楚 ——
+这一次拆了,gold 7 条,最后交付 5 条。大脑自己把原因说得很清楚 ——
 
 **step 7**(spawn 刚回来):
 
-> Ah, it seems my **sub-agent didn't converge as expected (max_steps)**. This could stem from an internal execution issue within the sub-agent or simply insufficient steps. No matter, I can proceed by directly invoking `analyze_video` myself.
+> **My Thought Process on Analyzing Video Relevance**  Ah, it seems my sub-agent didn't converge as expected (max_steps). This could stem from an internal execution issue within the sub-agent or simply insufficient steps. No matter, I can proceed by directly invoking `analyze_video` myself.  My immediate plan is to apply `analyze_video` to the most relevant videos identified. Based on the results of my `semantic_search`, the top few videos exhibit "strong" relevance and boast high scores (above 0.78).  Therefore, I'll prioritize analyzing three specific videos: `v_-TuxT19bogQ`, `v_TQepyWudKYQ`, 
 
 **step 8**(它去 analyze 了,被挡):
 
-> My initial thought upon seeing the **「已达本请求视频分析上限(12 个)」** message was a slight frustration. It dawned on me that **my prior `spawn_agents` calls likely involved multiple internal `analyze_video` invocations, accumulating to hit the ceiling.**
+> **A Deep Dive into Audience Enthusiasm Analysis**  My initial thought upon seeing the "已达本请求视频分析上限(12 个)" (Reached the upper limit for this request's video analysis (12 videos)) message was a slight frustration. I immediately considered *why* this limit was reached. It dawned on me that my prior `spawn_agents` calls likely involved multiple internal `analyze_video` invocations, accumulating to hit the ceiling.  However, I quickly reassured myself because I already had the results for `v_-TuxT19bogQ`. This video clearly showed spectators behind a fence, waving their arms and cheering loudly, co
 
-**step 11**(退而求其次):
-
-> Okay, it seems I've hit my limit on something, but that's perfectly fine! The results from `semantic_search` are incredibly valuable. ... I'll organize these `semantic_search` snippets now.
-
-最终它是**靠检索片段的文字描述**收口的,不是靠看画面。拆分在这一次的净效果:**烧掉全部 12 个视频配额,换回零条结论,并把主脑逼回文字证据**。
+最终它只能靠**检索片段的文字描述**收口,而不是靠看画面。拆分在这一次的净效果:**烧掉全树 12 个视频配额,换回零条结论,并把主脑逼回文字证据**。
 
 ### 这解释了什么
 
-裁决里「拆了贵 2.4 倍却看不出质量好处」—— 至少一部分不是「拆分这个思路没用」,而是**当前实现下拆分的失败模式代价太高**:失败不是「白干一次」,是「白干一次 + 把主脑的后路也断了」。
+「拆了更贵却看不出质量好处」—— 至少一部分不是「拆分这个思路没用」,而是**当时实现下拆分的失败模式代价太高**:失败不是「白干一次」,是「白干一次 + 把主脑的后路也断了」。
 
-**三个都便宜的修法(按性价比排序)**:
+**修法(已实施)**:
 
-1. **子 agent 失败要退配额**:未收敛时把它占用的 analyze 名额还回去 —— 钱退不了,但至少主脑还能自己补看。改动只在 `subagents.py` 的失败分支;
+1. ~~子 agent 失败退配额~~ —— **这条是错的,已撤回**:钱已经花出去了,把配额计数减回去只会让整棵树实际花掉两倍于 `MAX_VIDEOS_PER_REQUEST`(12)的预算,直接废掉成本闸的语义。配额管的是「最多调几次 Gemini」,不是「最多拿到几个有用结论」;
 
-2. **失败也要交部分结论**:子 agent 撞 max_steps 时,把它【已经看到的】analyze 结果原样带回给主脑,而不是一句「未收敛」。它明明已经花钱看过了;
+2. ✅ **失败也交回已买到的结果**(`subagents._salvage_analyses`):撞 max_steps / repeat /熔断时,把 `r.ledger` 里**已成功执行的 analyze 结论**带回主脑,诚实标注「未经子 agent 综合」。闸门信封(`gate=="blocked"`)排除 —— 把一句「已达上限」当证据回流是灾难;
 
-3. **步数按活配**:`SUBAGENT_MAX_STEPS=4` 装不下「规划 + 看 N 个视频 + 汇总」。要么按子任务里的视频数动态给,要么在 spawn 描述里明说「一个子任务别塞超过 2 个视频」。
+3. ✅ **步数按活配 + 基线上调**(`subagents._steps_for`,现基线 `SUBAGENT_MAX_STEPS=6`、封顶 `SUBAGENT_MAX_STEPS_CAP=8`):真机实测拿 4~5 步的子 agent 无一收敛、拿 6 步的全部收敛,且与派了几个视频无关 —— 同一步内 analyze 是并行的,卡死的是固定开销(定位 + 看 + 汇总),4 步等于零余量。
 
-这三条都不需要 Phase 2,也不需要深度 2 —— 是把**已有的一层拆分**修到及格。
+这些都不需要深度 2 —— 是把**已有的一层拆分**修到及格。
 
 
 ---

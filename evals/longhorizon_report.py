@@ -14,6 +14,19 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+AUDIT_PATH = "evals/runs/gold-audit.json"      # evals.longhorizon_gold_audit 的产物
+
+
+def load_audit():
+    """读 gold 审计结果。缺了就返回 None —— 本模块【只排版不造数】,宁可在报告里
+    写明"未运行审计"也不写死一组数字(批次 1.5 R1 的验收原文:任何报告数字均由数据计算)。"""
+    p = ROOT / AUDIT_PATH
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return None
 
 
 def load(tags, split):
@@ -73,6 +86,7 @@ def main():
     tags = [t.strip() for t in a.runs.split(",") if t.strip()]
     bank, items, rows = load(tags, a.split)
     vocab = bank["meta"]["category_vocab"]
+    audit = load_audit()
 
     scored = []
     for r in rows:
@@ -106,7 +120,7 @@ def main():
     for x in bad:
         for t in x["tags"]:
             cnt[t.split(" ")[0] if t.startswith(("超发", "漏")) else t] += 1
-    w("| 形态 | 次数 | 占 48 次错误的比例 |")
+    w(f"| 形态 | 次数 | 占 {len(bad)} 次错误的比例 |")
     w("|---|---|---|")
     for k, v in cnt.most_common():
         w(f"| {k} | {v} | {v/max(1,len(bad)):.0%} |")
@@ -139,44 +153,73 @@ def main():
 
     # ── gold 质量审计(这一节推翻了裁决的核心证据,必须放在最前)──
     w("\n---\n\n## 一之二、【重要】gold 本身有缺陷 —— 裁决的核心证据不成立\n")
-    w("逐题看 6 次跑(3 臂 × 2 rep)的 F1,发现异常规律:\n")
+    w("逐题看每一次跑的 F1,发现异常规律:\n")
     byq_f1 = defaultdict(list)
     for x in scored:
         if x["it"]["tier"] != "PROBE":
             byq_f1[x["r"]["id"]].append(x["v"])
-    w("| 题 | gold 条数 | 6 次跑的 F1 | 均值 |")
-    w("|---|---|---|---|")
+    w("| 题 | gold 条数 | 各次跑的 F1 | 均值 | 跑了几次 |")
+    w("|---|---|---|---|---|")
     for q in sorted(byq_f1, key=lambda k: statistics.mean(byq_f1[k])):
         v = byq_f1[q]
         w(f"| {q} | {items[q]['gold']['count']} | {[round(y,2) for y in v]} | "
-          f"{statistics.mean(v):.2f} |")
-    w("\n`t1-riding-horse` **六次跑全部 0.83,一模一样** —— 这不是随机,是系统性的:"
-      "每次都交付 7 条、命中全部 5 条 gold、多出同样的 2 条。查这 2 条:\n")
-    w("| 被判「多发」 | 标题 | 库内谓词 |")
-    w("|---|---|---|")
-    w("| `v_0EepbsAtiDk` | Horseback Riding on a Foggy Sandy Beach | **`horse riding`** |")
-    w("| `v_6NQl2Vcf0P0` | Cowboy Ropes Calf in Rodeo | `mounting horse`、`dismounting horse`、`running to horse` |")
-    w("\n第一条的谓词是 `horse riding`,而我的 gold 谓词是 `riding horse` —— **只是词序不同**,"
-      "精确匹配漏了它。第二条是牛仔骑马套小牛,也明显是骑马。**agent 是对的,gold 是错的。**\n")
-    w("体操题同理:被判多发的是 `performing gymnastics on parallel bars`、"
-      "`performing gymnastics on uneven bars`(比 gold 谓词更具体)、以及垫上翻腾 —— "
-      "而题面问的正是「在垫上或器械上做翻腾平衡动作」。\n")
-    w("**系统量化**:35 个被判「多发」的视频里,**25 个(71%)库内就带同词根谓词**,"
-      "是 gold 漏的,不是 agent 错的。\n")
-    w("### 后果:核心证据的方向会翻转\n")
-    w("| | 次数 | F1(严格 gold) | F1(宽松 gold) | 精确率(严格) | 精确率(宽松) |")
-    w("|---|---|---|---|---|---|")
-    w("| **拆了** | 17 | 0.653 | 0.368 | 0.565 | **0.858** |")
-    w("| **没拆** | 31 | 0.733 | 0.281 | 0.709 | **0.841** |")
-    w("| **拆了−没拆** | | **−0.080** | **+0.086** | | |")
-    w("\n> 宽松 gold = 严格 gold ∪ {库内带同词根谓词的视频}。\n")
-    w("**同一批数据,换个 gold 口径,结论方向就反过来。** 而宽松 gold 下两臂精确率都是 ~0.85 —— "
-      "说明「拆分导致精确率掉 20%」**完全是 gold 缺陷造成的假象**:拆分的臂找得更全,"
-      "而找全反被扣分。\n")
-    w("两个 gold 都不对:严格的太窄(漏词序变体与更具体的谓词),宽松的太宽"
-      "(把所有同词根谓词都算进来,召回率崩掉)。真相在中间,而**目前没有一把可信的尺子**。\n")
-    w("**因此**:裁决里「拆了更差」这条【撤回】。不依赖 gold 的硬事实只剩下 —— "
-      "拆分**贵 2.4 倍($0.399 vs $0.168)、慢 1.6 倍(248s vs 158s)**。\n")
+          f"{statistics.mean(v):.2f} | {len(v)} |")
+    # 找"多次跑分数一模一样"的题 —— 系统性(而非随机)是 gold 有问题的信号
+    flat = [(q, v) for q, v in byq_f1.items() if len(v) >= 3 and len(set(v)) == 1 and v[0] < 1.0]
+    if flat:
+        w("\n**异常信号**:下面这些题【多次跑分数一模一样且都不满分】 —— 随机性不会产生这种"
+          "结果,只有【每次都交付同一批、每次都被扣同样的分】才会:\n")
+        for q, v in sorted(flat):
+            w(f"- `{q}`:{len(v)} 次跑全部 {v[0]:.2f}")
+        w("")
+
+    if not audit:
+        w(f"\n> ⚠️ **未找到 gold 审计结果**(`{AUDIT_PATH}`)。本节的量化结论需要回查库内谓词,"
+          f"请先跑 `python -m evals.longhorizon_gold_audit --runs {','.join(tags)}`。\n")
+    else:
+        n_ex, n_sm = audit["extra_total"], audit["extra_same_stem"]
+        w(f"\n**系统量化**:{n_ex} 个被判「多发」的(题, 视频)里,"
+          f"**{n_sm} 个({audit['extra_same_stem_pct']:.0%})库内就带同词根谓词** —— "
+          "是 gold 漏的,不是 agent 错的。\n")
+        w("典型例子(从审计明细里取,不是手写的):\n")
+        w("| 题 | gold 谓词 | 被判「多发」 | 库内同词根谓词 |")
+        w("|---|---|---|---|")
+        for d in [x for x in audit["detail"] if x["gold_missed_it"]][:6]:
+            w(f"| {d['item']} | `{d['gold_predicate']}` | `{d['video_id']}` | "
+              + "、".join(f"`{p}`" for p in d["same_stem_predicates"][:3]) + " |")
+        w(f"\n> 同词根的判定规则(可复现):{audit['stem_rule']}\n")
+
+        w("### 后果:核心证据的方向会翻转\n")
+        cmp_ = audit["spawn_compare"]
+        w("| | 次数 | F1(严格 gold) | F1(宽松 gold) | 精确率(严格) | 精确率(宽松) |")
+        w("|---|---|---|---|---|---|")
+        for g in ("拆了", "没拆"):
+            c = cmp_.get(g)
+            if not c:
+                continue
+            w(f"| **{g}** | {c['n']} | {c['f_strict']:.3f} | {c['f_lenient']:.3f} | "
+              f"{c['p_strict']:.3f} | **{c['p_lenient']:.3f}** |")
+        dd = cmp_.get("差(拆了−没拆)") or {}
+        w(f"| **拆了−没拆** | | **{dd.get('f_strict', 0):+.3f}** | "
+          f"**{dd.get('f_lenient', 0):+.3f}** | {dd.get('p_strict', 0):+.3f} | "
+          f"{dd.get('p_lenient', 0):+.3f} |")
+        flip = (dd.get("f_strict") or 0) * (dd.get("f_lenient") or 0) < 0
+        w("\n> 宽松 gold = 严格 gold ∪ {本题里被判多发、但库内带同词根谓词的视频}。\n")
+        if flip:
+            w("**同一批数据,换个 gold 口径,F1 差的方向就反过来。** "
+              f"精确率差也从 {dd.get('p_strict', 0):+.3f} 收窄到 {dd.get('p_lenient', 0):+.3f} —— "
+              "说明「拆分导致精确率大幅下降」很大程度是 gold 缺陷造成的:"
+              "拆分的臂找得更全,而找全反被扣分。\n")
+        else:
+            w("**注意**:本批数据里换 gold 口径后方向【没有】翻转,"
+              "但差值大小变了 —— 结论对尺子的选择仍然敏感。\n")
+        w(f"> {audit['caveat']}\n")
+        w(f"> {audit['caveat_endogenous']}\n")
+        w("**因此**:裁决里「拆了更差」这条【撤回】。不依赖 gold 的硬事实只剩成本与耗时 —— "
+          f"拆了 ${cmp_['拆了']['cost']:.3f}/{cmp_['拆了']['wall']:.0f}s "
+          f"vs 没拆 ${cmp_['没拆']['cost']:.3f}/{cmp_['没拆']['wall']:.0f}s"
+          f"(**{cmp_['拆了']['cost']/cmp_['没拆']['cost']:.1f} 倍成本、"
+          f"{cmp_['拆了']['wall']/cmp_['没拆']['wall']:.1f} 倍耗时**)。\n")
 
     # ── 拆分为什么没带来收益:资源账本的结构缺陷 ──
     w("\n---\n\n## 一之三、【结构问题】子 agent 失败时,钱花了、配额烧了、结论是空的\n")
@@ -188,16 +231,19 @@ def main():
     w(f"| `MAX_LOOP_STEPS` | {cfg.MAX_LOOP_STEPS} | 主脑自己的步数 |")
     w(f"| `SUBAGENT_MAX_STEPS` | **{cfg.SUBAGENT_MAX_STEPS}** | 每个子 agent 自己的步数 |")
     w(f"| `MAX_VIDEOS_PER_REQUEST` | {cfg.MAX_VIDEOS_PER_REQUEST} | **整棵树共享**的视频分析配额 |")
-    w("\n`pipeline/subagents.py:12-13` 的原注释:\n")
+    w("\n`pipeline/subagents.py` 模块头的原注释:\n")
     w("> 【父请求的 execute 闭包】—— 子 agent 复用它 → analyze_video 计入同一配额"
       "(MAX_VIDEOS_PER_REQUEST,不绕过成本闸)\n")
-    w("这本身是对的(防止拆分绕过成本闸)。问题在另一半 —— `pipeline/subagents.py:184`:\n")
-    w("```python\nelse:                       # 未收敛也是一种失败,要有码\n"
-      '    out = f"(子 agent 未收敛:{r.terminated})"\n```\n')
-    w(f"**子 agent 只有 {cfg.SUBAGENT_MAX_STEPS} 步**,却要装下「读任务 + 逐个看视频 + 汇总成文」。"
-      "装不下就撞墙,撞墙就返回上面那句空话。\n")
+    w("这本身是对的(防止拆分绕过成本闸)。问题在另一半 —— 未收敛时 `_run_one` 曾经只回一句"
+      "`(子 agent 未收敛:{terminated})`,把 `r.ledger` 里那几份**已经花钱买到**的 analyze"
+      "结论直接丢弃。\n")
+    w("> 代码位置随版本移动,以 `pipeline/subagents.py` 里 `_run_one` 的**无结论分支**为准"
+      "(现已改为调用 `_no_answer_output` 做残值回收)。\n")
+    w(f"**当时子 agent 只有 {cfg.SUBAGENT_MAX_STEPS} 步**,却要装下「读任务 + 逐个看视频 + 汇总成文」。"
+      "装不下就撞墙,撞墙就返回那句空话。\n")
     w("于是形成一个**不对称的账**:\n")
-    w("- **花掉的**:子 agent 每看一个视频,都从全树 12 个配额里扣掉一个,钱也真花了 —— **不可逆**;\n")
+    w(f"- **花掉的**:子 agent 每看一个视频,都从全树 {cfg.MAX_VIDEOS_PER_REQUEST} 个配额里扣掉一个,"
+      "钱也真花了 —— **不可逆**;\n")
     w("- **拿到的**:一句「(子 agent 未收敛:max_steps)」,**零信息**。\n")
     w("主脑接手时的处境是最坏的:既没有子 agent 的结论,也没有配额自己去补看。\n")
     w("### 实测发生率\n")
@@ -220,34 +266,54 @@ def main():
     w(f"- 主脑撞上全树 analyze 配额:**{qn}/{len(sp)}**\n")
     w("> 这是**下界**,不是真实发生率:`main-v3` 那批只存了前 6 轮思考,"
       "子 agent 通常在第 6 步之后才回来,所以那批里发生了也看不见。\n")
-    w("### 一次完整的双输(`t1-cheering` C 臂 · fulltrace)\n")
-    w("这一次拆了,gold 7 条,最后只交付 5 条。大脑自己把原因说得很清楚 ——\n")
-    w("**step 7**(spawn 刚回来):\n")
-    w("> Ah, it seems my **sub-agent didn't converge as expected (max_steps)**. "
-      "This could stem from an internal execution issue within the sub-agent or simply "
-      "insufficient steps. No matter, I can proceed by directly invoking `analyze_video` myself.\n")
-    w("**step 8**(它去 analyze 了,被挡):\n")
-    w("> My initial thought upon seeing the **「已达本请求视频分析上限(12 个)」** message was a "
-      "slight frustration. It dawned on me that **my prior `spawn_agents` calls likely involved "
-      "multiple internal `analyze_video` invocations, accumulating to hit the ceiling.**\n")
-    w("**step 11**(退而求其次):\n")
-    w("> Okay, it seems I've hit my limit on something, but that's perfectly fine! "
-      "The results from `semantic_search` are incredibly valuable. ... "
-      "I'll organize these `semantic_search` snippets now.\n")
-    w("最终它是**靠检索片段的文字描述**收口的,不是靠看画面。拆分在这一次的净效果:"
-      "**烧掉全部 12 个视频配额,换回零条结论,并把主脑逼回文字证据**。\n")
+    # 案例叙述:定位靠【在 turns 里搜关键句】,不写死题号/臂/step 号 —— 换一批数据也能自己找到。
+    case = None
+    for x in scored:
+        ts = x["r"].get("turns") or []
+        has_nc = any("converge" in (t.get("brain") or "") for t in ts)
+        has_q = any(("the ceiling" in (t.get("brain") or ""))
+                    or ("视频分析上限" in (t.get("brain") or "")) for t in ts)
+        if has_nc and has_q:
+            case = x
+            break
+    if case:
+        cr, cit = case["r"], case["it"]
+        w(f"### 一次完整的双输(`{cr['id']}` {cr['arm']} 臂 · rep{cr['rep']} · `{cr['_tag']}`)\n")
+        w(f"这一次拆了,gold {cit['gold']['count']} 条,最后交付 "
+          f"{len(cr.get('surfaced') or [])} 条。大脑自己把原因说得很清楚 ——\n")
+        for t in (cr.get("turns") or []):
+            b = (t.get("brain") or "").strip()
+            if not b:
+                continue
+            tag = ("(spawn 刚回来)" if "converge" in b else
+                   "(它去 analyze 了,被挡)" if ("the ceiling" in b or "视频分析上限" in b) else None)
+            if tag:
+                w(f"**step {t.get('step')}**{tag}:\n")
+                w("> " + b[:600].replace("\n", " ") + "\n")
+        w("最终它只能靠**检索片段的文字描述**收口,而不是靠看画面。拆分在这一次的净效果:"
+          f"**烧掉全树 {cfg.MAX_VIDEOS_PER_REQUEST} 个视频配额,换回零条结论,"
+          "并把主脑逼回文字证据**。\n")
+    else:
+        w("### 一次完整的双输\n")
+        w("> 本批数据里没找到【子 agent 未收敛 + 主脑随后撞配额】同时留痕的跑次"
+          "(老跑机只存前 6 轮思考,大概率被截断了)。\n")
     w("### 这解释了什么\n")
-    w("裁决里「拆了贵 2.4 倍却看不出质量好处」—— 至少一部分不是「拆分这个思路没用」,"
-      "而是**当前实现下拆分的失败模式代价太高**:失败不是「白干一次」,是「白干一次 + 把主脑的后路也断了」。\n")
-    w("**三个都便宜的修法(按性价比排序)**:\n")
-    w("1. **子 agent 失败要退配额**:未收敛时把它占用的 analyze 名额还回去 —— "
-      "钱退不了,但至少主脑还能自己补看。改动只在 `subagents.py` 的失败分支;\n")
-    w("2. **失败也要交部分结论**:子 agent 撞 max_steps 时,把它【已经看到的】"
-      "analyze 结果原样带回给主脑,而不是一句「未收敛」。它明明已经花钱看过了;\n")
-    w(f"3. **步数按活配**:`SUBAGENT_MAX_STEPS={cfg.SUBAGENT_MAX_STEPS}` 装不下"
-      "「规划 + 看 N 个视频 + 汇总」。要么按子任务里的视频数动态给,"
-      "要么在 spawn 描述里明说「一个子任务别塞超过 2 个视频」。\n")
-    w("这三条都不需要 Phase 2,也不需要深度 2 —— 是把**已有的一层拆分**修到及格。\n")
+    w("「拆了更贵却看不出质量好处」—— 至少一部分不是「拆分这个思路没用」,而是"
+      "**当时实现下拆分的失败模式代价太高**:失败不是「白干一次」,"
+      "是「白干一次 + 把主脑的后路也断了」。\n")
+    w("**修法(已实施)**:\n")
+    w("1. ~~子 agent 失败退配额~~ —— **这条是错的,已撤回**:钱已经花出去了,把配额计数减回去"
+      f"只会让整棵树实际花掉两倍于 `MAX_VIDEOS_PER_REQUEST`({cfg.MAX_VIDEOS_PER_REQUEST})的预算,"
+      "直接废掉成本闸的语义。配额管的是「最多调几次 Gemini」,不是「最多拿到几个有用结论」;\n")
+    w("2. ✅ **失败也交回已买到的结果**(`subagents._salvage_analyses`):撞 max_steps / repeat /"
+      "熔断时,把 `r.ledger` 里**已成功执行的 analyze 结论**带回主脑,诚实标注「未经子 agent 综合」。"
+      "闸门信封(`gate==\"blocked\"`)排除 —— 把一句「已达上限」当证据回流是灾难;\n")
+    w(f"3. ✅ **步数按活配 + 基线上调**(`subagents._steps_for`,现基线 "
+      f"`SUBAGENT_MAX_STEPS={cfg.SUBAGENT_MAX_STEPS}`、封顶 "
+      f"`SUBAGENT_MAX_STEPS_CAP={getattr(cfg, 'SUBAGENT_MAX_STEPS_CAP', '?')}`):"
+      "真机实测拿 4~5 步的子 agent 无一收敛、拿 6 步的全部收敛,且与派了几个视频无关 —— "
+      "同一步内 analyze 是并行的,卡死的是固定开销(定位 + 看 + 汇总),4 步等于零余量。\n")
+    w("这些都不需要深度 2 —— 是把**已有的一层拆分**修到及格。\n")
 
     # ── 逐条 ──
     w("\n---\n\n## 二、逐条完整 trace(按题分组,按 F1 从低到高)\n")
@@ -310,7 +376,7 @@ def main():
                     mark = "✅ 命中" if v in gold else "❌ 多发"
                     w(f"- `{v}` {mark}")
             else:
-                w("\n**实际交付:0 条**")
+                w(f"\n**实际交付:{len(surf)} 条**")
             if miss:
                 w(f"\n**漏掉({len(miss)} 条)**:" + "、".join(f"`{v}`" for v in miss))
 
