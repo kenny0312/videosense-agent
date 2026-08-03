@@ -439,3 +439,109 @@ def test_subagent_failure_opens_a_span_with_cause(monkeypatch):
     spans = [s for s in tr.as_list() if s["component"] == "exec"]
     assert spans and spans[0]["cause"] == "EXEC_TOOL_ERROR" and spans[0]["status"] == "error"
     assert tr.cause_counts() == {"EXEC_TOOL_ERROR": 1}
+
+
+# ── A1 连带回归:残值回收必须活过"run_loop 不再回 None"这次改动 ──────────────
+def test_salvage_survives_real_run_loop_max_steps(monkeypatch):
+    """用【真 run_loop】造 max_steps,验残值回收仍然触发。
+
+    为什么必须用真 run_loop:上面那些用例手搓 `LoopResult(answer=None, terminated="max_steps")`,
+    而 A1 之后真 run_loop 在 max_steps 返回的是【非空的系统占位文案】(MAX_STEPS_ANSWER)——
+    手搓的形状生产上已经造不出来了,那几条测试锁的是死契约,全绿等于假信心。
+    这一条只替换 make_conversation(不碰 run_loop),所以 answer/terminated 的真实组合
+    一定与生产一致:谁再把 subagents 的分支判据改回"只看 answer 非空",这条就红。
+    """
+    from contextvars import copy_context
+
+    from pipeline import loop_driver
+
+    class _Conv:                      # 永不收口的会话:每一步都再要一次 analyze
+        def __init__(self):
+            self.n = 0
+
+        def send(self, msg):
+            """真 run_loop 的契约:返回 (calls, text)。calls 非空 = 还要调工具,不收口。"""
+            self.n += 1
+            call = type("C", (), {"name": "analyze_video",
+                                  "inputs": {"video_id": f"v_{self.n}"}, "uses": []})()
+            return [call], ""
+
+    def _exec(cid, name, inputs, upstream, uses):
+        return ExecResult(ok=True, value=_analyze_value(inputs["video_id"], "看到了内容"))
+
+    monkeypatch.setattr(loop_driver, "make_conversation", lambda *a, **k: _Conv())
+    monkeypatch.setattr(loop_driver, "loop_function_declarations",
+                        lambda *a, **k: [{"name": "analyze_video"}])
+    task = {"instruction": "看 A 组", "video_ids": [], "tools": ["analyze_video"]}
+    out = copy_context().run(subagents._run_one, task, execute=_exec, sandbox=None,
+                             trace=None, schema=None, session_id=None, owner="t",
+                             model="m", max_steps=3)["output"]
+
+    assert "未收敛" in out, f"撞墙的子 agent 必须如实报未收敛,实际拿到:{out[:200]}"
+    assert "已经看过" in out, "残值回收没触发 —— 花钱买到的 analyze 结论被丢了"
+    assert "看到了内容" in out, "捞回的内容里没有真实的 analyze 结论"
+    assert loop_driver.MAX_STEPS_ANSWER not in out, (
+        "把面向【最终用户】的系统占位文案当成子任务结论回流给主脑了")
+
+
+def test_salvage_survives_real_run_loop_repeat(monkeypatch):
+    """同上,但走【真 run_loop 的 repeat 终止】—— 锁住判据必须是 `== "text"` 而不是
+    `!= "max_steps"`。repeat 同样带着 ledger 回来(loop_driver 那条 return 传了 ledger),
+    同样是"没交出结论但已经花过钱",残值一样要回收。
+
+    造 repeat:会话每轮返回【完全相同】的调用签名,执行器对它恒失败 → seen[sig] 撞
+    repeat_limit。掺一次成功的 analyze 在前面,好验证捞回来的是那一条。
+    """
+    from contextvars import copy_context
+
+    from pipeline import loop_driver
+
+    class _Conv:
+        def __init__(self):
+            self.n = 0
+
+        def send(self, msg):
+            self.n += 1
+            if self.n == 1:                       # 第 1 轮:一次成功的 analyze(花了钱)
+                c = type("C", (), {"name": "analyze_video",
+                                   "inputs": {"video_id": "v_paid"}, "uses": []})()
+            else:                                 # 之后每轮:同一个必失败签名,撞 repeat
+                c = type("C", (), {"name": "sql_query",
+                                   "inputs": {"sql": "SELECT boom"}, "uses": []})()
+            return [c], ""
+
+    def _exec(cid, name, inputs, upstream, uses):
+        if name == "analyze_video":
+            return ExecResult(ok=True, value=_analyze_value(inputs["video_id"], "花钱看到的内容"))
+        return ExecResult(ok=False, stderr="boom")
+
+    monkeypatch.setattr(loop_driver, "make_conversation", lambda *a, **k: _Conv())
+    monkeypatch.setattr(loop_driver, "loop_function_declarations",
+                        lambda *a, **k: [{"name": "analyze_video"}, {"name": "sql_query"}])
+    task = {"instruction": "看 A 组", "video_ids": [],
+            "tools": ["analyze_video", "sql_query"]}
+    out = copy_context().run(subagents._run_one, task, execute=_exec, sandbox=None,
+                             trace=None, schema=None, session_id=None, owner="t",
+                             model="m", max_steps=12)["output"]
+
+    assert "未收敛:repeat" in out, f"repeat 终止必须如实报,实际:{out[:200]}"
+    assert "花钱看到的内容" in out, "repeat 路径上残值回收没触发 —— 已付费的 analyze 结论被丢了"
+
+
+def test_only_text_termination_counts_as_a_conclusion(monkeypatch):
+    """判据必须是【白名单 == "text"】,不是黑名单 != "max_steps"。
+
+    为什么这条单独存在:上面两条真 run_loop 用例杀不掉 `!= "max_steps"` 这个变异 ——
+    因为 repeat 路径今天返回的 answer 恰好是 None(loop_driver 那条 return 没跟着 A1 改),
+    两种写法在【现有的】终止值上行为相同,是等价变异。但等价只是今天的巧合:
+    以后任何一条新的终止路径只要开始返回非空占位文案(A1 对 max_steps 干的正是这件事),
+    黑名单就会把它当成"子 agent 收敛了",再次绕过残值回收。这条用一个假终止值把
+    "只有 text 才算结论"钉死,让黑名单写法立刻红。
+    """
+    entries = [("c0_0", "analyze_video", True, _analyze_value("v_1", "已经花钱看到的内容"))]
+    lr = _lr_unconverged(entries, terminated="some_future_reason",
+                         answer="(系统)这是一段占位文案,不是子任务结论")
+    out = _run_one_with(monkeypatch, lr)
+    assert "已经花钱看到的内容" in out, (
+        "非 text 终止被当成了收敛 → 残值回收被绕过。判据要用白名单 == 'text'")
+    assert "占位文案" not in out, "把系统占位文案当成子任务结论回流给主脑了"

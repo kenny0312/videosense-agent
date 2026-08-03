@@ -89,7 +89,10 @@ class ScriptedWorld:
     def run(self, user_query, max_steps: int = 16):
         conv = ScriptedConv(self.script)
         execute = make_exec(values=self.tool_results, fail=self.fail)
-        return run_loop(user_query, conv, execute, max_steps=max_steps)
+        res = run_loop(user_query, conv, execute, max_steps=max_steps)
+        if res.terminated != "text":      # 同 EvalBackend 那条:占位文案不是 agent 的回答
+            res.answer = ""
+        return res
 
 
 # ── 评测假后端（真跑用）──────────────────────────────────────────────
@@ -272,6 +275,14 @@ class LiveWorld:
         )
         execute = loop_driver._make_executor(SandboxClient(), Trace(), schema, None, owner=self.owner)
         res = run_loop(user_query, conv, self.backend.wrap_execute(execute), max_steps=max_steps)
+        # A1 连带(保真):terminated != "text" 时 run_loop 交的是【系统占位文案】,不是 agent
+        # 的回答 —— 步数耗尽的那段兜底话术里带"没能",正好命中 scorers._NEG_WORDS,于是
+        # expect_refusal / expect_honest_disclaimer 这类题会【白拿 1.0】(实测 42 道 0→1),
+        # 而抬得最狠的正是"该说没有"那一类,尺子被我们自己的兜底文案骗过去了。
+        # 置空 = 恢复 A1 之前的判分口径,历史基线仍可比。不靠改文案措辞躲:把"没能"换成
+        # "未能"只会让 expect_positive 那一支从 0.0 翻成 1.0,更糟。
+        if res.terminated != "text":
+            res.answer = ""
         # 保真:生产在 run_loop 外层还有一道终清洗(loop_driver 收口处 scrub_ids),用户看到的
         # 是清洗后的答案;评测此前直连 run_loop 绕过了它 → 尺子在看用户看不到的裸文本。
         # (selfknow-links 实录:模型手滑列裸 id,生产会被兜住、考场却记 0 —— 考的不是同一个系统)

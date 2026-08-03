@@ -683,8 +683,10 @@ def resign(req: ResignRequest, request: Request):
 class EnrichRequest(BaseModel):
     video_id: str = Field(..., description="要富化的视频 id(上传 PUT 成功后调用)")
     duration_sec: float | None = Field(
-        None, description="素材时长(秒),可选。前端直传时 <video>.duration 现成 —— 给了就按它算死线,"
-                          "不给则走死线上限。只影响本次死线,且已被上下限夹住(见 _enrich_deadline_sec)")
+        None, description="素材时长(秒),可选。给了就按它算死线,不给则走死线上限。"
+                          "注:目前【没有调用方提供它】—— 前端上传处理器手里只有 File 对象,"
+                          "取时长要另加 createObjectURL + loadedmetadata,见 web/index.html 的上传流程。"
+                          "只影响本次死线,且已被上下限夹住(见 _enrich_deadline_sec)")
 
 
 # ── A8(P0-5)enrich 判死:按素材时长算死线 + 状态位 + 查询端点 ────────────────
@@ -703,7 +705,11 @@ _ENRICH_STATUS_MAX = 256                    # 有界:长跑进程别把状态位
 
 def _enrich_deadline_sec(duration_sec) -> int:
     """按素材时长给死线。时长【测不到】→ 给上限 60min:判死是为了让卡住的活有终点,
-    不是为了砍慢活 —— 宁可多等 60 分钟,也不要把一份 3 小时素材的合法富化误杀。"""
+    不是为了砍慢活 —— 宁可多等 60 分钟,也不要把一份 3 小时素材的合法富化误杀。
+
+    ⚠️ 当前唯一调用方(web/index.html 的上传流程)【不传 duration_sec】,所以生产上这条
+    公式恒落在上限 3600s。也就是说 A8 今天真正买到的是"从无穷到有界 + 有状态位可查",
+    "按时长算"这一半还没在生产生效 —— 时长源待前端补。别把注释当成已生效的现状读。"""
     try:
         d = float(duration_sec)
     except (TypeError, ValueError):
@@ -716,13 +722,21 @@ def _enrich_deadline_sec(duration_sec) -> int:
 def _hinted_duration_sec(hinted) -> "float | None":
     """时长只认请求体带来的那一个数,不去查库。理由(实测过调用面,不是省事):
     本端点【只】被前端直传流程调用(web/index.html 上传成功后 fire-and-forget),
-    传进来的恒是 up_ 临时视频 —— 它按设计【不进 video_metadata】,查库必然空手而归,
-    却要在请求路径上白挂一次 MCP 子进程往返。库内视频的批量富化走的是
-    perception/setup_enrichment.py 那个脚本,根本不经过这里。
-    脏值(None / 非数 / ≤0 / NaN)→ None,由 _enrich_deadline_sec 归到"测不到"。"""
+    传进来的恒是 up_ 临时视频 —— 它按设计【不进 video_metadata】,查库必然空手而归。
+    库内视频的批量富化走的是 perception/setup_enrichment.py 那个脚本,根本不经过这里。
+    (时长查询本可以搭 already_enriched 那条常驻 psycopg 连接,不贵 —— 不做的理由
+    只有"查了必空手"这一条,不是成本。)
+
+    脏值(None / 非数 / ≤0 / NaN / ±inf)→ None,由 _enrich_deadline_sec 归到"测不到"。
+    +inf 必须显式挡:min(cap, 2*inf) == cap 恰好成立,所以死线看起来没问题,
+    但 inf 会被原样写进状态位,GET /v1/enrich/{vid} 序列化时 500(JSON 没有 Infinity),
+    且该 vid 【永久】查不了。而这条路是可达的 —— 上传白名单里有 video/webm,
+    MediaRecorder 产出的 WebM 其 <video>.duration === Infinity。"""
     try:
         d = float(hinted)
     except (TypeError, ValueError):
+        return None
+    if d != d or d in (float("inf"), float("-inf")):      # NaN(d!=d)与 ±inf
         return None
     return d if d > 0 else None
 

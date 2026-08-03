@@ -117,9 +117,14 @@ def test_enrich_deadline_unknown_duration_gets_full_leash():
     """测不到时长 → 给上限,绝不误杀。判死是为了让卡住的活有终点,不是为了砍慢活。"""
     srv = _srv()
     cap = srv.ENRICH_DEADLINE_CAP_SEC
-    bad_values = (None, 0, -5, "abc", "", float("nan"), float("inf"), [1])
+    bad_values = (None, 0, -5, "abc", "", float("nan"), float("inf"), float("-inf"), [1])
     for bad in bad_values:
-        # 端到端口径(端点走的这条):脏值先被 _hinted_duration_sec 归一
+        # 清洗口径:脏值必须【真的被洗成 None】。只断言最终死线 == cap 是【空转的】——
+        # min(cap, 2*inf) == cap 恰好成立,inf 一路混过清洗、混进状态位,直到
+        # GET /v1/enrich/{vid} 序列化时 500。断言中间值才抓得住。
+        assert srv._hinted_duration_sec(bad) is None, (
+            f"{bad!r} 必须被洗成 None,不能靠 min() 把它夹回上限来掩盖")
+        # 端到端口径(端点走的这条)
         assert srv._enrich_deadline_sec(srv._hinted_duration_sec(bad)) == cap
         # 直喂口径:_enrich_deadline_sec 自己也必须扛住脏值,不许依赖上游先洗一遍
         assert srv._enrich_deadline_sec(bad) == cap, f"{bad!r} 应归到测不到一档 → 给满绳"

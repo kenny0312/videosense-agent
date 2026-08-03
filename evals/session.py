@@ -75,8 +75,11 @@ class DualControlSession:
             turns.append(TurnRecord("user_sim", ut["utterance"], ut.get("action")))
             r = loop_driver.run_loop(ut["utterance"], conv, execute,
                                      max_steps=self.task.get("max_steps", 16))
-            history.append({"who": "agent", "text": r.answer or ""})
-            turns.append(TurnRecord("agent", r.answer or "", trace=r.trace, ledger=r.ledger,
+            # A1 连带:terminated != "text" 交的是系统占位文案,不是 agent 的回答。
+            # 直接进判分会让文案里的"没能"命中 scorers._NEG_WORDS → expect_refusal 类白拿 1.0。
+            atext = r.answer if r.terminated == "text" else ""
+            history.append({"who": "agent", "text": atext or ""})
+            turns.append(TurnRecord("agent", atext or "", trace=r.trace, ledger=r.ledger,
                                     llm_calls=r.llm_calls))
             if ut.get("done"):
                 break

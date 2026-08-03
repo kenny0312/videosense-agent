@@ -256,7 +256,14 @@ def _run_one(task: dict, *, execute, sandbox, trace, schema, session_id, owner,
             out = _no_answer_output("子 agent 因成本护栏终止,本子任务无结论", r)
             if span:
                 span.soft("EXEC_NOT_CONVERGED", error="tree_guard")
-        elif r.answer is not None:
+        # 【必须同时判 terminated】只判 answer 非空会在 A1 之后走错分支:A1 让 run_loop 在
+        # max_steps 也返回一段【系统占位文案】(MAX_STEPS_ANSWER),而不再是 None。只看
+        # `answer is not None` 的话,撞墙的子 agent 会被当成"收敛了",把那段面向最终用户的
+        # 话术当成子任务结论回流,并且【绕过下面的残值回收】—— 真机实测子 agent 撞墙率
+        # 10/14=71%、那批共捞回 16 条已付费的 analyze 结论,全都会被重新丢掉。
+        # 判据与 loop_driver 给 S-9 销账用的那条完全相同:terminated != "text" 时交的是
+        # 系统占位文案,不是 agent 的回答。
+        elif r.answer is not None and getattr(r, "terminated", "") == "text":
             from pipeline.agentops.treeguard import GUARD_NOTE_PREFIX
             out = r.answer
             k = out.find(GUARD_NOTE_PREFIX)

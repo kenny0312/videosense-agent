@@ -793,8 +793,13 @@ def _make_executor(sandbox, trace, schema, session_id, owner: str = "anon",
                     quota["analyzed"] += 1
         # loop_execute=execute:spawn_agents 的子 agent 复用【本】execute 闭包 → analyze 计入同一
         # 配额(不绕过成本闸),token 也折进同一 usage 审计。execute 在下方定义,运行时已绑定(闭包)。
+        # A7+ B 方案:guard 一路传到 analyze 的重试循环里。以前 admit 只在【外层每工具一次】,
+        # 而 analyze_video_contextual 的 for _ in range(RETRY_LIMIT+1) 在函数内部对 guard
+        # 不可见 —— 记 1 笔、实发 3 次 LLM 调用,成本账错 3 倍。下沉后每次真实 generate
+        # 各预留一次,笔数天然对得上,【不需要也不许】调大估价或乘 RETRY_LIMIT 系数。
         nr = execute_node(node, upstream, sandbox, trace, schema=schema,
-                          session_id=session_id, owner=owner, loop_execute=execute)
+                          session_id=session_id, owner=owner, loop_execute=execute,
+                          guard=guard)
         # #2 修:analyze_video 的结论+理由都在 answer 里;默认 80 字/格会把理由砍掉,大脑收口时
         # 只看到前 80 字 → 答案干瘪。给它大额度预览,完整证据进得了最终答案(其余工具仍用小预览省 token)。
         # U6 review 修:web_search 同理 —— 综述+来源被砍到 80 字会逼大脑拿自身知识脑补"搜索结果"
@@ -825,15 +830,12 @@ def _make_executor(sandbox, trace, schema, session_id, owner: str = "anon",
         # 且触闸后仍要能把已有结果交付给用户。admit 放行即预留、settle 释放 ——
         # 否则同一步 K 个并行 analyze 在钱落账前互相看不见,超冲 = K×单次成本(红队 B3,
         # review 变异验证:光加锁防不住)。触闸 → 软失败信封【全文】回喂,教大脑收口。
-        if not name.startswith("show_"):
-            # analyze_video 的预留按【本请求实际生效的档位】选:pro/长视频单次 $0.10~0.30
-            # (通用 $0.05 会让并行 analyze 冲穿 cap);但 flash 单次只要约 $0.015,
-            # 一律按 pro 估价会让【一步内并行 3 个 analyze】在实花 $0.13 时就把 $0.80 的闸
-            # 顶掉(Phase 1 主跑实测,20 倍高估),而且专挑"看视频多"的路径罚 —— 反了。
-            est = None
-            if name == "analyze_video":
-                est = (config.TREE_ANALYZE_ESTIMATE_USD if _is_pro_analyze()
-                       else config.TREE_CALL_ESTIMATE_USD)
+        # A7+ B 方案:analyze_video 【不在这里】admit —— 它的 admit/settle 已经下沉到
+        # analyze_video_contextual 的重试循环里,每次真实 generate 各预留一次。
+        # 两处都记 = 外 1 + 内 N,反而把账多算一笔;而估价也已改由 node_executor
+        # 按实际生效档位算(_analyze_estimate),这里再算一遍只会两处口径漂移。
+        if not name.startswith("show_") and name != "analyze_video":
+            est = config.TREE_CALL_ESTIMATE_USD
             blocked = guard.admit(estimate=est, what=f"工具 {name}")
             if blocked:
                 res = _soft_note(blocked)   # 全文回喂(_preview 会把指令腰斩,见 _soft_note)
