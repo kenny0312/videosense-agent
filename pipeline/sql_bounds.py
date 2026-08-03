@@ -145,9 +145,13 @@ def needs_envelope(res: BoundedResult, *, report: bool) -> bool:
       · 截断了 —— 数组里没地方写"其实还有";
       · 零行 —— 数组里没地方写列名(见 columns_of 的注释)。
     其余情况一律裸数组:非空未截断时列名从行 key 就能看出来,没必要动 wire。
-    `report=False`(USE_BOUNDED_SQL 关)时永远裸数组 —— 与今天逐字节等价。
+
+    **截断【不受开关控制】**(任务书 §12 规则 3:正确性字段 truncated/total/error
+    永不受开关控制)。原因很实在:上界是安全项、恒生效,所以关掉开关并不会让行回来,
+    只会让上游【不知道行被扔了】—— 那比今天(返回全量)更隐蔽,是把安全项做成了
+    静默丢数据。开关只管【零行时报不报列名】这一件纯展示的事。
     """
-    return report and (res.truncated or not res.rows)
+    return res.truncated or (report and not res.rows)
 
 
 def build_envelope(res: BoundedResult) -> dict:
@@ -166,14 +170,17 @@ def fill_meta(meta: dict | None, res: BoundedResult, *, report: bool) -> None:
 
     契约:【没截断就不碰截断四键】。上游用 `meta.get("truncated")` 判断,
     所以这四个键的存在本身就是信号,不能有"truncated=False"这种半吊子填法。
-    columns 是另一回事(不是截断信号),report 开着且服务端报了列名时就填。
+
+    截断四键【不受 report 控制】—— 见 needs_envelope 的说明:上界恒生效,
+    关掉开关不会让行回来,只会让上游不知道行被扔了。columns 是另一回事
+    (纯展示,不是截断信号),归 report 管。
     """
-    if meta is None or not report:
+    if meta is None:
         return
     if res.truncated:
         meta["truncated"] = True
         meta["total_seen"] = res.total_seen
         meta["returned"] = res.returned
         meta["reason"] = res.reason
-    if res.truncated or not res.rows:
+    if report and (res.truncated or not res.rows):
         meta["columns"] = res.columns

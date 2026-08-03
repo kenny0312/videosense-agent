@@ -70,7 +70,7 @@ def test_repairable_sqlstates_do_enter_fixer():
         _CountingFixer.calls = 0
         calls = {"n": 0}
 
-        def q(sql, _c=code):
+        def q(sql, _c=code, meta=None):
             calls["n"] += 1
             raise _pgerr("bad sql", _c)
 
@@ -87,7 +87,7 @@ def test_timeout_does_not_enter_fixer():
     _CountingFixer.calls = 0
     calls = {"n": 0}
 
-    def q(sql):
+    def q(sql, meta=None):
         calls["n"] += 1
         raise _pgerr("canceling statement due to statement timeout", "57014")
 
@@ -105,7 +105,7 @@ def test_lock_not_available_does_not_enter_fixer():
     """55P03 = lock not available。同样不是 SQL 写错了。"""
     _CountingFixer.calls = 0
 
-    def q(sql):
+    def q(sql, meta=None):
         raise _pgerr("could not obtain lock on relation", "55P03")
 
     res = _run_with(q)
@@ -119,7 +119,7 @@ def test_transport_error_without_pgcode_does_not_enter_fixer():
     _CountingFixer.calls = 0
     calls = {"n": 0}
 
-    def q(sql):
+    def q(sql, meta=None):
         calls["n"] += 1
         raise _pgerr("server closed the connection unexpectedly", None)
 
@@ -179,13 +179,30 @@ def test_shell_present_when_truncated():
     assert "至少" in res.value["_note"] and "COUNT(*)" in res.value["_note"]
 
 
-def test_shell_survives_old_query_db_signature():
-    """临时兼容:query_db 还没有 meta 形参时也不能崩(合并前的中间状态)。"""
-    def old_style(sql):           # 老签名,只吃 sql
+def test_doubles_must_match_production_signature():
+    """替身签名必须和生产 query_db 一致 —— 对不上要【当场炸】,不许静默降级。
+
+    合并前这里曾有个"容忍老签名"的兼容层。它撤掉了,而且撤对了:
+    一个签名和真函数对不上的替身就是【坏替身】,它会让测试在一个生产上不存在的
+    形状上全绿。本仓刚吃过这个亏 —— `_mask_ts` 的单测只测函数本身、从不测接线,
+    于是它在 evals/world.py 那条路上被整个替换掉、失效了很久还一直绿着。
+
+    所以这条反过来钉:老签名的替身必须让调用失败(TypeError 被 _run_sql_query
+    归到"拿不到 SQLSTATE 的传输错"→ ok=False),而不是悄悄按老路走通。
+    """
+    import inspect
+
+    from pipeline import mcp_client
+
+    params = inspect.signature(mcp_client.query_db).parameters
+    assert "meta" in params, "生产 query_db 没有 meta 形参了?契约变了就要同步改这里"
+    assert params["meta"].default is None, "meta 必须可选,否则每个既有调用点都要改"
+
+    def old_style(sql):           # 老签名替身:少一个形参
         return [{"id": 1}]
 
     res = _run_with(old_style)
-    assert res.ok and res.value == [{"id": 1}]
+    assert not res.ok, "签名对不上却跑通了 —— 说明还有一层在静默兼容,把坏替身放过去了"
 
 
 def test_query_not_resent_when_signature_lacks_meta():

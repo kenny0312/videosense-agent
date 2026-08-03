@@ -76,7 +76,7 @@ def _pgerr(msg: str, code: str) -> RuntimeError:
 def test_selfheal_recovers():
     calls = {"n": 0}
 
-    def fake_query(sql):
+    def fake_query(sql, meta=None):   # 与生产 query_db 同签名(替身对不上就是坏替身)
         calls["n"] += 1
         if calls["n"] == 1:
             raise _pgerr('column "likes" does not exist', "42703")
@@ -101,7 +101,7 @@ def test_selfheal_recovers():
 
 
 def test_selfheal_budget():
-    def always_fail(sql):
+    def always_fail(sql, meta=None):
         raise _pgerr("syntax error at or near \"SELCT\"", "42601")
 
     class FakeFixer:

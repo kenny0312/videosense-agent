@@ -12,7 +12,6 @@
 """
 from __future__ import annotations
 
-import inspect
 import json
 import logging
 import re
@@ -117,19 +116,11 @@ _TRUNCATION_WHY = {
 def _query_db(sql: str, meta: dict) -> list:
     """带 meta 出参地查库(截断信息由服务端往 meta 里填,见 B1 契约)。
 
-    ⚠️【临时兼容,B1 合并后删】:本分支的 `mcp_client.query_db` 还没有 `meta` 形参
-    (由批次 1 的另一半加)。合并后把整个函数体换成一行
-        `return mcp_client.query_db(sql, meta=meta)`
-    —— 这里刻意用【签名检查】而不是 `except TypeError`:后者会把 query_db 内部
-    抛出的 TypeError 误判成"不支持 meta",从而把一条【刚刚超时过的重查询】原样
-    重发一遍,正好是 B3 要消灭的那种烧钱重发。
+    留这层薄封装(而不是直接调 mcp_client.query_db)只为一件事:`evals/world.py` 会把
+    `mcp_client.query_db` 整个替换成假库的 `mock_run_sql`。两边签名必须同形,否则每次
+    评测跑都会 TypeError —— 这一层让"替身签名对不上"只影响这一个函数,好定位。
     """
-    fn = mcp_client.query_db
-    try:
-        accepts_meta = "meta" in inspect.signature(fn).parameters
-    except (TypeError, ValueError):                  # 内建/C 函数拿不到签名 → 按老签名走
-        accepts_meta = False
-    return fn(sql, meta=meta) if accepts_meta else fn(sql)
+    return mcp_client.query_db(sql, meta=meta)
 
 
 def _truncated_shell(rows: list, meta: dict) -> dict:

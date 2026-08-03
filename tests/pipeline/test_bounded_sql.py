@@ -19,7 +19,7 @@ import pytest
 
 from pipeline import config, mcp_client
 from pipeline.sql_bounds import (
-    _ENVELOPE_OVERHEAD, build_envelope, fetch_bounded, needs_envelope,
+    _ENVELOPE_OVERHEAD, build_envelope, fetch_bounded, fill_meta, needs_envelope,
 )
 
 
@@ -236,14 +236,21 @@ def mock_server(monkeypatch):
     return S
 
 
-def test_wire_flag_off_is_bare_array_even_when_truncated(mock_server, monkeypatch):
-    """开关关 → wire 与今天逐字节等价(裸数组),但【上界照样生效】。
-    §12:回滚只回滚展示,不回滚安全。"""
+def test_truncation_is_reported_even_with_the_flag_off(mock_server, monkeypatch):
+    """截断【不受开关控制】—— 这是正确性字段,不是展示。
+
+    §12 规则 3 原文:正确性字段(truncated/total/error/terminated)永不受开关控制。
+    理由很实在:上界是安全项、恒生效,所以关掉开关【并不会让行回来】,
+    只会让上游不知道行被扔了 —— 那比改之前(返回全量)更隐蔽,
+    等于把一个安全项做成了静默丢数据。
+    """
     monkeypatch.setattr(config, "USE_BOUNDED_SQL", False)
     monkeypatch.setattr(config, "SQL_MAX_ROWS", 4)
     data = _call("query_db", {"sql": "SELECT id FROM video_fact_instances"})
-    assert isinstance(data, list)             # 裸数组,没有信封
-    assert len(data) == 4                     # 但确实被截断了(1300 → 4)
+    assert isinstance(data, dict), "截断了却回裸数组 —— 上游无从知道行被扔了"
+    assert data["truncated"] is True
+    assert len(data["rows"]) == 4             # 上界照样生效(1300 → 4)
+    assert data["total_seen"] > 4             # 且说得出"至少还有"
 
 
 def test_wire_is_byte_identical_to_legacy_when_not_truncated(mock_server, monkeypatch):
@@ -291,7 +298,9 @@ def test_flag_does_not_change_the_row_set(mock_server, monkeypatch):
     monkeypatch.setattr(config, "USE_BOUNDED_SQL", True)
     on = _call("query_db", sql)
 
-    assert off == on["rows"]
+    # 两态都截断了 → 两边都是信封(截断不受开关控制),行集必须逐行相同
+    assert off["rows"] == on["rows"]
+    assert off["truncated"] is on["truncated"] is True
 
 
 def test_wire_untruncated_nonempty_stays_bare_array(mock_server, monkeypatch):
@@ -477,10 +486,48 @@ def test_needs_envelope_matrix():
     assert needs_envelope(full, report=True) is False    # 非空未截断 → 裸数组
     assert needs_envelope(empty, report=True) is True    # 零行 → 要带列名
     assert needs_envelope(cut, report=True) is True      # 截断 → 要报
-    for res in (full, empty, cut):
-        assert needs_envelope(res, report=False) is False  # 开关关 → 永远裸数组
+    # 开关只管【零行时报不报列名】这一件纯展示的事
+    assert needs_envelope(full, report=False) is False
+    assert needs_envelope(empty, report=False) is False
+    assert needs_envelope(cut, report=False) is True, (
+        "截断被开关关掉了 —— 上界恒生效,关开关不会让行回来,只会让上游不知道行被扔了")
 
 
 def test_build_envelope_omits_truncation_keys_when_not_truncated():
     env = build_envelope(fetch_bounded(FakeCursor([], columns=["a"])))
     assert env == {"rows": [], "columns": ["a"]}
+
+
+def test_fill_meta_reports_truncation_regardless_of_the_flag():
+    """`fill_meta` 是【假库/离线】那条路的出口,同样不许把截断藏在开关后面。
+
+    服务端 wire 那条路已经由 needs_envelope 锁住了,但 `repl/_mock_db.py` 走的是
+    fill_meta —— 两条路的语义必须一致,否则离线测试看到的世界和生产不是一个。
+    而"离线看到的世界和生产不一样"正是本仓刚吃过亏的地方(`_mask_ts` 在
+    evals/world.py 那条路上被整个替换掉,单测却一直绿)。
+    """
+    cut = fetch_bounded(FakeCursor(_rows(9)), max_rows=2)
+
+    for report in (True, False):
+        meta: dict = {}
+        fill_meta(meta, cut, report=report)
+        assert meta.get("truncated") is True, (
+            f"report={report} 时截断信息没填 —— 上界照样扔了行,上游却不知道")
+        assert meta["returned"] == 2
+        assert meta["total_seen"] > 2
+
+    # 反向:columns 是纯展示,归开关管
+    m_on: dict = {}
+    m_off: dict = {}
+    fill_meta(m_on, cut, report=True)
+    fill_meta(m_off, cut, report=False)
+    assert "columns" in m_on and "columns" not in m_off
+
+
+def test_fill_meta_leaves_dict_untouched_when_not_truncated():
+    """没截断就【一个键都不碰】—— 上游靠 `meta.get("truncated")` 判断,
+    填个 truncated=False 会让"没截断"和"没查过"变得无法区分。"""
+    full = fetch_bounded(FakeCursor(_rows(3)))
+    meta: dict = {}
+    fill_meta(meta, full, report=True)
+    assert "truncated" not in meta and "total_seen" not in meta
