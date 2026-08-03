@@ -31,7 +31,10 @@ PROMPT = (
     "\"confidence\": \"high\"|\"medium\"|\"low\", \"evidence\": \"你看到了什么(一句话)\"}}\n"
     "· 视频里确实没有这个动作 → present=false,时间给 null;\n"
     "· 画质太差/看不清 → confidence=\"low\";\n"
-    "· 时间段取【动作本身】的起止,别把前后铺垫算进去。"
+    "· 时间段取【动作本身】的起止,别把前后铺垫算进去;\n"
+    "· start_ts / end_ts 必须是【从视频开头算起的总秒数】,纯数字。"
+    "3 分 37 秒要写 217,【不要】写 \"3:37\"、不要写 3.37、不要写分钟 —— "
+    "实测两次标注一个给 217、一个给 2.17,描述的是同一个画面却被判成分歧。"
 )
 
 PRED_ZH = {
@@ -43,34 +46,57 @@ PRED_ZH = {
 }
 
 
+_LABEL_RETRIES = 2       # 首发 + 至多 2 次重试(与 analyze 那条路同口径)
+
+
 def _label_once(video_id: str, predicate: str, model: str) -> dict:
-    """看一遍视频出一次标注。异常 → {'error': ...}(不炸整批)。"""
-    from pipeline.agentops import usage
+    """看一遍视频出一次标注。异常 → {'error': ...}(不炸整批)。
+
+    【为什么直接调生成层,不走 analyze_with_outcome】:预标有它【自己的】输出契约
+    ({present, start_ts, end_ts, confidence, evidence}),而通用 analyze 用
+    `AnalyzeResult` 校验 —— 那个信封 `answer` 是硬要求、`evidence_ts` 只有单个时刻,
+    装不下起止对。走它必然 ValidationError。
+    实测证据:本脚本的 6 道题至今全是 `pending_prelabel` —— 它从来没成功跑过。
+    A4 之前这个失败被伪装成"看过了、结论是看不清"的信封,所以一直没人发现。
+    """
     from pipeline.node_executor import _resolve_gcs
-    from perception.analyze_video_contextual import (
-        MODEL_OVERRIDE, AnalyzeRequest, analyze_with_outcome)
+    from perception.analyze_video_contextual import MODEL_OVERRIDE, _gemini_generate
     gcs = _resolve_gcs(video_id)
     if not gcs:
         return {"error": "no gcs_uri"}
     q = PROMPT.format(pred_zh=PRED_ZH.get(predicate, predicate))
     tok = MODEL_OVERRIDE.set(model)          # 预标走 pro(红队 C4:别用 flash 考 flash)
+    last = ""
     try:
-        out = analyze_with_outcome(AnalyzeRequest(question=q), gcs)   # A4:analyze 改签名
-        if not out.ok:                            # 没看成就是没看成,别把失败信封当标注
-            return {"error": f"{out.error_code}: {str(out.error)[:160]}"}
-        raw = getattr(out.result, "answer", None) or str(out.result)
-    except Exception as e:
-        return {"error": repr(e)[:200]}
+        for _ in range(_LABEL_RETRIES + 1):
+            try:
+                raw = _gemini_generate(gcs, q, None)
+            except Exception as e:
+                last = repr(e)[:200]
+                continue
+            m = re.search(r"\{.*\}", str(raw or ""), re.S)
+            if not m:
+                last = f"no json: {str(raw)[:160]}"
+                continue
+            try:
+                d = json.loads(m.group(0))
+            except Exception as e:
+                last = f"bad json: {e}"
+                continue
+            if isinstance(d, dict):
+                # 时间戳归一:模型有时会写 "3:37" 或 3.37 来表示 3 分 37 秒。
+                # 实测踩过 —— 两次标注一个给 217、一个给 2.17,描述的是同一个画面,
+                # 却被 IoU 判成"分歧"。复用 analyze 那边久经考验的 _to_seconds
+                # (认 mm:ss / hh:mm:ss / 数字),别在这儿另写一套。
+                from perception.analyze_video_contextual import _to_seconds
+                for k in ("start_ts", "end_ts"):
+                    if d.get(k) is not None:
+                        d[k] = _to_seconds(d[k])
+                return d
+            last = f"not an object: {str(d)[:120]}"
     finally:
         MODEL_OVERRIDE.reset(tok)
-    m = re.search(r"\{.*\}", str(raw or ""), re.S)
-    if not m:
-        return {"error": "no json", "raw": str(raw)[:200]}
-    try:
-        d = json.loads(m.group(0))
-    except Exception:
-        return {"error": "bad json", "raw": m.group(0)[:200]}
-    return d
+    return {"error": last or "unknown"}
 
 
 def _merge(a: dict, b: dict) -> dict:
@@ -144,6 +170,17 @@ def main():
         }
         if spent >= a.budget:
             break
+    # 【写回就要重新冻结】。冻结元数据(frozen_at + items_sha256)是"内容有没有被悄悄改过"
+    # 的唯一凭据,而本脚本就是【合法地】改 items 的那一方。不更新哈希会留下一个永久失配:
+    # 之后任何一次真正的意外漂移都被这条既有失配盖住,冻结纪律就废了
+    # (实测踩过:B0-5 跑完 test_freeze_metadata_has_teeth 直接红)。
+    import datetime
+    import hashlib
+    bank["meta"]["items_sha256"] = hashlib.sha256(
+        json.dumps(bank["items"], ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+    bank["meta"]["frozen_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    bank["meta"]["last_prelabel"] = {"at": bank["meta"]["frozen_at"], "model": model,
+                                     "spent_usd": round(spent, 4)}
     path.write_text(json.dumps(bank, ensure_ascii=False, indent=1), encoding="utf-8")
     n_lab = sum(1 for i in bank["items"]
                 if i.get("gold_localization", {}).get("status") == "labeled")

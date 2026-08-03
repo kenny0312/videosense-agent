@@ -61,12 +61,28 @@ def test_t1_questions_ask_both_parts_and_no_dead_axis():
         assert "ordering" not in i["gold"]
 
 
-def test_t2_have_ts_mask_and_pending_prelabel():
-    """T2 防 SQL 捷径 = 快照 ts 掩码;定位 gold 库外预标,未标时状态必须是 pending
-    (scorer 靠它拒算,不许把不可判伪装成 0)。"""
+def test_t2_have_ts_mask_and_a_declared_localization_status():
+    """T2 防 SQL 捷径 = 快照 ts 掩码;定位 gold 必须有【明确声明的状态】。
+
+    原来断言的是 `status == "pending_prelabel"` —— 那锁的是"预标还没跑"这个【当时的现状】,
+    B0-5 一跑完就红,而那正是我们想要的事发生了。锁现状会让"按计划完成"表现成回归。
+
+    真正该锁的契约是三条:
+      · ts_mask 恒开(否则 T2 变成考 SQL 抄时间戳);
+      · status 必须是三个已知取值之一 —— scorer 靠它决定算不算定位分,
+        出现第四种取值会被当成"不可判"静默吞掉;
+      · labeled 时必须真有 spans(空 spans 配 labeled = 把不可判伪装成可判)。
+    """
     for i in (x for x in ALL if x["tier"] == "T2"):
         assert i["ts_mask"] is True
-        assert i["gold_localization"]["status"] == "pending_prelabel"
+        gl = i["gold_localization"]
+        assert gl["status"] in ("pending_prelabel", "labeled", "low_confidence"), gl["status"]
+        if gl["status"] == "labeled":
+            spans = gl.get("spans") or {}
+            assert spans, f"{i['id']} 声称 labeled 却没有 spans"
+            for vid, sp in spans.items():
+                assert vid in i["gold"]["video_ids"], f"{vid} 不在 gold 里"
+                assert sp["end_ts"] > sp["start_ts"] >= 0, (vid, sp)
 
 
 def test_ids_unique_and_vocab_frozen():

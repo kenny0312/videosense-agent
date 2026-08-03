@@ -225,6 +225,16 @@ SQL_LOCK_TIMEOUT_MS      = int(os.environ.get("SQL_LOCK_TIMEOUT_MS", "2000"))   
 # 验证后生产强制开(§12 规则 2 的启动校验尚未落地,见交付报告)。
 USE_BOUNDED_SQL = os.environ.get("USE_BOUNDED_SQL", "0").lower() in ("1", "true", "yes")
 
+# analyze_video 单次生成的输出上限。
+# 【为什么不是 2048】:2.5-pro 的【思考 token 也算进 max_output_tokens】,而 analyze 的
+# 提示词要一个带 evidence 文本的 JSON —— 实测 pro 档两次标注全部 ANALYZE_FAILED,
+# 报错是 "Unterminated string starting at line 6",正好停在 evidence 那个字段:
+# 思考吃掉大半预算,JSON 从中间被截断。抬上限几乎不花钱(输出按实际用量计费,
+# cap 只是天花板;思考 token 无论如何都要付),而截断是确定的损失。
+# flash 档不受影响 —— 它生成的同样是那个小 JSON,2048 从来不是约束。
+# 这个 bug 一直在,只是 A4 之前被伪装成了"看过了、结论是看不清"的失败信封(假成功)。
+ANALYZE_MAX_OUTPUT_TOKENS = int(os.environ.get("ANALYZE_MAX_OUTPUT_TOKENS", "8192"))
+
 # ── B0-2a 评测写闸 ────────────────────────────────────────────────
 # 评测跑【不许】改动生产数据。实测教训:gate 实验的 1256 行 analyze 产物永久留在
 # 生产 content_embeddings 里(占 18.6%),用户检索会命中评测垃圾 —— 其中还有

@@ -139,6 +139,12 @@ def _parse(raw: str) -> AnalyzeResult:
 
 
 # ── 真实 Gemini 调用(P1 起走 google-genai;惰性 import,离线测试不会走到这里)───────────
+def _cfg():
+    """惰性取 config —— 本模块刻意不在 import 期拉 pipeline(离线测试不该带上它)。"""
+    from pipeline import config
+    return config
+
+
 def _gemini_generate(gcs_uri: str, prompt: str, time_range=None) -> str:
     """P1:旧 vertexai SDK 已过官方移除期限,运行时路径迁 google-genai(共享 genai_client 单例,
     global 端点)。M4.5 的硬裁剪不再走 _raw_part proto hack —— genai 的 VideoMetadata 原生支持
@@ -159,8 +165,13 @@ def _gemini_generate(gcs_uri: str, prompt: str, time_range=None) -> str:
     resp = get_client().models.generate_content(
         model=name,
         contents=[video, prompt],
-        config=types.GenerateContentConfig(temperature=0.2, max_output_tokens=2048,
-                                           response_mime_type="application/json"))
+        config=types.GenerateContentConfig(
+            temperature=0.2,
+            # pro 的思考 token 也算进这个预算 —— 2048 会让带 evidence 的 JSON
+            # 从中间截断(实测:两次 pro 标注全 ANALYZE_FAILED / Unterminated string)。
+            # 见 config.ANALYZE_MAX_OUTPUT_TOKENS 的注释。
+            max_output_tokens=_cfg().ANALYZE_MAX_OUTPUT_TOKENS,
+            response_mime_type="application/json"))
     usage.add_usage(resp, name)          # M4.1:视频分析 token 上报(genai 字段名相同)
     return resp.text
 
