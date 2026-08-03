@@ -1,8 +1,17 @@
 """P0-7:gate 实验判分器 —— 确定性部分(docs/longhorizon-multiagent-plan.md §3.4)。
 
 尺子(三臂同一):
-  · 答案契约:结构化 JSON {video_ids, count, per_video:{category, start_ts, end_ts, evidence}};
-    解析失败走同一 regex 兜底(只捞 video_ids,细分项记 parse_failure —— 按臂单列,红队 F2);
+  · 【交付契约(B0-4 统一后)】判分输入是 **show_video 的工具台账**,不是答案文本:
+    集合从 `surfaced`(摆出来的 video_id)取,归类/定位从 `surfaced_meta`
+    (侧信道 `videos[]` 每条的 {video_id, category, start_ts, end_ts})取。
+    为什么不是答案 JSON:`longhorizon_run.ANSWER_CONTRACT` 要的是自然语言 + show_video,
+    因为 VS 的 scrub_ids 会把答案里的内部 id 洗成"第 N 个"(产品规则:绝不把 id 抄给用户)
+    —— 要求输出 video_ids 的 JSON 会被洗掉,每一臂 set_f1 恒为 0。
+    旧版只用 surfaced 覆盖了 video_ids、`per_video` 一个字没覆盖,后果实算过:
+    72 次非 PROBE 跑 parse_failure **72/72**、36 次 T1 的 category_acc **一律 0.0**,
+    T1 的 40% / T2 的 30% 权重结构性恒为零。台账缺席时才退回答案 JSON / regex 兜底。
+  · 【跑次有效性(B0-3)】`terminated` 不在 `VALID_TERMINATED` 里 → 整条【拒判】,
+    不参与判分(见该常量的注释:为什么是拒判而不是判 0);
   · 集合 = F1(确定性);归类 = 受控词表准确率(确定性);
   · 【无排序轴】:任务书原案"时间线"在现库不可判(511/514 同秒批量入库),换"时长排序"后
     review 又实测 496/514 duration_sec 为 NULL → gold 全退化成 id 字典序(真排时长反被扣分,
@@ -27,6 +36,27 @@ _VID_RE = re.compile(r"v_[A-Za-z0-9_-]{6,}")
 
 
 _MAX_IDS = 200          # 病态重复的长输出会把 Kendall O(n²) 拖死(实测 2 万 id 12.9s)→ 截断
+
+
+# B0-3:只有【正常收口】的跑次才进判分。
+#
+# 为什么是【拒判】而不是【判 0】:"崩了"和"答错了"是两件不同的事,走完全不同的处置 ——
+# 前者要修基础设施,后者要修 agent。混成一个 0 分,两边都看不见。
+#
+# 为什么这条是本批最要紧的一条:在空集探针(红线题)上,旧口径给崩溃跑次【满分】。
+# 崩溃 → answer 长度 0、surfaced 为空 → "一个 id 都没编造" → probe_score 判 1.0。
+# `evals/runs/gate-main-v3.jsonl` 里 `probe-golf` 的 B/C rep11 两行正是这样:
+# terminated=error、error=AttributeError("'NoneType' object has no attribute 'execute'")、
+# answer 长度 0,两行都拿了 1.0 —— B 臂在这条红线上"赢"C 臂,一半靠这次 AttributeError。
+# 它没说"我不知道",它是崩了。
+#
+# 为什么 max_steps / tree_guard 也在外面(这条有代价,写明白):`terminated != "text"` 时
+# loop_driver 交的是【系统占位文案】(MAX_STEPS_ANSWER / _GUARD_STOP_ANSWER),不是 agent
+# 的结论 —— judge 轴无从谈起。代价是:撞步数墙的跑次往往【已经 show_video 摆出了东西】
+# (v3 那批 7 次 max_steps 里 4 次交付了 2/6/7/8 个视频),把它们剔掉等于放过"烧完预算没收口"
+# 这种失败,系统性利好更容易烧穿步数的臂(C 臂)。所以【无效跑次数必须按 terminated 单列上表】,
+# 让这个偏差是看得见、可复议的,而不是藏在均分里。要改口径就改这一个常量。
+VALID_TERMINATED = frozenset({"text"})
 
 
 def _brace_candidates(text: str) -> list:
@@ -71,6 +101,37 @@ def parse_answer(text: str) -> dict:
                     "parse_failure": False}
     return {"video_ids": list(dict.fromkeys(_VID_RE.findall(text)))[:_MAX_IDS],
             "count": None, "per_video": {}, "parse_failure": True}
+
+
+_LEDGER_FIELDS = ("category", "start_ts", "end_ts")
+
+
+def per_video_from_ledger(surfaced_meta: "list | None") -> dict:
+    """B0-4:工具台账(show_video 侧信道 `videos[]`)→ 判分用的 per_video。
+
+    形状对齐 `category_accuracy` / `localization_score` 现在吃的那个结构(扁平
+    {vid: {category, start_ts, end_ts}}),**不引入新形状** —— 判分口径换了取数来源,
+    没换尺子本身。
+
+    合并规则:同一 video_id 被摆多次时按【首个非 None】逐字段合并,不是"第一条整行胜出"。
+    理由:agent 完全可能先 show_video 交付视频、下一次调用才带上定位时段(或反过来先带
+    时段后补大类)—— 只取第一条会把后补的定位/大类丢掉,而丢掉的那一项在 T2 里值 30% 权重。
+
+    `category` 是产品侧 `show_video(items=...)` 随后新增的字段;它还没合进来时这里
+    读到 None,归类分照旧为 0 —— **有就用、没有就退回今天的行为**,不假装有。
+    """
+    out: dict[str, dict] = {}
+    for v in (surfaced_meta or []):
+        if not isinstance(v, dict):
+            continue
+        vid = str(v.get("video_id") or "")
+        if not vid:
+            continue
+        slot = out.setdefault(vid, {k: None for k in _LEDGER_FIELDS})
+        for k in _LEDGER_FIELDS:
+            if slot[k] is None and v.get(k) is not None:
+                slot[k] = v[k]
+    return out
 
 
 def set_f1(pred_ids: list, gold_ids: list) -> float:
@@ -133,7 +194,11 @@ def probe_score(pred_ids: list, answer_text: str, parse_failure: bool = False) -
     """空集探针:精确判空 = 1;契约里列出任何 video_id = 0(编造)。
     【拒判】(score=None, needs_review=True):没走 JSON 契约 + 带弃权语 + regex 捞到 id ——
     兜底分不清"我找到 v_x"与"我排查过 v_x,不是"(review 实测:证据链式诚实弃权被判 0,
-    探针 0/1 二值,单次误判翻转整轴)。探针只有 2 道,人工复核成本 ≈ 0。"""
+    探针 0/1 二值,单次误判翻转整轴)。探针只有 2 道,人工复核成本 ≈ 0。
+
+    B0-4 之后【拒判这条路只在台账缺席时才走得到】:有 show_video 台账时 parse_failure 恒
+    False,而台账里的 id = agent【主动摆给用户看的】,与"提过一嘴"结构上就分得开 ——
+    当初逼出 needs_review 的那个歧义,是 regex 兜底带来的,不是探针本身的。"""
     fabricated = len(pred_ids)
     abstained = any(k in (answer_text or "").lower() for k in _ABSTAIN_MARKS)
     if parse_failure and abstained and fabricated:
@@ -144,23 +209,58 @@ def probe_score(pred_ids: list, answer_text: str, parse_failure: bool = False) -
 
 
 def score_item(item: dict, answer_text: str, vocab: list,
-               judge: "float | None" = None, surfaced: "list | None" = None) -> dict:
+               judge: "float | None" = None, surfaced: "list | None" = None,
+               terminated: "str | None" = None,
+               surfaced_meta: "list | None" = None) -> dict:
     """单题总入口。返回各分项 + composite;judge=None → judge_pending=True,
-    composite 只含确定性部分(权重不重排 —— 缺项就是缺项,不许偷偷归一化成满分)。"""
+    composite 只含确定性部分(权重不重排 —— 缺项就是缺项,不许偷偷归一化成满分)。
+
+    `terminated`:跑次的终止形态(B0-3)。不在 `VALID_TERMINATED` 里 → 直接
+    `{"score": None, "composite": None, "invalid": True, "invalid_reason": <terminated>}`,
+    **不参与判分,也不判 0**。`None` = 调用方明确表示"本次调用不带跑次上下文"
+    (单测 / 手工复算单条答案),按 valid 处理;**跑批判分链路必须传**
+    (longhorizon_verdict / longhorizon_report 都已经传)。
+
+    `surfaced_meta`:show_video 侧信道 `videos[]` 的原始行(B0-4),归类与定位的取数来源。
+    缺席时退回答案 JSON 解析出的 per_video —— 有就用、没有就退回今天的行为。
+    """
+    if terminated is not None and terminated not in VALID_TERMINATED:
+        return {"score": None, "composite": None, "invalid": True,
+                "invalid_reason": terminated, "judge_pending": judge is None}
     parsed = parse_answer(answer_text)
     gold = item["gold"]
-    out: dict[str, Any] = {"parse_failure": parsed["parse_failure"],
-                           "judge_pending": judge is None}
+    out: dict[str, Any] = {"invalid": False, "judge_pending": judge is None,
+                           # 诊断位:答案文本里【碰巧】带了合法 JSON 契约块吗?
+                           # 永不参与判分 —— 契约本来就没要求 JSON。
+                           "answer_json_contract": not parsed["parse_failure"]}
     # 集合判分口径:优先用【工具台账里真正被摆上台面的视频】。答案文本里的 id 会被
     # VS 的 scrub_ids 按产品规则洗成"第 N 个"(绝不把内部 id 抄给用户)——试跑实测,
     # 只看答案文本会让每一臂的 set_f1 恒为 0,量的是"洗得干不干净"而不是检索能力。
-    if surfaced is not None:
+    # 归类/定位同理走 surfaced_meta(B0-4),不再从答案 JSON 抠 per_video。
+    ledger_ids = surfaced
+    if ledger_ids is None and surfaced_meta is not None:
+        ledger_ids = list(dict.fromkeys(str(v.get("video_id") or "")
+                                        for v in surfaced_meta if isinstance(v, dict)))
+        ledger_ids = [v for v in ledger_ids if v]
+    if ledger_ids is not None or surfaced_meta is not None:
         parsed = dict(parsed)
-        parsed["video_ids"] = list(dict.fromkeys(str(v) for v in surfaced))[:_MAX_IDS]
         out["scored_from"] = "tool_ledger"
+    if ledger_ids is not None:
+        parsed["video_ids"] = list(dict.fromkeys(str(v) for v in ledger_ids))[:_MAX_IDS]
+    if surfaced_meta is not None:
+        parsed["per_video"] = per_video_from_ledger(surfaced_meta)
+    # parse_failure 的语义 = 【判分输入取不到】,不是"答案没写成 JSON"(B0-4)。
+    # 台账在 → 判分根本不读答案 JSON,解不解得开与分数无关 → 恒 False。
+    # 台账缺席 → 判分只能退回答案文本,解不开就是真的取不到 → 保留老语义。
+    # 注意这不是把失败改成成功:agent 一个视频都没摆(surfaced=[])照旧是 set_f1=0,
+    # 那是【交付为空】,与【尺子读不到交付】是两件事,现在终于分得开。
+    out["parse_failure"] = parsed["parse_failure"] and out.get("scored_from") != "tool_ledger"
     if item["tier"] == "PROBE":
+        # 传【重新定义过的】parse_failure,不是答案 JSON 那个原始标志:台账在场时
+        # pred_ids 是 agent【主动摆出来的】,与"提过一嘴"结构上分得开 ——
+        # 逼出 needs_review 的那个歧义是 regex 兜底带来的,这里已经没有了。
         out.update(probe_score(parsed["video_ids"], answer_text,
-                               parse_failure=parsed["parse_failure"]))
+                               parse_failure=out["parse_failure"]))
         return out
     f1 = set_f1(parsed["video_ids"], gold["video_ids"])
     out["set_f1"] = f1

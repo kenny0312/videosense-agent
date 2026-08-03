@@ -88,13 +88,20 @@ def main():
     vocab = bank["meta"]["category_vocab"]
     audit = load_audit()
 
-    scored = []
+    # B0-3:判分器与裁决器必须是【同一把尺子】—— 这里也传 terminated,否则报告会继续
+    # 给崩溃跑次记分(空集探针上还是满分),两份文档拿同一批数据得出不同的数。
+    # 无效跑次单列,不混进 F1 聚合(混进去等于把"崩了"读成"F1=0 的差成绩")。
+    scored, invalid = [], []
     for r in rows:
         it = items.get(r["id"])
         if not it:
             continue
         sc = S.score_item(it, r.get("answer") or "", vocab, judge=None,
-                          surfaced=r.get("surfaced"))
+                          surfaced=r.get("surfaced"), terminated=r.get("terminated"),
+                          surfaced_meta=r.get("surfaced_meta"))
+        if sc.get("invalid"):
+            invalid.append({"r": r, "it": it, "sc": sc})
+            continue
         key = "score" if it["tier"] == "PROBE" else "set_f1"
         v = sc.get(key)
         scored.append({"r": r, "it": it, "sc": sc, "v": 0.0 if v is None else v,
@@ -107,7 +114,22 @@ def main():
     w("# Phase 1 · 全部出错跑次的完整验尸报告\n")
     w(f"> 数据:`{'`, `'.join('evals/runs/gate-'+t+'.jsonl' for t in tags)}`  ")
     w(f"> 题库:`evals/longhorizon_bank.{a.split}.json`(冻结)  ")
-    w(f"> 共 {len(scored)} 次跑,其中 **{len(bad)} 次有错**,以下逐条摊开,不省略。\n")
+    w(f"> 共 {len(scored) + len(invalid)} 次跑,其中 **{len(invalid)} 次无效**"
+      f"(终止形态不是 `text`,拒判)、有效 {len(scored)} 次里 **{len(bad)} 次有错**,"
+      "以下逐条摊开,不省略。\n")
+    if invalid:
+        icnt = Counter(x["sc"].get("invalid_reason") or "?" for x in invalid)
+        w("> **无效跑次不参与判分**(B0-3):崩溃/撞步数墙/护栏硬终止时,交的是系统占位文案"
+          "而不是 agent 的结论 —— 把它记成 0 分会把「崩了」和「答错了」混成一件事,"
+          "而在空集探针上它按旧口径拿的是**满分**(答案长度 0 → 零编造 → 判 1.0)。"
+          "按终止形态:" + "、".join(f"`{k}` {v}" for k, v in sorted(icnt.items())) + "\n")
+        w("| 题 | 臂 | rep | 终止形态 | 交付条数 | 报错 |")
+        w("|---|---|---|---|---|---|")
+        for x in sorted(invalid, key=lambda y: (y["r"]["id"], y["r"]["arm"])):
+            r = x["r"]
+            w(f"| `{r['id']}` | {r['arm']} | {r.get('rep')} | `{r['terminated']}` | "
+              f"{len(r.get('surfaced') or [])} | `{(r.get('error') or '—')[:90]}` |")
+        w("")
     w("**读法**:每条给出题面全文、标准答案全列表、实际交付全列表、逐步工具序列、"
       "全部记录到的思考原话、答案全文、判分明细。你可以据此自己判断是结构问题还是别的问题。\n")
     w("**已知记录限制**:`main-v3` 那一批的跑机只存了【前 6 轮 × 600 字】思考"

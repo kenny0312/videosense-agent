@@ -67,6 +67,31 @@ ANSWER_CONTRACT = (
     "一个都没有就明确说没有,别硬凑。"
 )
 
+# B0-4:大类与时间段【也要走交付台账】,不能只落在自然语言里 —— 判分从 videos[] 侧信道取。
+# 这一段只在 show_video 真的声明了 items 参数时才追加(见 answer_contract()):
+# 产品侧还没合进来时多说一句 items,只会让模型发出一个被 schema 拒收的参数,
+# 把好端端的跑次变成 terminated=error —— 那正是 B0-3 刚修掉的那种"数据"。
+_ITEMS_CLAUSE = (
+    "调 show_video 时用 items 参数逐个交付:items=[{\"video_id\": ..., \"category\": <受控词表里的大类>,"
+    " \"start_ts\": <目标动作起始秒>, \"end_ts\": <结束秒>}, ...]。"
+    "大类必须来自受控词表;T2 类问题的 start_ts/end_ts 必须是你【看画面】定出来的目标动作时段,"
+    "不是整段视频的 0 到结尾。文字说明照旧写,items 是给交付台账用的,两者都要。"
+)
+
+
+def answer_contract() -> str:
+    """契约随【工具的真实签名】走 —— 有 items 就用,没有就退回今天的行为。
+
+    为什么要探一下而不是写死:B0-4 的产品侧改动(`show_video(items=...)`)与本文件
+    分属两个代理,合入时序不保证。写死会在合入之前把每一次跑都推成参数校验失败。
+    """
+    try:
+        from pipeline.node_specs import SPECS
+        props = ((SPECS["show_video"].parameters or {}).get("properties") or {})
+    except Exception:                                    # 探不到就当没有,绝不因探测本身崩掉跑机
+        props = {}
+    return ANSWER_CONTRACT + (("\n" + _ITEMS_CLAUSE) if "items" in props else "")
+
 
 def _load_bank(split: str) -> dict:
     p = ROOT / "evals" / f"longhorizon_bank.{split}.json"
@@ -118,6 +143,32 @@ def _surfaced_video_ids(lo) -> list:
     return out
 
 
+_LEDGER_KEYS = ("video_id", "title", "category", "start_ts", "end_ts")
+
+
+def _surfaced_meta(lo) -> list:
+    """B0-4:交付台账的【全字段】版本 —— 归类与定位的取数来源。
+
+    只是把同一条侧信道(`NodeResult.videos`)里已经有的字段原样抄下来,**不改 rows/preview
+    形状**(v2.2 R4 禁改区边界),也不新造侧信道。`category` 是产品侧 `show_video(items=...)`
+    随后新增的字段;它还没合进来时这里读到 None —— 有就用、没有就退回今天的行为。
+
+    【按出现顺序原样留档,不去重】:同一视频被摆两次(先交付、后补时段)是真实发生的事,
+    合并规则属于判分口径,放在 `longhorizon_score.per_video_from_ledger` 里一处实现,
+    跑机只负责如实记账。所以本字段长度可能 > `surfaced`(那个是去重后的 id 列表)。
+    """
+    out = []
+    for cid, er in (getattr(lo, "results", None) or {}).items():
+        if not getattr(er, "ok", False):
+            continue
+        for v in (getattr(er, "videos", None) or []):
+            if isinstance(v, dict) and v.get("video_id"):
+                row = {k: v.get(k) for k in _LEDGER_KEYS}
+                row["video_id"] = str(row["video_id"])
+                out.append(row)
+    return out
+
+
 _SPAWN_LOG: list = []          # 本次 run_one 内 spawn_agents 的【真实参数 + 真实返回】
 
 
@@ -166,7 +217,7 @@ def run_one(item: dict, arm: str, rep: int, owner: str = "gate-eval") -> dict:
     try:
         schema = get_schema()
         lo = loop_driver.run_query_loop(
-            item["question"] + ANSWER_CONTRACT, schema=schema, replay_context=None,
+            item["question"] + answer_contract(), schema=schema, replay_context=None,
             sandbox=None, trace=trace, session_id=None, owner=owner)
         rec["answer"] = lo.answer or ""
         rec["terminated"] = lo.terminated
@@ -183,6 +234,8 @@ def run_one(item: dict, arm: str, rep: int, owner: str = "gate-eval") -> dict:
         # 把答案里的内部 id 全洗成"第 N 个"(绝不把 id 抄给用户看)—— 试跑实测,不这么做
         # 每一臂的 set_f1 恒为 0,整个实验测的是"洗得干不干净"。
         rec["surfaced"] = _surfaced_video_ids(lo)
+        # B0-4:归类/定位也从台账取(答案 JSON 那条路结构上就不存在 —— 契约要的是自然语言)。
+        rec["surfaced_meta"] = _surfaced_meta(lo)
     except Exception as e:
         rec["answer"] = ""
         rec["error"] = repr(e)[:300]
