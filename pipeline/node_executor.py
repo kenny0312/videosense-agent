@@ -23,6 +23,7 @@ from pipeline.code_generator import CodeGenerator
 from pipeline.sql_fixer import SqlFixer
 from pipeline.dag_schema import Node
 from pipeline.node_specs import needs_sandbox
+from pipeline.taxonomy import normalize_category
 from pipeline.agentops.trace import Trace
 from sandbox.client import SandboxClient
 
@@ -259,19 +260,49 @@ def _run_sql_query(node: Node, schema: dict, trace: Trace) -> NodeResult:
 _VIDEO_ID_RE = __import__("re").compile(r"^[A-Za-z0-9_\-]+$")
 
 
+def _as_ts(v: Any) -> float | None:
+    """inputs.items 的时间戳:声明的是 number,收到别的形状就当没给(别把脏值塞进播放器 seek)。"""
+    if isinstance(v, bool) or v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 def _collect_items(node: Node, upstream: dict[str, Any]) -> list[dict]:
-    """收集要展示的视频:优先用上游第一个依赖的结果行(含 video_id,可选 start_ts/end_ts/label),
-    没有上游则用 inputs.video_ids。id 做白名单校验(防注入),去重保序。"""
+    """收集要展示的视频。三个来源,按优先级:
+      ① inputs.items —— 大脑现场逐个标注的展示清单(顺序即展示顺序,可带 category / 时间段);
+      ② 上游第一个依赖的结果行(含 video_id,可选 start_ts/end_ts/label);
+      ③ inputs.video_ids。
+    ① 给了就以它为准,不再回落 ②③(否则标注会被静默丢掉,用户看到的 chip 对不上)。
+    id 做白名单校验(防注入),去重保序。"""
     items: list[dict] = []
     seen: set[str] = set()
 
-    def add(vid: Any, start=None, end=None, label=None, score=None) -> None:
+    def add(vid: Any, start=None, end=None, label=None, score=None, category=None) -> None:
         vid = "" if vid is None else str(vid)
         if not vid or not _VIDEO_ID_RE.match(vid) or vid in seen:
             return
         seen.add(vid)
+        # 类目归一到受控大类(中文/别名/细谓词都收) —— 前端的类目 chip 要能和库里的
+        # categories 表对上,自造词会让 chip 变成一次性字符串。归不上的【不自造】留 None,
+        # 但把原话留在 category_raw 里回报给大脑重挑:不硬拒(工具报错=白烧一步),也不静默吞。
+        norm = normalize_category(category)
         items.append({"video_id": vid, "start_ts": start, "end_ts": end,
-                      "label": label, "score": score})   # score: 上游有则带上(前端出置信度 chip)
+                      "label": label, "score": score,   # score: 上游有则带上(前端出置信度 chip)
+                      "category": norm,
+                      "category_raw": str(category).strip() if (category and not norm) else None})
+
+    declared = node.inputs.get("items")
+    if isinstance(declared, list) and declared:
+        for it in declared:
+            if isinstance(it, str):               # 宽容一种最常见的手滑:items 写成了 video_ids 的形状
+                add(it)
+            elif isinstance(it, dict):
+                add(it.get("video_id"), _as_ts(it.get("start_ts")), _as_ts(it.get("end_ts")),
+                    category=it.get("category"))
+        return items
 
     for val in upstream.values():                 # 只取第一个上游
         val, _ = _unwrap_rows(val)                # B4:上游被截断时是薄壳,先剥出裸行集
@@ -296,8 +327,10 @@ def _run_show_video(node: Node, upstream: dict[str, Any]) -> NodeResult:
 
     items = _collect_items(node, upstream)[:8]     # 最多 8 个,防一次签太多
     if not items:
+        why = ("items 里没有合法的 video_id(要真实 id,不是「第 N 个」)"
+               if node.inputs.get("items") else "上游无 video_id")
         return NodeResult(node.id, node.tool, ok=True, attempts=1,
-                          value={"shown": 0, "note": "没有可展示的视频(上游无 video_id)"})
+                          value={"shown": 0, "note": f"没有可展示的视频({why})"})
 
     ids = [it["video_id"] for it in items]
     in_list = ", ".join("'" + i + "'" for i in ids)   # ids 已过白名单校验
@@ -335,15 +368,21 @@ def _run_show_video(node: Node, upstream: dict[str, Any]) -> NodeResult:
             "duration_sec": m.get("duration_sec"),
             "marks":        marks,
             "score":        float(sc) if isinstance(sc, (int, float)) else None,   # 置信度 chip / 段着色
+            "category":     it.get("category"),   # 受控大类,前端出类目 chip;没标注 = None
         })
 
     n, n_play = len(videos), sum(1 for v in videos if v["playable"])
     note = "" if n == n_play else f"(其中 {n - n_play} 个暂不可播放)"
+    # 词表外的类目:已按【未标注】处理,但要让大脑知道是哪几个词被丢了,否则它永远不知道自己标错。
+    bad = list(dict.fromkeys(it["category_raw"] for it in items if it.get("category_raw")))[:5]
+    warn = ("" if not bad else
+            f" ⚠️ 这些类目不在受控大类词表里,已当作【未标注】:{', '.join(bad)};"
+            "要出类目 chip 请从词表里挑一个。")
     # ③:value 带【有序编号 items】→ 随 transcript 持久化(value 会被记忆),下一轮「第 N 个」可映射回真实 id。
     items = [{"n": i + 1, "video_id": v["video_id"], "title": v["title"]}
              for i, v in enumerate(videos)]
     return NodeResult(node.id, node.tool, ok=True, attempts=1, videos=videos,
-                      value={"note": f"🎬 为你准备了 {n} 个视频{note}", "items": items})
+                      value={"note": f"🎬 为你准备了 {n} 个视频{note}{warn}", "items": items})
 
 
 SHOW_TABLE_MAX_ROWS = 1000
