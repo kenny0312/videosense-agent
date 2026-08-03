@@ -322,3 +322,25 @@ def test_historical_v3_recompute_matches_acceptance():
         "剔掉它既丢信号,又系统性利好更容易烧穿步数的臂")
     flat = [x for runs in per.values() for x in runs]
     assert sum(1 for x in flat if x["parse_failure"]) == 0, "验收:parse failure = 0"
+
+
+def test_contract_tells_the_agent_where_the_vocabulary_lives():
+    """受控词表必须【指路】,既不能不说、也不能把 26 个词贴进去。
+
+    不说的后果(实测):26 个类目只存在于 bank.meta.category_vocab,题面、契约、
+    工具描述里一个都没有 —— 而 category_accuracy 要求预测值同时命中词表【和】该视频的
+    gold 类目集。等于在考一套没公布的闭集,T1 那 40% 权重再怎么修取数侧也接近 0。
+
+    贴进去的后果:任务从"找出分类法"变成"抄清单",考的东西变了。
+
+    实测 `SELECT label FROM categories` 精确返回那 26 个(与题库词表 26/26 命中),
+    所以指路是唯一既公平又没改变考点的选项。
+    """
+    from evals import longhorizon_run as R
+
+    c = R.answer_contract()
+    assert "FROM categories" in c, "没告诉 agent 词表在哪 —— 那是在考没公布的闭集"
+    vocab = BANK["meta"]["category_vocab"]
+    pasted = [v for v in vocab if v in c]
+    assert len(pasted) <= 1, (
+        f"把词表贴进契约了({pasted[:5]}…)—— 任务变成抄清单,考点就变了")
