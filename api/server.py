@@ -684,8 +684,8 @@ class EnrichRequest(BaseModel):
     video_id: str = Field(..., description="要富化的视频 id(上传 PUT 成功后调用)")
     duration_sec: float | None = Field(
         None, description="素材时长(秒),可选。给了就按它算死线,不给则走死线上限。"
-                          "注:目前【没有调用方提供它】—— 前端上传处理器手里只有 File 对象,"
-                          "取时长要另加 createObjectURL + loadedmetadata,见 web/index.html 的上传流程。"
+                          "前端上传流程会尽力测量后带上(web/index.html 的 videoDurationSec:"
+                          "离屏 <video> 只读 metadata);测不到就不带这个字段。"
                           "只影响本次死线,且已被上下限夹住(见 _enrich_deadline_sec)")
 
 
@@ -707,9 +707,9 @@ def _enrich_deadline_sec(duration_sec) -> int:
     """按素材时长给死线。时长【测不到】→ 给上限 60min:判死是为了让卡住的活有终点,
     不是为了砍慢活 —— 宁可多等 60 分钟,也不要把一份 3 小时素材的合法富化误杀。
 
-    ⚠️ 当前唯一调用方(web/index.html 的上传流程)【不传 duration_sec】,所以生产上这条
-    公式恒落在上限 3600s。也就是说 A8 今天真正买到的是"从无穷到有界 + 有状态位可查",
-    "按时长算"这一半还没在生产生效 —— 时长源待前端补。别把注释当成已生效的现状读。"""
+    时长源:web/index.html 的上传流程会尽力测量并带上(离屏 <video> 读 metadata,
+    三道守卫:3 秒上限 / Number.isFinite 挡 WebM 的 Infinity / >0)。测不到就不带,
+    这条公式落在上限 3600s —— 那也是可接受的终点,A8 的底线是"从无穷到有界"。"""
     try:
         d = float(duration_sec)
     except (TypeError, ValueError):
