@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import re
@@ -51,11 +52,21 @@ class NodeResult:
 
 # ── 上游数据注入 ──────────────────────────────
 
-def _inject(code: str, node: Node, upstream: dict[str, Any]) -> str:
+def _inject(code: str, node: Node, upstream: dict[str, Any],
+            up_meta: "dict[str, dict] | None" = None) -> str:
+    """把 inputs / 上游结果注入生成代码的头部。
+
+    B4:上游被截断时 value 是薄壳(见 _truncated_shell)—— 调用方(_run_sandbox_node)
+    已经把它剥成裸行集再传进来,所以 `data_<id>` 的形状与截断前【逐字节一致】;
+    截断信息只以【新增变量】`data_<id>_meta` 的形式出现(只加字段,不改代码生成输入形状)。
+    """
     header = "import json\n"
     header += f"inputs = json.loads({json.dumps(node.inputs, ensure_ascii=False)!r})\n"
     for nid, val in upstream.items():
         header += f"data_{nid} = json.loads({json.dumps(val, ensure_ascii=False, default=str)!r})\n"
+    for nid, meta in (up_meta or {}).items():
+        header += (f"data_{nid}_meta = "
+                   f"json.loads({json.dumps(meta, ensure_ascii=False, default=str)!r})\n")
     return header + "\n" + code
 
 
@@ -80,38 +91,163 @@ def _parse_stdout(stdout: str) -> Any:
 
 # ── 数据获取类(MCP)──────────────────────────
 
+# B3:只有【SQL 本身写错了】才值得叫 LLM 重写一遍 —— 这三个码"重写一次就可能对"。
+# 集中成一个模块级常量,别散在 if 里:加/减一个码时只有这一处要动,测试也只钉这一处。
+_REPAIRABLE_SQLSTATES = frozenset({
+    "42601",    # syntax_error       语法错
+    "42703",    # undefined_column   列不存在
+    "42P01",    # undefined_table    表不存在
+})
+
+# 查询太重 / 拿不到锁:SQL 没写错。叫 LLM 重写只会得到另一条同样重的 SQL,
+# 于是"超时 → 改 SQL → 再超时",每转一圈多烧一次 LLM 的钱 —— B3 要治的就是这个循环。
+_OVERLOAD_SQLSTATES = {
+    "57014": "查询跑太久,被数据库按超时取消了",
+    "55P03": "要读的数据正被别的操作锁着,等不到锁",
+}
+
+# B4:服务端为什么停下来(meta["reason"] 的三种取值)→ 给大脑的人话
+_TRUNCATION_WHY = {
+    "row_cap":              "达到单次返回的【行数】上限",
+    "byte_cap":             "达到单次返回的【字节】上限",
+    "single_row_too_large": "单行数据本身就超过了返回上限,一行都没能带回",
+}
+
+
+def _query_db(sql: str, meta: dict) -> list:
+    """带 meta 出参地查库(截断信息由服务端往 meta 里填,见 B1 契约)。
+
+    ⚠️【临时兼容,B1 合并后删】:本分支的 `mcp_client.query_db` 还没有 `meta` 形参
+    (由批次 1 的另一半加)。合并后把整个函数体换成一行
+        `return mcp_client.query_db(sql, meta=meta)`
+    —— 这里刻意用【签名检查】而不是 `except TypeError`:后者会把 query_db 内部
+    抛出的 TypeError 误判成"不支持 meta",从而把一条【刚刚超时过的重查询】原样
+    重发一遍,正好是 B3 要消灭的那种烧钱重发。
+    """
+    fn = mcp_client.query_db
+    try:
+        accepts_meta = "meta" in inspect.signature(fn).parameters
+    except (TypeError, ValueError):                  # 内建/C 函数拿不到签名 → 按老签名走
+        accepts_meta = False
+    return fn(sql, meta=meta) if accepts_meta else fn(sql)
+
+
+def _truncated_shell(rows: list, meta: dict) -> dict:
+    """B4 薄壳。【只在真的截断时才套】—— 没截断保持今天的裸 list,下游零迁移。
+
+    `_total` 取 total_seen(服务端实际扫到的行数)与 returned 的较大者:它是真实总数的
+    【下界】,不是总数本身。所以给大脑的话术一律说"至少 N 行" —— 说"共 N 行"是假陈述,
+    大脑会拿它去回答"一共有多少",用户就被骗了。
+    """
+    returned = int(meta.get("returned") or len(rows))
+    total = max(int(meta.get("total_seen") or 0), returned)
+    why = _TRUNCATION_WHY.get(str(meta.get("reason") or ""), "达到单次返回上限")
+    note = (f"【结果被截断】{why}:本次只带回 {returned} 行,库里至少还有 {total} 行"
+            f"(真实总数未知)。不要把 {returned} 当成总数去回答「一共有多少」——"
+            "要总数就单独发一条 SELECT COUNT(*);要更多明细就加过滤条件"
+            "(时间段 / video_id / 类目)或用 LIMIT 分批取。")
+    return {"rows": rows, "_truncated": True, "_total": total, "_returned": returned,
+            "_reason": str(meta.get("reason") or ""), "_note": note}
+
+
+def _unwrap_rows(value: Any) -> "tuple[Any, dict]":
+    """薄壳 → (裸行集, meta{truncated,returned,total});不是薄壳就原样返回 + 空 meta。
+    薄壳只在真截断时存在,所以这里绝大多数时候是恒等变换(下游消费者零行为变化)。"""
+    if (isinstance(value, dict) and value.get("_truncated") is True
+            and isinstance(value.get("rows"), list)):
+        rows = value["rows"]
+        return rows, {"truncated": True,
+                      "returned": int(value.get("_returned") or len(rows)),
+                      "total": int(value.get("_total") or len(rows))}
+    return value, {}
+
+
+def _first_rowset(upstream: dict[str, Any]) -> "tuple[list | None, dict]":
+    """取上游第一个【行集】(截断时先剥薄壳),连同它的截断 meta。都不是行集 → (None, {})。
+    与升级前的 `next((v for v in upstream.values() if isinstance(v, list)), None)` 同语义。"""
+    for v in upstream.values():
+        rows, meta = _unwrap_rows(v)
+        if isinstance(rows, list):
+            return rows, meta
+    return None, {}
+
+
+def _sql_error_note(err: str, pgcode: "str | None", repairs: int) -> str:
+    """回喂大脑的 SQL 失败说明。要害是让大脑【分得清两类失败】:
+
+    ① SQL 写错了 → 我们已经自动重写重试过,还是不行,请换写法/核对表名列名;
+    ② 查询太重被取消 / 锁不可用 / 传输层错(连 SQLSTATE 都拿不到)→ **SQL 没写错**,
+       原样重发只会再超时一次。这句必须说死 —— 否则大脑自己重发一遍,
+       等价于把 B3 刚从代码里删掉的烧钱循环原封不动搬进模型脑子里。
+    """
+    err = (err or "")[:300]
+    if pgcode in _REPAIRABLE_SQLSTATES:
+        tried = f",已自动重写 SQL 并重试 {repairs} 次仍然失败" if repairs else ""
+        return (f"SQL 写错了(SQLSTATE {pgcode}){tried}:{err}。"
+                "请对着 schema 核对表名/列名后换一种写法,别把同一条原样重发。")
+    if pgcode in _OVERLOAD_SQLSTATES:
+        return (f"【这不是 SQL 写错了】—— {_OVERLOAD_SQLSTATES[pgcode]}(SQLSTATE {pgcode}):{err}。"
+                "改写 SQL 或原样重发都只会再被取消一次。请把查询【变轻】:加过滤条件"
+                "(时间段 / video_id / 类目)、加 LIMIT、只 SELECT 真正需要的列;"
+                "只要总数就单独发一条 SELECT COUNT(*)。实在取不到就如实告诉用户这次没查成。")
+    return ("【这不是 SQL 写错了】—— 查询没有正常返回(连接中断 / 超时 / 响应解析失败,"
+            f"数据库连 SQLSTATE 都没给出):{err}。别把 SQL 改来改去,也别把同一条大查询"
+            "原样重发;先缩小范围(加过滤条件 / LIMIT)再试,或者如实告诉用户这次没查成。")
+
+
 def _run_sql_query(node: Node, schema: dict, trace: Trace) -> NodeResult:
-    """sql_query 自愈执行(结构对称 _run_sandbox_node):
-    查库失败 → 把 DB 报错回喂 SqlFixer 重写 SQL → 重试,至多 SQL_MAX_RETRIES 次。"""
+    """sql_query 自愈执行(结构对称 _run_sandbox_node)。
+
+    B3:只有 _REPAIRABLE_SQLSTATES 里的码才把 DB 报错回喂 SqlFixer 重写重试;
+        超时 / 锁 / 任何拿不到 pgcode 的传输层错 → **不改 SQL**,直接失败并把原始错误如实回喂。
+    B4:服务端截断时(meta["truncated"])value 套薄壳,让"取回了多少"和"库里至少有多少"
+        分成两个数 —— 截断时说"共 N 条"是假陈述。
+    """
     sql = node.inputs.get("sql", "")
     fixer: SqlFixer | None = None
     last_err = ""
+    last_code: "str | None" = None
+    repairs = 0                                   # 真正重写过几次 → attempts = repairs + 1
 
     for attempt in range(SQL_MAX_RETRIES + 1):
         step = trace.step(f"[{node.id}/sql_query] MCP query (try {attempt + 1})")
+        meta: dict = {}                           # 服务端只在截断时往里填(契约:没截断不动它)
         try:
-            rows = mcp_client.query_db(sql)
-            step.ok(rows=len(rows) if isinstance(rows, list) else 1)
-            return NodeResult(node.id, node.tool, ok=True, value=rows, attempts=attempt + 1)
+            rows = _query_db(sql, meta)
+            if meta.get("truncated"):
+                value = _truncated_shell(rows if isinstance(rows, list) else [], meta)
+                step.ok(rows=len(value["rows"]), truncated=True,
+                        returned=value["_returned"], total=value["_total"],
+                        reason=value["_reason"])
+            else:
+                value = rows
+                step.ok(rows=len(rows) if isinstance(rows, list) else 1)
+            return NodeResult(node.id, node.tool, ok=True, value=value, attempts=attempt + 1)
         except Exception as e:
             last_err = str(e)
-            will_retry = attempt < SQL_MAX_RETRIES
-            step.fail(error=last_err[:160], will_retry=will_retry)
+            code = getattr(e, "pgcode", None)     # psycopg2 的真实形状;mock 由 B1 侧伪造成同形
+            last_code = str(code) if code else None
+            repairable = last_code in _REPAIRABLE_SQLSTATES
+            will_retry = repairable and attempt < SQL_MAX_RETRIES
+            step.fail(error=last_err[:160], will_retry=will_retry,
+                      sqlstate=last_code or "none", repairable=repairable)
             if not will_retry:
                 break
-            # 自愈:把 DB 报错回喂,重写 SQL
+            # 自愈:把 DB 报错回喂,重写 SQL(只有 SQL 真写错了才走到这)
             rstep = trace.step(f"[{node.id}/sql_query] repair (try {attempt + 1})")
             try:
                 fixer = fixer or SqlFixer()
                 sql = fixer.repair(sql, last_err, schema or {})
+                repairs += 1
                 rstep.ok(sql_len=len(sql))
             except Exception as ge:
                 rstep.fail(error=repr(ge))
                 return NodeResult(node.id, node.tool, ok=False,
                                   stderr=f"sql repair failed: {ge!r}", attempts=attempt + 1)
 
-    return NodeResult(node.id, node.tool, ok=False, stderr=last_err,
-                      attempts=SQL_MAX_RETRIES + 1)
+    return NodeResult(node.id, node.tool, ok=False,
+                      stderr=_sql_error_note(last_err, last_code, repairs),
+                      attempts=repairs + 1)     # = 真发出去的查询次数,不再虚报满预算
 
 
 _VIDEO_ID_RE = __import__("re").compile(r"^[A-Za-z0-9_\-]+$")
@@ -132,6 +268,7 @@ def _collect_items(node: Node, upstream: dict[str, Any]) -> list[dict]:
                       "label": label, "score": score})   # score: 上游有则带上(前端出置信度 chip)
 
     for val in upstream.values():                 # 只取第一个上游
+        val, _ = _unwrap_rows(val)                # B4:上游被截断时是薄壳,先剥出裸行集
         if isinstance(val, list):
             for r in val:
                 if isinstance(r, dict):
@@ -234,10 +371,11 @@ def _sanitize_table_rows(norm: "list[dict]") -> "list[dict]":
 def _run_show_table(node: Node, upstream: dict[str, Any]) -> NodeResult:
     """主进程节点:把【上游查询的完整结果】原样放进 NodeResult.table 侧信道,供前端渲染成表格。
     完整行取自 ledger(非预览)→ 多少行都不丢不编,大脑不必逐行复述。"""
-    rows = next((v for v in upstream.values() if isinstance(v, list)), None)
+    rows, up_meta = _first_rowset(upstream)            # B4:被截断时上游是薄壳,剥出裸行集
     if rows is None:
         return NodeResult(node.id, node.tool, ok=True, attempts=1,
                           value={"shown": 0, "note": "没有可展示的表格数据(上游结果不是行集)"})
+    truncated = bool(up_meta.get("truncated"))
     n = len(rows)
     shown = rows[:SHOW_TABLE_MAX_ROWS]
     norm = [r if isinstance(r, dict) else {"value": r} for r in shown]
@@ -249,9 +387,18 @@ def _run_show_table(node: Node, upstream: dict[str, Any]) -> NodeResult:
                 cols.append(str(k))
     if not cols:
         cols = ["value"]
-    note = "" if n <= SHOW_TABLE_MAX_ROWS else f"(共 {n} 条,展示前 {SHOW_TABLE_MAX_ROWS} 条)"
+    if truncated:
+        # B4:截断时说"共 N 条"是【假陈述】—— N 只是我们取回来的,不是库里的真实总数。
+        # 大脑会拿这个数去回答"一共有几个",用户就被骗了。只能给下界:"至少 N 条"。
+        at_least = max(int(up_meta.get("total") or 0), n)
+        tail = f",展示前 {SHOW_TABLE_MAX_ROWS} 条" if n > SHOW_TABLE_MAX_ROWS else ""
+        note = f"(至少 {at_least} 条(已达返回上限,未取全){tail})"
+    else:
+        note = "" if n <= SHOW_TABLE_MAX_ROWS else f"(共 {n} 条,展示前 {SHOW_TABLE_MAX_ROWS} 条)"
     caption = node.inputs.get("caption") or ""
     table = {"columns": cols, "rows": norm, "n": n, "shown": len(norm), "caption": str(caption)}
+    if truncated:                                  # 侧信道也别谎报总数(只加字段,前端可择期用)
+        table["truncated"] = True
     # ③:value 带前若干条【有序编号 id】(优先 video_id 列,否则首列)→ 进 transcript 供下一轮「第 N 个」映射。
     id_col = "video_id" if "video_id" in cols else (cols[0] if cols else None)
     items = ([{"n": i + 1, "id": str(r.get(id_col, ""))} for i, r in enumerate(norm[:30])]
@@ -263,7 +410,7 @@ def _run_show_table(node: Node, upstream: dict[str, Any]) -> NodeResult:
 def _run_show_stat(node: Node, upstream: dict[str, Any]) -> NodeResult:
     """主进程节点:把上游【一行指标】的每个「列: 值」放进 NodeResult.stat 侧信道,前端渲染成 KPI 数字卡。
     取上游首个行集的第一行(通常是 COUNT/AVG 一行);最多 6 个数字,防刷屏。"""
-    rows = next((v for v in upstream.values() if isinstance(v, list)), None)
+    rows, _ = _first_rowset(upstream)                  # B4:被截断时上游是薄壳,剥出裸行集
     if not rows or not isinstance(rows[0], dict):
         return NodeResult(node.id, node.tool, ok=True, attempts=1,
                           value={"shown": 0, "note": "没有可展示的指标(上游结果不是一行数据)"})
@@ -428,6 +575,17 @@ def _run_sandbox_node(node: Node, upstream: dict[str, Any],
                           stderr=(f"{node.tool} 不可用:本次运行没有代码执行环境(沙箱)。"
                                   "请改用 sql_query / semantic_search / analyze_video 完成,"
                                   "或把需要计算的部分直接写进回答。"))
+    # B4:上游被截断时 value 是薄壳。代码生成器与 _inject 都按【裸行集】理解上游 ——
+    # 这里先剥一层,生成侧看到的形状与截断前逐字节一致(真截断的那天才崩,是最坏的崩法)。
+    # 截断信息以新增变量 data_<id>_meta 注入,不挤进 data_<id>。
+    up_meta: dict = {}
+    if any(_unwrap_rows(v)[1] for v in upstream.values()):
+        plain = {}
+        for nid, val in upstream.items():
+            plain[nid], m = _unwrap_rows(val)
+            if m:
+                up_meta[nid] = m
+        upstream = plain
     gen = CodeGenerator()
     code = ""
     last = None
@@ -445,7 +603,7 @@ def _run_sandbox_node(node: Node, upstream: dict[str, Any],
                               attempts=attempt, stderr=repr(e))
 
         step = trace.step(f"[{node.id}/{node.tool}] sandbox exec (try {attempt + 1})")
-        last = sandbox.execute(_inject(code, node, upstream), timeout=30)
+        last = sandbox.execute(_inject(code, node, upstream, up_meta), timeout=30)
 
         if last.ok:
             value = _parse_stdout(last.stdout)
