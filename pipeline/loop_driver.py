@@ -25,7 +25,7 @@ from pipeline import config, lessons
 from pipeline.answer_guard import scrub_ids
 from pipeline.dag_schema import ALL_TOOLS, Node
 from pipeline.node_executor import execute_node, analyze_peek_cache
-from pipeline.node_specs import build_function_declarations
+from pipeline.node_specs import build_function_declarations, needs_sandbox
 from pipeline.taxonomy_seed import CATEGORIES
 
 log = logging.getLogger("pipeline.loop_driver")
@@ -52,11 +52,25 @@ def is_guest(owner: str) -> bool:
     return str(owner or "").lower().startswith("guest")
 
 
-def loop_function_declarations(owner: str = "") -> list[dict]:
+# B0-1:哪些工具要沙箱,**问 node_specs**(SPECS[tool].needs_sandbox),不在这里另列一份
+# 名单 —— 两处名单迟早漂移,而漂移的后果是新增的沙箱工具照样崩。今天是 python/plot。
+# 没有沙箱时它们【必然】崩在 sandbox.execute 上 —— 实证:三份 gate jsonl 共 12 条
+# AttributeError("'NoneType' object has no attribute 'execute'")。
+#
+# 调用方【没说】有没有沙箱 vs 明确说了 None,是两回事:前者不过滤(与升级前逐字节一致),
+# 后者才隐藏。用哨兵区分,不用 None 当"没说" —— None 恰好是要表达的那个值。
+_SANDBOX_UNSPECIFIED = object()
+
+
+def loop_function_declarations(owner: str = "", sandbox=_SANDBOX_UNSPECIFIED) -> list[dict]:
     """M1 工具声明 + 叠加上游句柄参数(loop 专用)。深拷贝,绝不污染 SPECS。
-    U6:web_search 只在 USE_WEB_SEARCH 开启时对大脑可见(关掉 = 工具消失,零残留)。"""
+    U6:web_search 只在 USE_WEB_SEARCH 开启时对大脑可见(关掉 = 工具消失,零残留)。
+    B0-1:sandbox 明确为 None 时,python/plot 从声明里消失 —— 摆着一个必崩的工具,
+    大脑迟早会调,而一次崩溃会让【这一次请求里所有已经花钱买到的证据被整体丢弃】。"""
     out = []
     for d in build_function_declarations():
+        if sandbox is None and needs_sandbox(d["name"]):
+            continue
         if d["name"] == "web_search" and not config.USE_WEB_SEARCH:
             continue
         if d["name"] == "update_memory" and not config.USE_USER_MEMORY:
@@ -1085,7 +1099,7 @@ def run_query_loop(nl: str, *, schema: dict, replay_context: "str | None", sandb
     req_short = req_short or uuid.uuid4().hex[:8]
     notice, notice_ids = task_done_notice(owner)          # S-9:销账等交付确认(见下方)
     conv = make_conversation(model or config.LOOP_MODEL,
-                             loop_function_declarations(owner=owner),
+                             loop_function_declarations(owner=owner, sandbox=sandbox),
                              _loop_system(schema, replay_context, runtime_facts,
                                           task_notice=notice),
                              image=image)

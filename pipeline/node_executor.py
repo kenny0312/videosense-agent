@@ -414,6 +414,15 @@ def _analyze_error_note(out, vid: str) -> str:
 
 def _run_sandbox_node(node: Node, upstream: dict[str, Any],
                       sandbox: SandboxClient, trace: Trace) -> NodeResult:
+    # B0-1 兜底:没有沙箱就【软失败】,不要打空对象。声明过滤(loop_function_declarations)
+    # 已经让这两个工具对大脑不可见,但直连/回放/旧 trace 重放都可能绕过声明这一层,
+    # 而这里一旦 AttributeError 抛出去,整次请求里已经花钱买到的证据会被【整体丢弃】。
+    # 软失败则走既有错误回灌路径:大脑看到"这条路不通",换个工具接着做。
+    if sandbox is None:
+        return NodeResult(node.id, node.tool, ok=False,
+                          stderr=(f"{node.tool} 不可用:本次运行没有代码执行环境(沙箱)。"
+                                  "请改用 sql_query / semantic_search / analyze_video 完成,"
+                                  "或把需要计算的部分直接写进回答。"))
     gen = CodeGenerator()
     code = ""
     last = None
