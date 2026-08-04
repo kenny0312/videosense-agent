@@ -955,3 +955,73 @@ def test_startup_error_does_not_recommend_disabling_the_breaker():
         assert any(w in msg[max(0, i - 25):i + 45] for w in ("不要", "不是", "禁止")), (
             f"把'关掉熔断'当成了补救方案推荐 —— 任务书明令删掉这条兜底。上下文:"
             f"{msg[max(0, i - 25):i + 45]!r}")
+
+
+# ── C5:闸门信封透传(preview 才是回喂链的真通道,一个字都不能少)──────────────
+def _receipt(preview) -> str:
+    """回执里那段【给大脑看的文字】。preview 的形状是 [{"answer": ..., "enough": ...}]。"""
+    return str(preview[0]["answer"])
+
+
+def test_blocked_receipt_is_delivered_character_for_character(monkeypatch):
+    """C5 硬规则:`value["gate"]=="blocked"` 的回执 → preview【直接透传,禁止再截断】。
+
+    断的是【字符数相等】而不是"包含某个关键词":包含式断言在"只截掉末尾一句"时照样全绿,
+    而末尾那句恰恰是收口指令的落点("没查到的部分必须明确写【未核查】"/"不要再调
+    analyze_video")。腰斩在半句,大脑只知道"这次没成",不知道该干嘛 —— 那段文字本身
+    就是护栏。两个真实闸门各钉一颗钉子:成本护栏工具闸 + analyze 配额闸。
+    """
+    monkeypatch.setattr(loop_driver, "execute_node",
+                        lambda *a, **k: pytest.fail("触闸/超配额后工具不该真执行"))
+
+    # ① 成本护栏工具闸
+    g = TreeGuard(cost_cap=0.10, call_estimate=0.05)
+    _spend(0.20)
+    res = _executor(g)("c1", "sql_query", {"sql": "select 1"}, {}, [])
+    note = res.value["answer"]
+    assert len(note) > 80, "前提没了:note 不比默认 80 字/格长的话,这条测试测不出截断"
+    assert len(_receipt(res.preview)) == len(note)     # 字符数逐字相等 —— 一个字都不能少
+    assert _receipt(res.preview) == note
+
+    # ② analyze 配额闸(同一条规则,另一个信封来源)
+    old = config.MAX_VIDEOS_PER_REQUEST
+    config.MAX_VIDEOS_PER_REQUEST = 0                 # 第一个 analyze 就撞上限
+    try:
+        q = _executor(TreeGuard(cost_cap=0, wall_cap_s=0))(
+            "c2", "analyze_video", {"video_id": "v1", "question": "q"}, {}, [])
+    finally:
+        config.MAX_VIDEOS_PER_REQUEST = old
+    qnote = q.value["answer"]
+    assert loop_driver._is_gate_envelope(q.value) and len(qnote) > 80
+    assert len(_receipt(q.preview)) == len(qnote) and _receipt(q.preview) == qnote
+
+
+def test_blocked_receipt_is_still_intact_on_the_wire(monkeypatch):
+    """同一条规则钉在【回喂链的终点】:大脑真正收到的 function_response 里那段文字,
+    与闸门信封原文一字不差。上一条测的是构造点,这条测的是"路上没人再动它"——
+    C4 的资源回灌钩子也挂在这条链上(_attach_envelope),不许把它挤掉或截短。"""
+    monkeypatch.setattr(loop_driver, "execute_node",
+                        lambda *a, **k: pytest.fail("触闸后工具不该真执行"))
+
+    class _Conv:
+        last_thoughts = ""
+
+        def __init__(self):
+            self.sent = []
+
+        def send(self, msg):
+            self.sent.append(msg)
+            if len(self.sent) == 1:
+                return [loop_driver.Call("sql_query", {"sql": "select 1"}, [])], None
+            return [], "就已有证据收口"
+
+    g = TreeGuard(cost_cap=0.10, call_estimate=0.05)
+    _spend(0.20)
+    conv = _Conv()
+    loop_driver.run_loop("q", conv, _executor(g), max_steps=6, guard=g)
+    wire = [m for m in conv.sent if isinstance(m, list)]
+    assert wire, "第二轮该收到工具结果的 function_response"
+    _name, payload = wire[0][-1]
+    on_wire = _receipt(payload["preview"])
+    assert "【未核查】" in on_wire                      # 收口指令的落点还在
+    assert len(on_wire) == len(g._envelope())          # 与信封原文【字符数相等】
