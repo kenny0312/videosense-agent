@@ -978,6 +978,17 @@ _CONSTITUTION = (
     "【现场写代码】(instruction 说清要干什么;要用上一步结果就给 data_result_id)。\n"
     "- 【数据库之外】的公开信息(地点/赛事/人物背景、事实核对、网上找参考)→ 用 web_search 联网查。\n"
     "- 出图/科学计算的文本(SQL、plot 标题)一律用英文。\n\n"
+    # C2「未知≠空」:跨工具的总原则。原先只有三条【局部】免责(预览截断 / 受控词表 /
+    # scoped_to 信封),拼不成一条总原则 —— 大脑对"我这条 SQL 没 join 的表、词表外的
+    # 谓词、只在专栏表里的视频"没有任何要求把【查询范围】和【客观存在】分开陈述。
+    # 跳伞事故的形状就是这个:数据只在 skydive_segments,查 video_facts 没查到,
+    # 于是答"库里没有"。放宪法不放 lessons.py —— 按 lessons.py 的入集三问,
+    # 这是【通用判断原则】(不针对某个工具、写不出退役条件),不是一次教训。
+    "# 未知 ≠ 空(每个工具的结果都适用)\n"
+    "工具返回的是你【查过的那部分】,不是全库真相 —— 没出现在结果里的东西是【你没查到】,"
+    "不等于【库里没有】。要下「没有 / 不存在 / 一个都没有」这类结论前,先问自己:"
+    "我查的范围覆盖全了吗?确实要说没有,就把范围一起说出来"
+    "(「在 video_facts 里没有匹配的」,而不是「库里没有」)。\n\n"
     "# 收口呈现(把答案【组织好】,但别多答 —— 内容不变,只是更清晰)\n"
     "答案用 markdown 写,前端会渲染。规则:\n"
     "- 【结论先行】:有判断/挑选/比较/多条结果时,【第一句先给结论或直接答案】,再列依据"
@@ -1105,10 +1116,31 @@ def task_done_notice(owner: str) -> "tuple[str, list]":
 
 def _loop_system(schema: dict, replay_context: "str | None",
                  runtime_facts: "str | None" = None,
-                 task_notice: "str | None" = None) -> str:
+                 task_notice: "str | None" = None,
+                 *,
+                 library_state: "str | None" = None,
+                 user_memory: "str | None" = None) -> str:
+    """运行期拼 system prompt。顺序是【合同】,由 test_prompt_order.py 锁死:
+
+        _LOOP_SYSTEM → schema → library_state → runtime_facts → user_memory
+        → task_notice → replay
+
+    C3:library_state / user_memory 两个新参【keyword-only】。
+    · user_memory 以前由 orchestrator 拼进 runtime_facts 再传进来 —— 两样不同的
+      东西(系统运行时数字 vs 用户跨会话资料)挤在一个参数里,谁也不知道该往哪加。
+      拆开只是把已经存在的两段各归其位,拼出来的字节顺序与拆之前一致。
+    · 前三个参(schema / replay_context / runtime_facts)【保持位置可传】:
+      evals/ 与三个既有测试是按位置调的,而本批次不改 evals/。
+    · library_state 【绝不能】进 _LOOP_SYSTEM —— 那是 import 期冻结的字节稳定
+      缓存前缀,而库存快照每个请求都可能不同,进去就是每轮 cache miss。
+    """
     s = _LOOP_SYSTEM + "\n# 数据库结构\n" + json.dumps(schema, ensure_ascii=False)
+    if library_state:                                     # C1:库存快照(TTL 缓存,比运行时状态稳)
+        s += "\n\n" + library_state
     if runtime_facts:                                     # U3:运行时状态(自我认知)
         s += "\n\n" + runtime_facts
+    if user_memory:                                       # L2:跨会话用户记忆(owner 作用域)
+        s += "\n\n" + user_memory
     if task_notice:                                       # S-9:后台任务完成通知(一行)
         s += "\n\n" + task_notice
     if replay_context:                                    # M5:transcript 回放(取代 recipe 块)
@@ -1122,7 +1154,9 @@ def run_query_loop(nl: str, *, schema: dict, replay_context: "str | None", sandb
                    image: "tuple[bytes, str] | None" = None,
                    use_critic: "bool | None" = None,
                    model: "str | None" = None,
-                   req_short: str = "") -> LoopOutcome:
+                   req_short: str = "",
+                   library_state: "str | None" = None,
+                   user_memory: "str | None" = None) -> LoopOutcome:
     """orchestrator 的 loop 入口:建会话 + 执行器 → run_loop → 收产物(纯 handle,无合成 DAG)。
     replay_context(M5)= 从 transcript 回放出的多轮上下文(取代旧 recipe 块)。
     on_step(M6b)= 每步回调,供 SSE 流式。runtime_facts(U3)= 运行时状态注入节(自我认知)。
@@ -1132,13 +1166,17 @@ def run_query_loop(nl: str, *, schema: dict, replay_context: "str | None", sandb
     model(阶段A)= 本请求的大脑模型;None = config.LOOP_MODEL。白名单校验在 API 层,这里不重复。
     req_short(A2)= 本请求的 8 位短串,拼进 result_id 前缀;调用方不给就在这儿现生成
     (per-request 唯一即可,不建 request_scope 模块、不引全局状态)。
+    library_state(C1)= 库存快照注入节;user_memory(C3)= 跨会话用户记忆注入节。
+    两段都由 orchestrator 取好再传进来(取数归 orchestrator、拼装归这里),不给 = 不注入。
     注:子代理(subagents)仍走 SUBAGENT_MODEL/LOOP_MODEL 默认,不随本参数切换。"""
     req_short = req_short or uuid.uuid4().hex[:8]
     notice, notice_ids = task_done_notice(owner)          # S-9:销账等交付确认(见下方)
     conv = make_conversation(model or config.LOOP_MODEL,
                              loop_function_declarations(owner=owner, sandbox=sandbox),
                              _loop_system(schema, replay_context, runtime_facts,
-                                          task_notice=notice),
+                                          task_notice=notice,
+                                          library_state=library_state,
+                                          user_memory=user_memory),
                              image=image)
     # P0-3:一次请求 = 一棵树 = 一本账。同一个 guard 同时喂给两个挂点(工具闸 + 每步 generate 闸);
     # 子 agent 复用本 execute 闭包 → 工具闸天然共享,run_loop 侧由 subagents 显式传同一实例。

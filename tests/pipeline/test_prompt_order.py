@@ -1,4 +1,4 @@
-"""A3:系统 prompt 的【前缀顺序不变量】—— 固定大块在前、易变段在后。
+"""A3 / C3:系统 prompt 的【前缀顺序不变量】—— 固定大块在前、易变段在后。
 
 为什么值得一条专门的测试:隐式缓存按前缀【逐字符从头比】,第一个不同的字符之后的内容
 全部作废。schema 是几 KB 的共享固定块(同一批子 agent 拿的是同一份,跨请求也基本不变);
@@ -10,6 +10,16 @@ video_ids / replay / runtime_facts 是每次都不同的易变段。易变段排
   · 主 loop  —— pipeline.loop_driver._loop_system(本文件【只读它】)
   · 子 agent —— pipeline.subagents._run_one 里拼的那段 system
 谁把顺序改回去,这里就红。
+
+C3 顺序合同(Golden Test 锁的就是这两行,两处【合在一个文件】、不写两套):
+
+    主 loop:  _LOOP_SYSTEM → schema → library_state → runtime_facts → user_memory
+              → task_notice → replay
+    子 agent: static prefix → schema → guard notice → video_ids/task
+
+上面 A3 那几条验的是"schema 在所有易变段之前"这个【性质】;下面 golden 那两条验的是
+【整条序列逐位相等】—— 性质测试挡得住"把 replay 提到 schema 前"这种粗错,挡不住
+"library_state 和 runtime_facts 对调"(两个都在 schema 之后,性质仍成立)。两层都要。
 """
 import os
 from contextvars import copy_context
@@ -44,6 +54,48 @@ def test_main_loop_prefix_is_identical_up_to_schema_across_requests():
     b = loop_driver._loop_system(schema, replay_context="第2轮回放 完全不同", runtime_facts="facts B")
     common = os.path.commonprefix([a, b])
     assert _SCHEMA_MARK in common and "c" * 300 in common
+
+
+# ── C3 Golden:主 loop 七段【逐位】顺序合同 ───────────────────────────
+def test_main_loop_golden_segment_order():
+    """合同原文:_LOOP_SYSTEM → schema → library_state → runtime_facts → user_memory
+    → task_notice → replay。
+
+    每段塞一个唯一哨兵,按它们在成品里的出现位置排序,断言排出来的次序【逐位】等于合同。
+    对调任意相邻两段就红 —— 这正是 A3 那几条性质测试漏掉的那类改动。"""
+    from pipeline import loop_driver
+    s = loop_driver._loop_system(
+        {_SCHEMA_MARK: ["a"]},
+        "MARK_G_REPLAY",
+        "MARK_G_FACTS",
+        task_notice="MARK_G_NOTICE",
+        library_state="MARK_G_LIBSTATE",
+        user_memory="MARK_G_MEMORY",
+    )
+    contract = ["MARK_G_LIBSTATE", "MARK_G_FACTS", "MARK_G_MEMORY",
+                "MARK_G_NOTICE", "MARK_G_REPLAY"]
+    for m in contract:
+        assert m in s, f"{m} 没被注入,这条测试就没在验它想验的东西"
+    # 静态前缀 → schema 打头(A3 本体),其后五段按合同排
+    assert s.startswith(loop_driver._LOOP_SYSTEM), "静态宪法前缀必须逐字节打头"
+    assert s.index(_SCHEMA_MARK) < min(s.index(m) for m in contract)
+    assert sorted(contract, key=s.index) == contract, \
+        "主 loop 七段顺序合同被改了(见本文件 docstring 的合同原文)"
+
+
+def test_main_loop_new_segments_are_keyword_only():
+    """C3:library_state / user_memory 必须是 keyword-only。
+
+    位置传参一旦被允许,`_loop_system(schema, replay, rt, notice, lib, mem)` 这种调用
+    就会在有人调整参数次序时静默传错段(库存快照当成用户记忆注入),而两者都是字符串,
+    类型检查抓不到。同时确认前三个参【仍可位置传】—— evals/ 与既有测试是按位置调的。"""
+    import inspect
+    from pipeline import loop_driver
+    p = inspect.signature(loop_driver._loop_system).parameters
+    for name in ("library_state", "user_memory"):
+        assert p[name].kind is inspect.Parameter.KEYWORD_ONLY, f"{name} 必须 keyword-only"
+    for name in ("schema", "replay_context", "runtime_facts"):
+        assert p[name].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
 
 
 # ── 子 agent:同一套不变量 ─────────────────────────────────────────────
@@ -90,6 +142,23 @@ def test_subagent_schema_precedes_toolset_hint(monkeypatch):
     s = _capture_subagent_system(monkeypatch, task, {_SCHEMA_MARK: ["x"]})
     assert "你握有 spawn_agents" in s
     assert s.index(_SCHEMA_MARK) < s.index("你握有 spawn_agents")
+
+
+def test_subagent_golden_segment_order(monkeypatch):
+    """合同另一半:static prefix → schema → guard notice → video_ids/task。
+
+    与主 loop 那条 golden 放同一个文件:顺序合同只有一份,别在两处各写一套然后祈祷
+    它们不漂移(这正是 sql_bounds 抽公共模块时立的同一条规矩)。"""
+    from pipeline import subagents
+    task = {"instruction": "看 A 组", "video_ids": ["MARK_VID_ONE"],
+            "tools": ["sql_query", "spawn_agents"]}
+    s = _capture_subagent_system(monkeypatch, task, {_SCHEMA_MARK: ["x"]})
+    contract = [_SCHEMA_MARK, "你握有 spawn_agents", "MARK_VID_ONE"]
+    for m in contract:
+        assert m in s, f"{m} 没被注入,这条测试就没在验它想验的东西"
+    assert s.startswith(subagents._SUBAGENT_SYSTEM), "子 agent 静态前缀必须逐字节打头"
+    assert sorted(contract, key=s.index) == contract, \
+        "子 agent 四段顺序合同被改了(见本文件 docstring 的合同原文)"
 
 
 def test_two_subagents_share_prefix_through_whole_schema(monkeypatch):

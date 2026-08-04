@@ -136,14 +136,25 @@ def run_query(nl: str, *, quiet_trace: bool = False,
         getattr(session, "usage_cum", None) if session is not None else None, nl=nl,
         has_image=image is not None, model=model)
     # L2 用户记忆:跨会话偏好/事实(owner 作用域;无记忆 = 空串不占 token;fail-open)。
+    # C3:【不再】拼进 rt_facts —— 系统运行时数字和用户跨会话资料是两样东西,
+    # 挤在一个参数里之后没人说得清该往哪加。改成各走各的具名参,拼装顺序由
+    # _loop_system 一处定义、test_prompt_order 锁死(拼出来的字节与拆之前一致)。
+    mem_section = ""
     if config.USE_USER_MEMORY:
         try:
             from pipeline import user_memory
-            mem = user_memory.render_section(owner)
-            if mem:
-                rt_facts = rt_facts + "\n\n" + mem
+            mem_section = user_memory.render_section(owner)
         except Exception as e:
             log.warning("用户记忆加载失败(fail-open): %r", e)
+    # C1 库存快照:开局就让大脑知道【库里有什么】(总量/大类分布/专栏表孤儿)。
+    # 取数在这里、拼装在 loop_driver —— 与 rt_facts / user_memory 同一条分工。
+    # library_state 自带 TTL 缓存与 fail-open;这层 try 只兜 import 期的意外。
+    lib_state = ""
+    try:
+        from pipeline import library_state as _lib
+        lib_state = _lib.library_state_line()
+    except Exception as e:
+        log.warning("库存快照加载失败(fail-open): %r", e)
     # 瞬时失败(重试后仍抖 / 未收敛)→ 给【优雅的重试提示】而非原始崩溃卡片。
     # (Pandora 对照测的镜像教训:别把抖动伪装成"库空"的假结果,也别把它甩成 error;诚实说"这次没成,再试一次"。)
     _RETRY_MSG = "抱歉,这次没能完成 —— 可能是临时的服务波动。请再发一次,或把问题说得更具体一点。"
@@ -155,7 +166,8 @@ def run_query(nl: str, *, quiet_trace: bool = False,
                                         on_step=on_step, runtime_facts=rt_facts, owner=owner,
                                         image=image, model=model,
                                         use_critic=(True if critic else None),
-                                        req_short=req_short)
+                                        req_short=req_short,
+                                        library_state=lib_state, user_memory=mem_section)
         lstep.ok(steps=lo.steps, terminated=lo.terminated)
     except Exception as e:
         lstep.fail(error=repr(e))
