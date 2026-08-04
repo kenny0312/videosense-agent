@@ -173,6 +173,10 @@ class ExecResult:
     stat: dict = field(default_factory=dict)   # show_stat 侧信道:{items:[{label,value,unit}], caption}
     ms: float = 0.0                          # M4.2:本工具墙钟耗时(ms)
     cache_hit: bool = False                  # M4.2:analyze_video 是否命中缓存
+    error_code: str = ""                     # A4 的机器可判失败码(NodeResult.error_code 的投影)。
+                                             #     用途见下方错误回喂那处:护栏收口指令不许被截断,
+                                             #     而"这是不是护栏"只能靠码判 —— 靠文本前缀判会在
+                                             #     文案改一个字的时候无声失效。
     attempts: int = 0                        # C4:真发出去的模型调用次数(NodeResult.attempts 的投影)。
                                              #     一次 analyze 可能内含 3 次重试生成 —— 大脑只看"调了 1 次
                                              #     工具"会严重低估自己烧了多少,回灌余额时必须带上它。
@@ -192,6 +196,10 @@ class LoopResult:
 
 # ── 纯控制流(注入 conversation + execute,离线可测)──────────────
 _TRIP_GRACE_STEPS = 2      # P0-3:触闸后给几步收口机会;用尽即强制终止(terminated="tree_guard")
+# 护栏拦下的失败码。字面量抄一份而不是 import perception —— loop_driver 是纯控制流层,
+# 为一个常量把感知层拉进 import 图不划算;真值由 test 钉住两边一致。
+_ERR_GUARD_BLOCKED = "GUARD_BLOCKED"
+
 RUNWAY_WARN_LEFT = 4       # 剩几步时提醒大脑"跑道快到头了"(0=关)
 
 
@@ -620,7 +628,15 @@ def run_loop(user_query: str, conversation, execute: Callable, *,
                 responses.append((call.name, payload))
             else:
                 seen[sig] = seen.get(sig, 0) + 1
-                responses.append((call.name, {"result_id": cid, "error": (res.stderr or "")[:300]}))
+                # 护栏信封【全文回喂】,不受这条 300 字截断管 —— 与 C5 同一个原则:
+                # 那段文字是给大脑的【收口指令】("别再调工具、就已有证据作答、未核实处标注"),
+                # 腰斩在半句它就不知道该干嘛。实测拼完 250~286 字、只剩十几字余量,
+                # 而它现在不被砍靠的是"把信封放最前面"这个排版技巧,不是设计。
+                # 判据用 error_code 不用文本前缀:文案改一个字,前缀判据就无声失效。
+                err = res.stderr or ""
+                if res.error_code != _ERR_GUARD_BLOCKED:
+                    err = err[:300]
+                responses.append((call.name, {"result_id": cid, "error": err}))
         # C4:把本步的资源状态随工具结果回灌(见 _context_note)。两处刻意的克制:
         #  · 已触闸 → 一个字都不加。护栏信封是【收口指令】("别再调工具"),这时候再补一句
         #    "还剩 9 个配额"就是在拆护栏的台;钱的事优先级最高,它说了算(任务书:护栏优先)。
@@ -1009,6 +1025,7 @@ def _make_executor(sandbox, trace, schema, session_id, owner: str = "anon",
         return ExecResult(ok=nr.ok, value=nr.value, preview=pv, n=n, stderr=nr.stderr,
                           code=nr.code, artifact=nr.artifact, videos=nr.videos, table=nr.table,
                           stat=nr.stat, cache_hit=nr.cache_hit,
+                          error_code=getattr(nr, "error_code", "") or "",
                           # C4:重试次数原样投影上来(getattr 兜底:单测里的 NodeResult 替身
                           # 常是临时 class,少一个字段不该把整条执行链炸掉)。
                           attempts=int(getattr(nr, "attempts", 0) or 0))

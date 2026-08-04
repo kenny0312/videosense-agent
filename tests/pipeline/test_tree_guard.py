@@ -1025,3 +1025,83 @@ def test_blocked_receipt_is_still_intact_on_the_wire(monkeypatch):
     on_wire = _receipt(payload["preview"])
     assert "【未核查】" in on_wire                      # 收口指令的落点还在
     assert len(on_wire) == len(g._envelope())          # 与信封原文【字符数相等】
+
+
+def test_guard_envelope_survives_the_error_feedback_path(monkeypatch):
+    """护栏信封走 stderr 那条路也不许被 300 字截断 —— 与 C5 同一个原则。
+
+    C5 治的是 preview 那条路(工具闸拦下 → _soft_note → ok=True 信封)。
+    但 analyze_video 被拦时走的是另一条:node_executor._analyze_error_note →
+    NodeResult(ok=False, stderr=...) → run_loop 的错误分支 `stderr[:300]`。
+    同一个病(收口指令被腰斩)换了个载体。
+
+    实测拼完 250~286 字、只剩十几字余量,而它现在不被砍靠的是"把信封放最前面"
+    这个排版技巧 —— 不是设计。video_id 长一点就会溢出。
+    """
+    from pipeline.loop_driver import Call
+    from tests.pipeline.test_loop_driver import ScriptedConv
+    from pipeline import loop_driver as ld
+
+    long_note = "[系统·成本护栏] " + "请立刻基于已经拿到的证据收口作答,不要再调用任何工具。" * 12
+    assert len(long_note) > 300, "这条用例的前提是文案超过 300 字"
+
+    conv = ScriptedConv([([Call("analyze_video", {"video_id": "v_x"}, [])], None),
+                         ([], "收口")])
+
+    def ex(cid, name, inputs, upstream, uses):
+        return ld.ExecResult(ok=False, stderr=long_note, error_code="GUARD_BLOCKED")
+
+    ld.run_loop("q", conv, ex, max_steps=4)
+    sent = "".join(str(m) for m in conv.sent)
+    assert long_note in sent, "护栏收口指令被 300 字截断了 —— 大脑读不到该干嘛"
+
+
+def test_ordinary_errors_are_still_truncated(monkeypatch):
+    """反向锁:普通失败照旧截到 300 字。别把豁免开成"所有错误都全文回喂"——
+    一条 SQL 的 traceback 能有几千字,全塞进 prompt 是每步都在烧钱。"""
+    from pipeline.loop_driver import Call
+    from tests.pipeline.test_loop_driver import ScriptedConv
+    from pipeline import loop_driver as ld
+
+    huge = "x" * 5000
+    conv = ScriptedConv([([Call("sql_query", {"sql": "boom"}, [])], None), ([], "收口")])
+
+    def ex(cid, name, inputs, upstream, uses):
+        return ld.ExecResult(ok=False, stderr=huge)      # 没有 error_code = 普通失败
+
+    ld.run_loop("q", conv, ex, max_steps=4)
+    sent = "".join(str(m) for m in conv.sent)
+    assert huge not in sent and "x" * 300 in sent, "普通错误没被截断 —— 每步都在烧 traceback 的钱"
+
+
+def test_guard_blocked_code_matches_the_perception_layer():
+    """两边的字面量必须一致。loop_driver 抄了一份而不是 import perception
+    (纯控制流层不该为一个常量把感知层拉进 import 图),所以要有钉子。"""
+    from perception.analyze_video_contextual import ERROR_GUARD_BLOCKED
+    from pipeline import loop_driver as ld
+
+    assert ld._ERR_GUARD_BLOCKED == ERROR_GUARD_BLOCKED
+
+
+def test_error_code_is_actually_projected_from_node_result(monkeypatch):
+    """走【真实的 NodeResult → ExecResult 投影】,不是手搓 ExecResult。
+
+    上面那两条用例直接构造 `ExecResult(error_code=...)`,于是投影那一行没人守:
+    实测把它删掉,test_tree_guard 全绿(变异存活)。这是本仓反复踩的同一类洞 ——
+    测了单元、没测接线。
+    """
+    from pipeline import loop_driver as ld
+    from pipeline import node_executor as ne
+
+    def fake_execute_node(node, upstream, sandbox, trace, **kw):
+        return ne.NodeResult(node.id, node.tool, ok=False, stderr="被护栏拦下",
+                             error_code="GUARD_BLOCKED", attempts=2)
+
+    monkeypatch.setattr(ld, "execute_node", fake_execute_node)
+    ex = _executor(TreeGuard(cost_cap=10.0, call_estimate=0.05))
+    res = ex("c0", "analyze_video", {"video_id": "v1", "question": "q"}, {}, [])
+
+    assert res.error_code == "GUARD_BLOCKED", (
+        "NodeResult.error_code 没投影到 ExecResult —— 那条 300 字豁免的判据永远读到空串,"
+        "护栏收口指令照样被腰斩")
+    assert res.attempts == 2, "attempts 也走同一条投影,一起钉住"
