@@ -173,6 +173,9 @@ class ExecResult:
     stat: dict = field(default_factory=dict)   # show_stat 侧信道:{items:[{label,value,unit}], caption}
     ms: float = 0.0                          # M4.2:本工具墙钟耗时(ms)
     cache_hit: bool = False                  # M4.2:analyze_video 是否命中缓存
+    attempts: int = 0                        # C4:真发出去的模型调用次数(NodeResult.attempts 的投影)。
+                                             #     一次 analyze 可能内含 3 次重试生成 —— 大脑只看"调了 1 次
+                                             #     工具"会严重低估自己烧了多少,回灌余额时必须带上它。
 
 
 @dataclass
@@ -266,15 +269,70 @@ def _attach_envelope(msg: Any, envelope: str) -> Any:
       ② function_call 轮没有配对的 function_response(Gemini 协议要求配对)→ 400 硬崩,
          熔断反而把请求炸了。
     所以列表形状时,把指令挂进最后一条结果里(协议合法、零后端改动、大脑必读)。
+
+    C4:`_system_notice` 是【共享载体】—— 护栏信封、A5 的重复提醒、C4 的资源余额都写它。
+    旧写法直接赋值 = 后写的把先写的【无声顶掉】(A5 刚在最后一条 payload 上挂的提醒,
+    下一步开头的护栏信封一来就没了)。改成【新的排在前面、旧的接在后面】,两条不变量:
+      · 不丢:先写的还在,只是往下挪;
+      · 优先级 = 写入顺序的倒序。本循环里的写入顺序天然是
+        A5 重复提醒(收结果时)→ C4 资源余额(收完这一步时)→ 护栏信封(下一步开头),
+        所以【钱的事永远排在最前】,不需要额外的优先级参数。
     """
     if isinstance(msg, str):
         return f"{msg}\n\n{envelope}" if msg.strip() else envelope
     if isinstance(msg, list) and msg:
         name, result = msg[-1]
         merged = dict(result) if isinstance(result, dict) else {"result": result}
-        merged["_system_notice"] = envelope
+        prev = str(merged.get("_system_notice") or "")
+        merged["_system_notice"] = f"{envelope}\n{prev}" if prev else envelope
         return list(msg[:-1]) + [(name, merged)]
     return envelope
+
+
+_NOTE_HEAD = "[系统] "          # 系统提示的统一抬头(A5/跑道提醒/C4 都用它)
+
+
+def _strip_note_head(s: Any) -> str:
+    return str(s)[len(_NOTE_HEAD):] if str(s).startswith(_NOTE_HEAD) else str(s)
+
+
+def _context_note(*, quota_used: int | None = None, quota_cap: int = 0,
+                  request_spent_usd: float | None = None,
+                  attempts: int = 0, cache_hit: int = 0,
+                  repeats: tuple = (), truncated: tuple = ()) -> str:
+    """C4:把大脑【看不见的资源状态】随工具结果回灌。空串 = 这一步没什么可说的(不回灌)。
+
+    治的病:大脑对自己的资源状态一无所知,只有【撞墙那一刻】才知道。实测:一次真跑里
+    子 agent 把全树 12 个 analyze 配额吃光,主脑下一步才收到"已达本请求视频分析上限",
+    只能退回拿检索片段的文字当证据。全代码库 `quota["analyzed"]` 只在【拦截那一刻】被读,
+    没有任何地方把【余额】告诉大脑 —— 看不见余额就做不好"先看哪个/要不要并行拆"的决策。
+
+    三条(都走 `_system_notice` 这个共享载体,见 `_attach_envelope`):
+      ① analyze 配额余额 + 本请求累计花费 + 这批 analyze 的真实 attempts / 缓存命中;
+      ② 同签名【成功】重复(计数复用 A5 的 success_seen,文案复用 `_repeat_note`);
+      ③ B4 薄壳的截断说明(复用薄壳自己产出的 `_note`,不另写一套措辞)。
+
+    【明令砍掉 est_usd / actual_usd】(任务书原文):预留估价是熔断内部的记账口径
+    (admit/settle 的在飞预留),它按定义不等于真实花费。把一个"不是钱"的数报给大脑,
+    它会拿去推理"我还能烧几次" —— 报错的数比不报更坏。只报 usage 落账的全口径实花。
+    """
+    parts: list[str] = []
+    if quota_used is not None and quota_cap > 0:
+        left = quota_cap - quota_used
+        head = (f"视频分析配额已用 {quota_used}/{quota_cap}"
+                + (f",还剩 {left} 个" if left > 0 else ",【已用完】"))
+        if request_spent_usd is not None:
+            head += f";本请求累计已花 ${request_spent_usd:.4f}"
+        if attempts or cache_hit:
+            head += f";刚这批 analyze 实发 {attempts} 次模型调用"
+            if cache_hit:
+                head += f"、{cache_hit} 次命中缓存(命中不占配额)"
+        parts.append(head + "。配额见底就只能拿【已分析过的】收口,按余额安排先看哪个。")
+    # 复用来的段落(_repeat_note)自带 "[系统] " 抬头 —— 拼接时把它摘掉,否则整条会长成
+    # "[系统] [系统] 提醒:…"(既难看又白花几个字)。措辞本身一个字不改。
+    parts.extend(_strip_note_head(x) for x in repeats)
+    parts.extend(_strip_note_head(x) for x in truncated)
+    return (_NOTE_HEAD + " ".join(parts)) if parts else ""
 
 
 def _is_pro_analyze() -> bool:
@@ -284,6 +342,31 @@ def _is_pro_analyze() -> bool:
         return "pro" in str(MODEL_OVERRIDE.get() or PERCEPTION_MODEL or "").lower()
     except Exception:
         return False
+
+
+def _is_gate_envelope(value: Any) -> bool:
+    """这份结果是不是【闸门信封】(配额闸 / 成本护栏拦下的调用)。
+
+    判据只认 `gate == "blocked"` 这个专用标记,【不许】复用 enough —— analyze 的真成功
+    结果也合法地带 enough="no"(如"视频里没有狗"),按 enough 判会把真干过活的枝误判成
+    没干活(subagents 的计数壳与残值回收都踩过,review 确认)。
+    """
+    return isinstance(value, dict) and value.get("gate") == "blocked"
+
+
+def _gate_preview(note: str) -> list[dict]:
+    """C5 硬规则:闸门信封进 prompt 的【唯一】通道 —— 全文透传,禁止再截断。
+
+    preview 才是真正回喂给大脑的字段(value 不进 prompt)。这段文字是给大脑的【收口指令】,
+    腰斩在半句它就不知道该干嘛:_preview 默认每格 80 字,会把
+    "…这个【没分析】。请【就已分析过的" 之后全丢,于是大脑只知道"这次没成",
+    不知道"别再调工具 / 没查到的写【未核查】"。护栏文案本身就是护栏,不能被截。
+
+    所以闸门信封【不进】 _do 里那条按工具分档的预览预算链 —— 那条链上每一格都有上限,
+    而这里要的是"一个字都不能少"。任何路径拿到 gate=="blocked" 的结果,
+    preview 都直接透传本函数的产物(见 tests/pipeline/test_tree_guard.py 的字符数断言)。
+    """
+    return [{"answer": note, "enough": "no"}]
 
 
 def _soft_note(note: str) -> "ExecResult":
@@ -298,7 +381,7 @@ def _soft_note(note: str) -> "ExecResult":
     # 不许复用 enough 判别 —— analyze 的真成功结果也合法地带 enough="no",如"视频里
     # 没有狗",按 enough 判会把干过活的枝误判成没干活,review 确认)。
     return ExecResult(ok=True, value={"answer": note, "enough": "no", "gate": "blocked"},
-                      preview=[{"answer": note, "enough": "no"}], n=1)
+                      preview=_gate_preview(note), n=1)
 
 
 def run_loop(user_query: str, conversation, execute: Callable, *,
@@ -324,6 +407,10 @@ def run_loop(user_query: str, conversation, execute: Callable, *,
     steps_after_trip = 0                     # 触闸后的宽限步数(有界,防继续空转烧钱)
     envelope_seen = False                    # 收口信封是否已进过【本】conversation
     runway_warned = False                    # 跑道将尽提醒只发一次
+    quota_told = 0                           # C4:上次【告诉过大脑】的 analyze 已用数。
+    #   从 0 起而不是 None:整轮一次 analyze 都没有的请求(大多数)一个字都不该多花。
+    #   之后只在数字【变了】或本步真有 analyze 时才复述 —— 同一个数每步念一遍是纯浪费,
+    #   历史里那条还在,大脑读得到。
     for step in range(max_steps):
         # P0-3 挂点②(红队 B1):每步 generate 【之前】过一次闸。只挂工具闸挡不住
         # "进入 Trap 循环只思考不调工具"的烧钱 —— 那条路径永远不经过 execute。
@@ -487,9 +574,19 @@ def run_loop(user_query: str, conversation, execute: Callable, *,
 
         # ③ 回收(主线程,按 cid 顺序单线程写)→ 回喂 Gemini 的顺序与串行一致(确定性)
         responses, step_tools = [], []
+        an_calls = an_attempts = an_cached = 0   # C4:本步 analyze 的真实开销(次数/重试/命中)
+        ctx_repeats: list[str] = []
+        ctx_truncated: list[str] = []
         for cid, call, sig, _up in prepared:
             res = results[cid]
             ledger[cid] = res
+            # C4①:attempts 是【真发出去的生成次数】,与"调了几次工具"不是一回事
+            # (重试都在工具内部)。被配额闸拦下的那次【不算一次 analyze】—— 它连视频都没看,
+            # 而且它自己带回的信封已经把话说尽了,再触发一条余额播报纯属重复收费。
+            if call.name == "analyze_video" and not _is_gate_envelope(res.value):
+                an_calls += 1
+                an_attempts += int(getattr(res, "attempts", 0) or 0)
+                an_cached += 1 if res.cache_hit else 0
             # turn=step:这一步属于第几轮【显式写进事件】。以前 Loop Console 靠反解析 cid
             # 字符串("c{轮}_{i}" 切片)倒推轮号 —— id 的格式一变(A2 加了请求前缀)整列就错。
             trace.append({"cid": cid, "tool": call.name, "inputs": call.inputs,
@@ -505,10 +602,48 @@ def run_loop(user_query: str, conversation, execute: Callable, *,
                     note = _repeat_note(call.name, success_seen[sig])
                     payload["_system_notice"] = note      # 与护栏信封同一载体(协议合法、大脑必读)
                     turns.append({"step": step, "nudge": note})
+                elif success_seen[sig] >= 2:
+                    # C4②:A5 的阈值跟着 repeat_limit 走 —— 默认 2 时它就是 ≥2,配大了(比如 5)
+                    # 就在 2/3/4 次时整整齐齐地【一声不吭】。任务书要求 ≥2 必须让大脑知道,
+                    # 所以这里只在 A5 没响的那段区间补位:复用【同一个】success_seen 计数、
+                    # 复用【同一段】_repeat_note 文案 —— 不另起一套计数,也不会说两遍。
+                    ctx_repeats.append(_repeat_note(call.name, success_seen[sig]))
+                # C4③:B4 薄壳的截断说明。sql_query 走 _preview_sql 时 `_note` 已经【单独成格、
+                # 原文】进了 preview,那就不再进 _system_notice 说第二遍(白花 token)。判据直接
+                # 看"这段字是不是已经在 preview 里"——不去认工具名,以后哪个工具开始返回薄壳
+                # 都自动兜住:它走的是默认 80 字/格,note 必被腰斩,那才是这条要救的场景。
+                v = res.value
+                if isinstance(v, dict) and v.get("_truncated") is True:
+                    tn = str(v.get("_note") or "")
+                    if tn and tn not in str(res.preview):
+                        ctx_truncated.append(tn)
                 responses.append((call.name, payload))
             else:
                 seen[sig] = seen.get(sig, 0) + 1
                 responses.append((call.name, {"result_id": cid, "error": (res.stderr or "")[:300]}))
+        # C4:把本步的资源状态随工具结果回灌(见 _context_note)。两处刻意的克制:
+        #  · 已触闸 → 一个字都不加。护栏信封是【收口指令】("别再调工具"),这时候再补一句
+        #    "还剩 9 个配额"就是在拆护栏的台;钱的事优先级最高,它说了算(任务书:护栏优先)。
+        #  · 配额数字没变、且本步没有 analyze → 不复述(见 quota_told)。
+        # 配额计数从【注入的】execute 闭包上取、花费从【注入的】guard 上取 —— run_loop 不读
+        # 环境、不碰 usage,仍是纯控制流(离线可测,见本函数上方的契约注释)。cap 与 _do 的
+        # 拦截判据同源现读 config,免得"报给大脑的余额"和"真正拦人的线"变成两条。
+        if responses and not (guard is not None and guard.tripped):
+            q = getattr(execute, "analyze_quota", None)
+            cap = int(config.MAX_VIDEOS_PER_REQUEST or 0)
+            used = int(q.get("analyzed") or 0) if isinstance(q, dict) else None
+            show_q = used is not None and cap > 0 and (an_calls > 0 or used != quota_told)
+            note = _context_note(
+                quota_used=used if show_q else None, quota_cap=cap,
+                request_spent_usd=(guard.spent() if show_q and guard is not None
+                                   and guard.enabled else None),
+                attempts=an_attempts, cache_hit=an_cached,
+                repeats=tuple(ctx_repeats), truncated=tuple(ctx_truncated))
+            if note:
+                if show_q:
+                    quota_told = used
+                responses = _attach_envelope(responses, note)
+                turns.append({"step": step, "nudge": note})
         if on_step:                                          # M6b:每步事件(供 SSE 流式)
             on_step({"type": "step", "step": step, "tools": step_tools})
         msg = responses
@@ -873,7 +1008,10 @@ def _make_executor(sandbox, trace, schema, session_id, owner: str = "anon",
             pv, n = _preview(nr.value)
         return ExecResult(ok=nr.ok, value=nr.value, preview=pv, n=n, stderr=nr.stderr,
                           code=nr.code, artifact=nr.artifact, videos=nr.videos, table=nr.table,
-                          stat=nr.stat, cache_hit=nr.cache_hit)
+                          stat=nr.stat, cache_hit=nr.cache_hit,
+                          # C4:重试次数原样投影上来(getattr 兜底:单测里的 NodeResult 替身
+                          # 常是临时 class,少一个字段不该把整条执行链炸掉)。
+                          attempts=int(getattr(nr, "attempts", 0) or 0))
 
     def execute(cid, name, inputs, upstream, uses) -> ExecResult:
         t0 = time.perf_counter()                          # M4.2:per-tool 墙钟
@@ -906,6 +1044,12 @@ def _make_executor(sandbox, trace, schema, session_id, owner: str = "anon",
     # P0-6:全树节点账(1 = 主脑自己)。挂闭包 = per-request 天然隔离,不吃服务器
     # 线程复用的余温;只有 USE_DEPTH2 时 run_fanout 才启用它。
     execute.tree_nodes = {"nodes": 1, "lock": threading.Lock()}
+    # C4:analyze 配额随闭包暴露给 run_loop(同 tree_guard/tree_nodes 的既有做法)。
+    # 【必须是这本共享账】而不是各自复制一份:子 agent 复用同一个 execute 闭包,
+    # 它们烧掉的配额要能被主脑在下一步就看见 —— 那正是这条 notice 要治的病。
+    # 只挂计数、不挂 cap:cap 由 _do 在【拦截那一刻】现读 config,这里再存一份快照
+    # 就是给自己造一个会漂移的第二口径(报给大脑的余额和真正拦人的线不是同一条)。
+    execute.analyze_quota = quota
     return execute
 
 

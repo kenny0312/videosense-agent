@@ -241,6 +241,10 @@ def _run_one(task: dict, *, execute, sandbox, trace, schema, session_id, owner,
             return res
         ex.tree_guard = getattr(base_ex, "tree_guard", None)
         ex.tree_nodes = getattr(base_ex, "tree_nodes", None)   # 全树节点账随闭包透传(见 run_fanout)
+        # C4:analyze 配额账同样透传 —— 计数壳 ex 会把父闭包的属性挡住,不补这一行的话
+        # 子 agent 的 run_loop 在 getattr 上拿到 None,余额回灌对【真正在烧配额的那一层】失效。
+        # 实测形状就是这个:子 agent 把全树 12 个配额吃光,主脑下一步才知道。
+        ex.analyze_quota = getattr(base_ex, "analyze_quota", None)
         # P0-3:子 agent 的 mini-loop 也要过每步 generate 闸 —— 否则一个进入 Trap 的子 agent
         # 可以在闸外只思考不调工具地烧钱。guard 从父 execute 闭包上取(全树一本账);
         # 取不到(离线单测/无父闭包)则由 run_loop 侧按 None 处理 = 不闸。

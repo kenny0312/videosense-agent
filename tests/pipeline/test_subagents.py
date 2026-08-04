@@ -217,12 +217,18 @@ def test_run_fanout_uses_parent_execute_not_fresh(monkeypatch):
         hits.append(a)
         return None
     sentinel.tree_guard = "G"                   # 闭包上的账本要随壳透传
+    quota = {"analyzed": 7}
+    sentinel.analyze_quota = quota               # C4:analyze 配额账同理
     subagents.run_fanout([{"instruction": "A"}], sandbox=None, trace=None, execute=sentinel)
     assert made == []                           # 没有新建执行器
     # P0-6 起 run_loop 拿到的是父闭包外的【薄计数壳】("先自己试"闸数成功工具用);
     # 复用语义不变:壳内调的就是父闭包本体,guard 账本原样透传。
     assert len(seen_ex) == 1
     assert getattr(seen_ex[0], "tree_guard", None) == "G"
+    # C4:计数壳会把父闭包的属性挡住 —— 不补透传的话子 agent 的 run_loop 在 getattr 上拿到
+    # None,余额回灌对【真正在烧配额的那一层】失效。实测形状正是这个:子 agent 把全树
+    # 12 个配额吃光,主脑下一步才知道。必须是【同一本账】,不是复制一份。
+    assert getattr(seen_ex[0], "analyze_quota", None) is quota
     seen_ex[0]("c1", "sql_query", {}, {}, [])   # 穿透壳直达父闭包
     assert len(hits) == 1
 

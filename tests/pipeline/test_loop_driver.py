@@ -670,3 +670,180 @@ def test_runway_warning_can_be_disabled(monkeypatch):
     LD.run_loop("q", conv, lambda *a, **k: LD.ExecResult(ok=True, value={}, preview=[], n=1),
                 max_steps=6)
     assert not any("还能再做" in str(m) for m in conv.sent)
+
+
+# ── C4:回灌 notice 钩子(大脑对自己的资源状态一无所知,只有撞墙那一刻才知道)────────
+def _notices(conv):
+    """从回喂给大脑的 function_response 里把【C4 写的那几行】捞出来。
+
+    _system_notice 是共享载体:跑道提醒、护栏信封也写它,而且 _attach_envelope 现在是
+    【合并】不是覆盖,所以一格里可能叠着好几条(换行分隔)。按行拆开、剔掉跑道提醒
+    (那是另一条既有机制,不归 C4 管)——顺带也验证了合并确实没把别人挤掉。"""
+    out = []
+    for msg in conv.sent:
+        if not isinstance(msg, list):
+            continue
+        for _n, resp in msg:
+            for line in str(resp.get("_system_notice") or "").split("\n"):
+                if line.strip() and "还能再做" not in line:
+                    out.append(line)
+    return out
+
+
+def _quota_exec(quota, *, attempts=1, cache_hit=False, value=None):
+    """带【共享配额账】的 stub 执行器 —— 形状与 _make_executor 挂 analyze_quota 的做法一致。"""
+    def execute(cid, name, inputs, upstream, uses):
+        if name == "analyze_video":
+            if not cache_hit:
+                quota["analyzed"] += 1
+            return ExecResult(ok=True, value={"video_id": "v", "answer": "ok"},
+                              preview=[{"answer": "ok"}], n=1,
+                              attempts=attempts, cache_hit=cache_hit)
+        val = value if value is not None else [{"v": 1}]
+        return ExecResult(ok=True, value=val, preview=[{"v": 1}], n=1)
+    execute.analyze_quota = quota
+    return execute
+
+
+def test_quota_balance_is_fed_back_before_the_wall_not_at_it(monkeypatch):
+    """C4①:配额余额必须在【撞墙之前】就到大脑手里。
+
+    治的病(实测):子 agent 把全树 12 个 analyze 配额吃光,主脑下一步才收到"已达本请求
+    视频分析上限",只能退回拿检索片段的文字当证据。全代码库 quota["analyzed"] 只在
+    【拦截那一刻】被读 —— 没有任何地方把余额告诉大脑,看不见余额就做不好资源决策。
+    """
+    monkeypatch.setattr(ld.config, "MAX_VIDEOS_PER_REQUEST", 12)
+    conv = ScriptedConv([
+        ([Call("analyze_video", {"video_id": "v1", "question": "q"}, [])], None),
+        ([], "答案"),
+    ])
+    quota = {"analyzed": 0}
+    run_loop("q", conv, _quota_exec(quota, attempts=3), max_steps=4)
+    n = _notices(conv)
+    assert n, "回灌链上一条 notice 都没有 —— 大脑还是看不见余额"
+    assert "1/12" in n[0] and "还剩 11 个" in n[0]         # 余额,不是"已经撞墙了"
+    assert "实发 3 次模型调用" in n[0]                     # attempts:重试藏在工具内部,必须说
+    # 【明令砍掉】预留估价:那是熔断的内部记账口径,按定义不等于真实花费。
+    assert "est_usd" not in n[0] and "actual_usd" not in n[0]
+
+
+def test_quota_note_says_used_up_and_never_repeats_the_same_number(monkeypatch):
+    """余额见底要说死【已用完】;而数字没变的步不复述 —— 回灌进 prompt 是要花钱的,
+    同一个数每步念一遍是纯浪费(历史里那条还在,大脑读得到)。"""
+    monkeypatch.setattr(ld.config, "MAX_VIDEOS_PER_REQUEST", 1)
+    conv = ScriptedConv([
+        ([Call("analyze_video", {"video_id": "v1", "question": "q"}, [])], None),
+        ([Call("sql_query", {"sql": "a"}, [])], None),
+        ([Call("sql_query", {"sql": "b"}, [])], None),
+        ([], "答案"),
+    ])
+    run_loop("q", conv, _quota_exec({"analyzed": 0}), max_steps=6)
+    n = _notices(conv)
+    assert len(n) == 1 and "1/1" in n[0] and "【已用完】" in n[0]   # 只说一次,且说死
+
+
+def test_no_analyze_no_note_at_all():
+    """整轮一次 analyze 都没有(绝大多数请求)→ 一个字都不该多花。"""
+    conv = ScriptedConv([([Call("sql_query", {"sql": "a"}, [])], None), ([], "答案")])
+    run_loop("q", conv, _quota_exec({"analyzed": 0}), max_steps=4)
+    assert _notices(conv) == []
+
+
+def test_cache_hit_is_reported_as_free(monkeypatch):
+    """命中缓存 = 一次模型都没发、也不占配额。不说的话大脑会以为自己刚烧了一格。"""
+    monkeypatch.setattr(ld.config, "MAX_VIDEOS_PER_REQUEST", 12)
+    conv = ScriptedConv([
+        ([Call("analyze_video", {"video_id": "v1", "question": "q"}, [])], None),
+        ([], "答案"),
+    ])
+    run_loop("q", conv, _quota_exec({"analyzed": 0}, attempts=0, cache_hit=True), max_steps=4)
+    n = _notices(conv)
+    assert n and "0/12" in n[0] and "1 次命中缓存(命中不占配额)" in n[0]
+
+
+def test_repeat_at_two_is_reported_even_when_repeat_limit_is_larger():
+    """C4②:A5 的提醒阈值跟着 repeat_limit 走 —— 配大了(比如 5)就在 2/3/4 次时
+    整整齐齐地一声不吭。任务书要求 ≥2 必须让大脑知道;补位用的是【同一个】
+    success_seen 计数和【同一段】_repeat_note 文案,不另起一套,也不会说两遍。"""
+    conv = ScriptedConv([([Call("sql_query", {"sql": "x"}, [])], None)] * 3 + [([], "答案")])
+    r = run_loop("q", conv, _quota_exec({"analyzed": 0}), max_steps=6, repeat_limit=5)
+    n = _notices(conv)
+    assert any("第 2 次" in x for x in n)                 # ≥2 就说了(A5 自己要到第 5 次才响)
+    assert r.terminated == "text"                         # 只提醒,绝不终止
+    assert sum(x.count("第 2 次") for x in n) == 1         # 同一次不说两遍
+
+
+def test_quota_blocked_call_does_not_trigger_a_second_bill(monkeypatch):
+    """被配额闸拦下的那次 analyze 连视频都没看,不算一次 analyze —— 它自己带回的闸门信封
+    已经把话说尽了("已达上限、别再调"),再触发一条余额播报是把同一件事收两遍钱。"""
+    monkeypatch.setattr(ld.config, "MAX_VIDEOS_PER_REQUEST", 12)
+    note = "已达本请求视频分析上限,这个【没分析】。" + "补" * 60   # 远超默认 80 字/格
+
+    def execute(cid, name, inputs, upstream, uses):
+        return ld._soft_note(note)
+    execute.analyze_quota = {"analyzed": 0}
+    conv = ScriptedConv([
+        ([Call("analyze_video", {"video_id": "v1", "question": "q"}, [])], None),
+        ([], "答案"),
+    ])
+    run_loop("q", conv, execute, max_steps=6)
+    assert not any("配额已用" in x for x in _notices(conv))
+    # 但信封本身一个字都没少(C5 的规则在这条链上照样成立)
+    wire = [m for m in conv.sent if isinstance(m, list)]
+    _name, payload = wire[0][-1]
+    assert len(str(payload["preview"][0]["answer"])) == len(note)
+
+
+def test_truncation_note_is_relayed_only_when_the_preview_swallowed_it():
+    """C4③:B4 薄壳的 `_note`(那句"别把带回的行数当总数")。
+
+    sql_query 走 _preview_sql 时它已经【单独成格、原文】进了 preview,那就不再往
+    _system_notice 里说第二遍 —— 回灌是要花 token 的,说两遍等于白花一遍。
+    换成走默认 80 字/格的预览,note 必被腰斩成半句 —— 那种情况才由这条回灌兜底。
+    判据看的是"这段字在不在 preview 里",【不认工具名】,所以以后哪个工具开始返薄壳
+    都自动接住。
+    """
+    from pipeline.node_executor import _truncated_shell
+    shell = _truncated_shell([{"id": 1}], {"returned": 1, "total_seen": 2001,
+                                           "reason": "row_cap"})
+    note = shell["_note"]
+
+    def _exec_with(preview):
+        def execute(cid, name, inputs, upstream, uses):
+            return ExecResult(ok=True, value=shell, preview=preview, n=1)
+        return execute
+
+    script = [([Call("sql_query", {"sql": "a"}, [])], None), ([], "答案")]
+    # ① 原文已经在 preview 里(_preview_sql 的形状)→ 不重复
+    conv = ScriptedConv(list(script))
+    run_loop("q", conv, _exec_with([{"id": "1"}, {"_note": note}]), max_steps=6)
+    assert not any("结果被截断" in x for x in _notices(conv))
+    # ② 预览把它腰斩了(默认 80 字/格的形状)→ 原文补进指令通道
+    conv2 = ScriptedConv(list(script))
+    run_loop("q", conv2, _exec_with([{"_note": note[:80]}]), max_steps=6)
+    relayed = [x for x in _notices(conv2) if "结果被截断" in x]
+    assert relayed and note in relayed[0]          # 复用薄壳自己的措辞,且一字不改
+
+
+def test_context_note_never_talks_over_the_cost_guard(monkeypatch):
+    """共享载体 _system_notice 的优先级:护栏最高(那是钱的事)。触闸后护栏信封是
+    【收口指令】("别再调工具"),这时候再补一句"还剩 N 个配额"就是在拆护栏的台 ——
+    所以触闸后 C4 一个字都不加;而护栏信封本身必须排在最前面、且不许顶掉别人写的。"""
+    from pipeline.agentops.treeguard import TreeGuard
+    monkeypatch.setattr(ld.config, "MAX_VIDEOS_PER_REQUEST", 12)
+
+    # ① 触闸后不再回灌余额
+    g = TreeGuard(cost_cap=0.10, call_estimate=0.05)
+    g._trip("budget", "测试触闸")
+    conv = ScriptedConv([
+        ([Call("analyze_video", {"video_id": "v1", "question": "q"}, [])], None),
+        ([], "收口"),
+    ])
+    run_loop("q", conv, _quota_exec({"analyzed": 0}), max_steps=4, guard=g)
+    assert not any("配额已用" in x for x in _notices(conv))
+
+    # ② 合并而不是顶掉,且后写的(= 钱)排在最前
+    merged = ld._attach_envelope([("t", {"_system_notice": "先写的"})], "[系统·成本护栏] 停")
+    got = merged[0][1]["_system_notice"]
+    assert got.startswith("[系统·成本护栏] 停")     # 钱的事排最前
+    assert "先写的" in got                          # 先写的没被无声顶掉
