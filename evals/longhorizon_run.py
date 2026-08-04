@@ -66,9 +66,11 @@ COMMON_ENV = {
 # 试跑实测:要求"输出 video_ids 的 JSON"会被这条规则洗掉 → 每一臂 set_f1 恒为 0,
 # 量的是"洗得干不干净"。所以判分口径 = show_video 这个【交付动作】的台账。
 ANSWER_CONTRACT = (
-    "\n\n【交付要求(务必遵守)】把你【最终认定符合条件】的视频,用 show_video 一次性摆出来"
+    "\n\n【交付要求(务必遵守)】把你【最终认定符合条件】的视频,用 show_video 摆出来"
     "(data_result_id 指向你的检索结果,或直接给 video_ids)—— 这是交付动作,只摆你确认的,"
-    "别把探查过程中看过的候选都摆上。然后用文字说明:总共几个、每个属于哪个大类"
+    "别把探查过程中看过的候选都摆上。show_video 一次最多展示 8 个:"
+    "认定超过 8 个就【分多次调用摆完】,判分台账取并集,一个都不能漏摆。"
+    "然后用文字说明:总共几个、每个属于哪个大类"
     "(受控词表),T2 类问题还要说每个视频里目标动作的时间段与画面证据。"
     "一个都没有就明确说没有,别硬凑。"
     # 【为什么这里不列词表、也不指路去查】—— 一条我自己纠正过的判断,留档免得再犯:
@@ -120,10 +122,14 @@ def _set_env(arm: str, item: dict, rep: int):
     for k, v in ARMS[arm].items():
         os.environ[k] = v
     os.environ["ANALYZE_CACHE_NS"] = f"gate-{arm}-r{rep}"
-    # T2 防 SQL 捷径:把本题谓词的时间戳在【返回给 agent 的行上】置空(mcp_client._mask_ts),
-    # 逼它真去看视频。试跑实测:不掩码时大脑 12 次 SQL、一个视频不看就把时间戳抄出来了 ——
-    # 号称考感知的题变成考 SQL。gold 走库外预标,不受掩码影响。
-    os.environ["GATE_TS_MASK_PREDICATE"] = item.get("predicate", "") if item.get("ts_mask") else ""
+    # T2 防 SQL 捷径:时间戳掩码,逼它真去看视频(不掩码时大脑 12 次 SQL、一个视频不看
+    # 就把时间戳抄出来了 —— 号称考感知的题变成考 SQL)。gold 走库外预标,不受掩码影响。
+    # 批 5-C:从谓词掩改成【按 gold video-id 掩】。谓词掩在 dp-main 被实测钻了三条旁路:
+    # 同义孪生行裸奔 / semantic_search 不过掩 / 补集推理重构 —— 抄库污染 [20,47]/77。
+    # 考的单位是视频,掩的单位就是视频:gold 视频的所有 facts 行时间戳全空。
+    mask_vids = item.get("gold", {}).get("video_ids", []) if item.get("ts_mask") else []
+    os.environ["GATE_TS_MASK_VIDEO_IDS"] = ",".join(mask_vids)
+    os.environ["GATE_TS_MASK_PREDICATE"] = ""          # 旧谓词掩不再用(video-id 掩是它的超集)
 
 
 def _reload_config():

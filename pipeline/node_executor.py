@@ -332,7 +332,11 @@ def _run_show_video(node: Node, upstream: dict[str, Any]) -> NodeResult:
     缺凭证/签不出 → playable=false(fail-open),仍带回标题/片段,前端优雅降级。"""
     from pipeline.video_url import sign_gcs_uri
 
-    items = _collect_items(node, upstream)[:8]     # 最多 8 个,防一次签太多
+    _all_items = _collect_items(node, upstream)
+    items = _all_items[:8]                         # 最多 8 个,防一次签太多
+    # 批 5-C:截断必须回告。dp-main 实测这行静默截断挤掉了 25 次 gold 交付(40% 的漏摆)——
+    # 大脑给了 12 个,收到"为你准备了 8 个",完全不知道后 4 个被扔了,也就不会分次补摆。
+    n_dropped = len(_all_items) - len(items)
     if not items:
         why = ("items 里没有合法的 video_id(要真实 id,不是「第 N 个」)"
                if node.inputs.get("items") else "上游无 video_id")
@@ -385,11 +389,14 @@ def _run_show_video(node: Node, upstream: dict[str, Any]) -> NodeResult:
     warn = ("" if not bad else
             f" ⚠️ 这些类目不在受控大类词表里,已当作【未标注】:{', '.join(bad)};"
             "要出类目 chip 请从词表里挑一个。")
+    drop = ("" if n_dropped <= 0 else
+            f" ⚠️ 你给了 {len(_all_items)} 个,本次只展示了前 8 个 —— 剩下 {n_dropped} 个"
+            f"【没有被展示】;要全部交付,请再调一次 show_video 把它们摆出来。")
     # ③:value 带【有序编号 items】→ 随 transcript 持久化(value 会被记忆),下一轮「第 N 个」可映射回真实 id。
     items = [{"n": i + 1, "video_id": v["video_id"], "title": v["title"]}
              for i, v in enumerate(videos)]
     return NodeResult(node.id, node.tool, ok=True, attempts=1, videos=videos,
-                      value={"note": f"🎬 为你准备了 {n} 个视频{note}{warn}", "items": items})
+                      value={"note": f"🎬 为你准备了 {n} 个视频{note}{warn}{drop}", "items": items})
 
 
 SHOW_TABLE_MAX_ROWS = 1000
@@ -929,6 +936,12 @@ def _run_semantic_search(node: Node) -> NodeResult:
     # 视频内下钻(有过滤)要的是【同一视频的多个时刻】,全库检索要的是【视频广度】——
     # 两个目标用两种去重(review 确认:错用前者会把下钻压成每视频 1 行)。
     rows = _dedupe_in_video(rows, k) if vids else _dedupe_by_video(rows, k)
+    # 批 5-C 第二挂点:评测态时间戳掩码。dp-main 实测 semantic_search 是掩码的旁路之一
+    # (mcp_client._mask_ts 只罩 query_db,这里的行同样带 start_ts/end_ts,考感知的题
+    # 从这条路照样抄库)。复用同一个掩码函数 —— 掩的规则只许有一份,不写第二把尺。
+    # 生产零影响:env 不置位时 _mask_ts 原样返回。
+    from pipeline.mcp_client import _mask_ts
+    rows = _mask_ts(rows)
     # 治过度召回(结构性,非靠大脑自觉):没有 strong = 不给行列表 —— show_video 结构上
     # 无法把信封当"找到的视频"展示。borderline(像与不像之间)单独说明:先核对再下结论。
     strong = [r for r in rows if r.get("relevance") == "strong"]

@@ -212,12 +212,22 @@ def _mask_ts(rows):
     import os
     preds = [p.strip() for p in os.environ.get("GATE_TS_MASK_PREDICATE", "").split(",")
              if p.strip()]
-    if not preds or not isinstance(rows, list):
+    # 批 5-C:按 video-id 掩(GATE_TS_MASK_VIDEO_IDS,逗号分隔)。谓词掩码在 dp-main
+    # 78 跑里被实测钻了三条旁路:①同义/大类孪生行裸奔('celebrating' 掩了,
+    # 'celebration & awards' 带同款时间戳原样返回,6/6 题全中);②semantic_search
+    # 不走本函数;③补集推理从未掩行精确重构被掩区间。谓词表达不了"这道题考这些
+    # 视频的感知"这个语义 —— 考的单位是视频,掩的单位就得是视频:该视频【所有】
+    # facts 行的时间戳一律置空。谓词掩码保留(老跑次复现用),两者可叠加。
+    vids = {v.strip() for v in os.environ.get("GATE_TS_MASK_VIDEO_IDS", "").split(",")
+            if v.strip()}
+    if (not preds and not vids) or not isinstance(rows, list):
         return rows
     lowered = {p.lower() for p in preds}
     out = []
     for r in rows:
-        if isinstance(r, dict) and str(r.get("predicate", "")).lower() in lowered:
+        if isinstance(r, dict) and (
+                str(r.get("predicate", "")).lower() in lowered
+                or str(r.get("video_id", "")) in vids):
             r = {**r, "start_ts": None, "end_ts": None}
         out.append(r)
     return out

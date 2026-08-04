@@ -847,3 +847,17 @@ def test_context_note_never_talks_over_the_cost_guard(monkeypatch):
     got = merged[0][1]["_system_notice"]
     assert got.startswith("[系统·成本护栏] 停")     # 钱的事排最前
     assert "先写的" in got                          # 先写的没被无声顶掉
+
+
+def test_runway_note_is_a_hard_order_to_deliver_first():
+    """批 5-C:跑道提醒从"建议"改【硬顺序】。dp-main 里 4 个跑次(3 题 3 臂)收到
+    旧版提醒后接着烧 sql/semantic_search,至死没调 show_video —— 16 次 gold 交付归零。
+    病根之一是旧文案给了"并行拆出去"这条岔路。新文案必须:
+      ① 点名下一步先 show_video 摆已确认的;② 说清不摆 = 作废;③ 不再递岔路。"""
+    from pipeline import loop_driver as LD
+
+    note = LD._runway_note(step=12, max_steps=16)
+    assert "show_video" in note and "先" in note, "没点名先交付"
+    assert "作废" in note, "没把'不摆等于白干'说死 —— 烧穿的大脑就是不知道这个"
+    assert "spawn_agents" not in note and "并行拆" not in note, \
+        "岔路又回来了:烧穿边缘的大脑会选'再拆一把'而不是收口"

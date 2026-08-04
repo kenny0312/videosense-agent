@@ -247,3 +247,24 @@ def test_items_path_ignores_junk_label_and_score():
     assert [g["score"] for g in got] == [None, None], (
         "非数字/布尔的 score 流到了前端 —— v.score.toFixed(2) 会炸")
     assert [g["label"] for g in got] == [None, None]
+
+
+# ── 批 5-C:8 帽截断必须回告 ─────────────────────────────────────────
+def test_cap8_truncation_is_reported_not_silent(monkeypatch):
+    """dp-main 实测:静默的 [:8] 挤掉了 25 次 gold 交付(40% 的漏摆)。大脑给 10 个、
+    收到"为你准备了 8 个",完全不知道后 2 个被扔了 —— 也就永远不会分次补摆。
+    截断必须在 value 里说清:扔了几个、该怎么补。"""
+    monkeypatch.setattr(video_url, "sign_gcs_uri", lambda uri, **kw: None)
+    ids = [f"v{i:03d}" for i in range(1, 11)]                     # 10 个合法 id
+    nr = nx._run_show_video(_node(inputs={"video_ids": ids}), {})
+    assert nr.ok and len(nr.videos) == 8
+    note = str(nr.value.get("note") or "")
+    assert "你给了 10 个" in note and "剩下 2 个" in note, f"截断没回告:{note}"
+    assert "再调一次 show_video" in note, "只说扔了不说怎么补,大脑还是不会分次摆"
+
+
+def test_no_truncation_no_warning(monkeypatch):
+    """没截断的路一个字都不多(生产噪音纪律)。"""
+    monkeypatch.setattr(video_url, "sign_gcs_uri", lambda uri, **kw: None)
+    nr = nx._run_show_video(_node(inputs={"video_ids": ["v001", "v002"]}), {})
+    assert "你给了" not in str(nr.value.get("note") or "")

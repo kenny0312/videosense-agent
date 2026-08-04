@@ -355,3 +355,21 @@ def test_vocabulary_lives_in_the_system_prompt_and_is_not_repeated_in_the_contra
         f"把词表贴进契约了({pasted[:5]}…)—— 系统提示里已经有,再抄一遍是白花钱")
     assert "FROM categories" not in c, (
         "契约在指路让 agent 去查词表 —— 但它在系统提示里本来就看得见,这句是纯冗余")
+
+
+def test_gate_runner_masks_by_gold_video_ids_not_predicate(monkeypatch):
+    """批 5-C:跑机的掩码接线从谓词换成 gold video-id(谓词掩被实测钻了三条旁路)。
+    ts_mask 开 → GATE_TS_MASK_VIDEO_IDS = 该题全部 gold id、谓词掩清空;
+    ts_mask 关 → 两个都空(T1 题不掩,库背景不能抹)。"""
+    import os
+    from evals import longhorizon_run as R
+
+    item = {"id": "t2-x", "tier": "T2", "ts_mask": True, "predicate": "celebrating",
+            "gold": {"video_ids": ["v_g1", "v_g2"]}}
+    monkeypatch.setattr(R, "_reload_config", lambda: None, raising=False)
+    R._set_env("A", item, rep=1)
+    assert os.environ["GATE_TS_MASK_VIDEO_IDS"] == "v_g1,v_g2"
+    assert os.environ["GATE_TS_MASK_PREDICATE"] == "", "谓词掩该退役了,它挡不住孪生行"
+
+    R._set_env("A", {**item, "ts_mask": False}, rep=1)
+    assert os.environ["GATE_TS_MASK_VIDEO_IDS"] == ""
