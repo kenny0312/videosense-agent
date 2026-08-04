@@ -29,9 +29,20 @@ from pathlib import Path
 
 # ── 选题(谓词 → 题面;rephrased = 题面为同义改写,不含谓词直译)──────────────
 _T1_SUFFIX = ",并给每条标注它属于哪个大类"
+# 批 5-B:t1-driving-car 题面钉宽口径。dp-main 里该题占 T1 全部漏摆的 26/36,其中 16 次是
+# agent 白纸黑字"看见了但按自造定义排除"(有的要求看清驾驶员、有的把洗车行驶排除)——
+# 题面不钉口径,每个跑次都在考自己发明的题。宽口径经 P3 核验包裁决
+# (evals/runs/verify-pack-5B.jsonl:连虚化夜景的 px9935090 都能辨认行驶中的车)。
+_DRIVING_Q = ("找出库里所有有人开车的视频"
+              "(口径:画面中有汽车正被驾驶即可 —— 车在动就算,不要求看清驾驶员;"
+              "割草机、碰碰车、船艇不算汽车)")
+# 批 5-B:T2 题面钉时段口径。dp-main 的 18 个 FAR_OFF 里 6-7 个是收口粒度错
+# (区间在 brain 里是对的,宽窄双向都栽)—— 与 evals/longhorizon_prelabel.py 的预标口径同源。
+_T2_SPAN = ("(时段口径:给目标动作【本身】的起止秒,别把前后铺垫并进来;"
+            "同一动作出现多次就挑最清晰的一次)")
 T1 = [
     ("swimming",        "找出库里所有出现游泳的视频" + _T1_SUFFIX,                              False),
-    ("driving car",     "找出库里所有有人开车的视频" + _T1_SUFFIX,                              False),
+    ("driving car",     _DRIVING_Q + _T1_SUFFIX,                                                False),
     ("playing drums",   "找出库里所有有人打鼓的视频" + _T1_SUFFIX,                              False),
     ("riding horse",    "找出库里所有有人骑马的视频" + _T1_SUFFIX,                              False),
     ("throwing ball",   "找出库里所有有人扔球的视频" + _T1_SUFFIX,                              False),
@@ -41,16 +52,84 @@ T1 = [
     ("shoveling snow",  "找出库里所有有人在清理地上积雪的视频" + _T1_SUFFIX,                    True),
 ]
 T2 = [
-    ("falling",               "找出所有出现摔倒的视频,并给出每条里摔倒发生的时间段和画面证据",          False),
-    ("celebrating",           "找出所有出现庆祝场面的视频,并给出每条里庆祝的时间段和画面证据",          False),
-    ("playing water polo",    "找出所有有人打水球的视频,并给出每条里打水球的时间段和画面证据",          False),
-    ("playing tennis",        "找出所有有人打网球的视频,并给出每条里打网球的时间段和画面证据",          False),
-    ("diving",                "找出所有有人跳水的视频,并给出每条里跳水的时间段和画面证据",              False),
-    ("playing dodgeball",     "找出所有在玩「躲避飞来的球」的团队游戏的视频,并给出时间段和画面证据",    True),
-    ("performing gymnastics", "找出所有有人在垫上或器械上做翻腾平衡动作的视频,并给出时间段和画面证据",  True),
-    ("rock climbing",         "找出所有有人徒手或借助绳索攀爬岩壁的视频,并给出时间段和画面证据",        True),
-    ("dribbling basketball",  "找出所有有人拍着球运球移动的视频,并给出时间段和画面证据",                True),
+    ("falling",               "找出所有出现摔倒的视频,并给出每条里摔倒发生的时间段和画面证据" + _T2_SPAN,          False),
+    ("celebrating",           "找出所有出现庆祝场面的视频,并给出每条里庆祝的时间段和画面证据" + _T2_SPAN,          False),
+    ("playing water polo",    "找出所有有人打水球的视频,并给出每条里打水球的时间段和画面证据" + _T2_SPAN,          False),
+    ("playing tennis",        "找出所有有人打网球的视频,并给出每条里打网球的时间段和画面证据" + _T2_SPAN,          False),
+    ("diving",                "找出所有有人跳水的视频,并给出每条里跳水的时间段和画面证据" + _T2_SPAN,              False),
+    ("playing dodgeball",     "找出所有在玩「躲避飞来的球」的团队游戏的视频,并给出时间段和画面证据" + _T2_SPAN,    True),
+    ("performing gymnastics", "找出所有有人在垫上或器械上做翻腾平衡动作的视频,并给出时间段和画面证据" + _T2_SPAN,  True),
+    ("rock climbing",         "找出所有有人徒手或借助绳索攀爬岩壁的视频,并给出时间段和画面证据" + _T2_SPAN,        True),
+    ("dribbling basketball",  "找出所有有人拍着球运球移动的视频,并给出时间段和画面证据" + _T2_SPAN,                True),
 ]
+
+# ── 批 5-B:人工裁决附加表(gold 的第二来源)────────────────────────────────
+# gold_for() 用 `predicate = %s` 精确等值建集,'driving a car' / 'celebrating victory' /
+# 'diving (backward dive)' 这类谓词变体的视频进不了 gold —— dp-main 里它们被 agent 跨臂
+# 4-6/6 次一致摆出、被判"多摆"扣分(23 个假阳性,agent 对、尺子错)。
+# 两条铁则(任务书 §5-B):
+#   ① 本表必须活在 builder 里 —— 写在别处,下次 --refreeze 按精确谓词重算就把采纳丢了;
+#   ② 采纳的视频必须在库里有大类行(build 时校验)—— category_accuracy 分母 = gold 全体,
+#      缺大类行硬加会把该题的大类轴打下去(实测反例:v_px35041475 会拖 drums 0.92→0.79)。
+# 每条证据:DB 动作行(全部亲查)+ 需要看片的走了核验包(evals/runs/verify-pack-5B.jsonl)。
+ADJUDICATED: "dict[str, dict[str, str]]" = {
+    "t1-riding-horse": {
+        "v_0EepbsAtiDk": "动作行 horse riding(equestrian);跨臂 6/6 一致摆出",
+        "v_6NQl2Vcf0P0": "rodeo 套牛:mounting/dismounting horse、running to horse;跨臂 6/6",
+    },
+    "t1-playing-drums": {
+        "v_-zZJmRT9udU": "动作行 playing conga drums(music);跨臂 6/6",
+    },
+    "t1-driving-car": {
+        "v_9pJBfTZOcxI": "动作行 driving a car;核验包 P3:SUV/面包车涉水行驶拖曳滑水,宽口径命中",
+        "v_CbfgZlo0Ut4": "动作行 driving car into car wash;核验包 P3:车行驶入洗车房(车外机位)",
+        "v_-OH1BDqao9w": "核验包 P3:48-53s 男子驾驶座上、96-100s 驶出洗车房 —— 真开车画面",
+    },
+    "t2-celebrating": {
+        "v_-cJova7MiO8": "动作行 celebrating victory、congratulating(celebration & awards)",
+        "v_079MEwdDNjg": "动作行 baseball players celebrating、players hugging/jumping and cheering",
+    },
+    "t2-diving": {
+        "v_0gw1Qq3WRbU": "动作行 diving (backward/forward/handstand dive);核验包 P2:跳板跳水",
+        "v_j18sB8o2IQw": "动作行 performing a high dive;核验包 P2:FINA 高台跳水世界杯",
+        "v_0F8F-ON083s": "动作行 diving from a platform;核验包 P2:10 米台跳水",
+    },
+    "t2-performing-gymnastics": {
+        "v__AKzq9X1Aik": "动作行 performing gymnastics on parallel bars;核验包 P2:双杠 L-sit/撑体",
+    },
+}
+
+
+def carry_labels(items: list, old_items: "dict[str, dict]") -> None:
+    """refreeze 时把已预标的 gold_localization 从冻结文件原样带回(纯函数,离线可测)。
+
+    只带 status == "labeled" 的(pending 没内容可带);原地改 items。
+    """
+    for it in items:
+        og = (old_items.get(it["id"]) or {}).get("gold_localization")
+        if og and og.get("status") == "labeled":
+            it["gold_localization"] = og
+
+
+def merge_adjudicated(gold: dict, admissions: "dict[str, list[str]]",
+                      evidence: "dict[str, str]") -> dict:
+    """把裁决采纳并进 gold(纯函数,离线可测)。
+
+    admissions = {video_id: [大类,...]}(大类由 build 时从库里现查,不手抄 —— 手抄会漂移);
+    evidence   = {video_id: 一句话证据}(进 item 存档,审计用)。
+    已在 gold 里的视频原样保留(裁决不覆盖 SQL 直出的行)。
+    """
+    vids = dict.fromkeys(list(gold["video_ids"]))
+    pv = dict(gold["per_video"])
+    for vid, cats in admissions.items():
+        if vid in vids:
+            continue
+        vids[vid] = None
+        pv[vid] = {"categories": sorted(cats)}
+    out = {"video_ids": sorted(vids), "count": len(vids), "per_video": pv}
+    if evidence:
+        out["adjudicated"] = {v: evidence[v] for v in sorted(evidence)}
+    return out
 PROBES = [  # 空集探针(单列,考弃权;负空间已实测双零)
     ("snorkeling", "找出库里所有浮潜的视频", "dev",
      "有游泳/皮划艇/水球等大量水上内容作相似诱惑,但浮潜为零"),
@@ -105,19 +184,39 @@ def build():
                         (f"%{term}%",))
         return int(a[0][0]) == 0 and int(b[0][0]) == 0
 
+    def apply_adjudication(item_id: str, gold: dict) -> dict:
+        extra = ADJUDICATED.get(item_id) or {}
+        if not extra:
+            return gold
+        rows = si._execute(
+            "SELECT video_id, array_agg(DISTINCT predicate) FROM video_facts "
+            "WHERE video_id = ANY(%s) AND matched AND rationale LIKE 'category:%%' "
+            "GROUP BY video_id", (list(extra),))
+        cats = {r[0]: sorted(r[1] or []) for r in rows}
+        for vid in extra:                                    # 铁则②:缺大类行的候选不硬加
+            assert cats.get(vid), (
+                f"{item_id} 采纳 {vid} 在库里没有大类行 —— category_accuracy 分母 = gold 全体,"
+                "硬加会把这道题的大类轴打下去。先补大类行再采纳。")
+        return merge_adjudicated(gold, {v: cats[v] for v in extra}, dict(extra))
+
     dev, holdout = [], []
     for pred, q, reph in T1:
-        item = {"id": f"t1-{pred.replace(' ', '-')}", "tier": "T1", "predicate": pred,
-                "question": q, "rephrased": reph, "gold": gold_for(pred)}
+        iid = f"t1-{pred.replace(' ', '-')}"
+        item = {"id": iid, "tier": "T1", "predicate": pred,
+                "question": q, "rephrased": reph,
+                "gold": apply_adjudication(iid, gold_for(pred))}
         (dev if pred in DEV_T1 else holdout).append(item)
     for pred, q, reph in T2:
-        item = {"id": f"t2-{pred.replace(' ', '-')}", "tier": "T2", "predicate": pred,
-                "question": q, "rephrased": reph, "gold": gold_for(pred),
+        iid = f"t2-{pred.replace(' ', '-')}"
+        item = {"id": iid, "tier": "T2", "predicate": pred,
+                "question": q, "rephrased": reph,
+                "gold": apply_adjudication(iid, gold_for(pred)),
                 # 防 SQL 捷径:实验快照把这些谓词的 start_ts/end_ts 置 NULL(现库几乎全带 ts,
                 # 任务书"选无 ts 实例"在实测数据上不可行 —— 掩码等效且更强)。
                 "ts_mask": True, "db_spans_available": spans_available(pred),
                 # T2 定位 gold 库外预标(pro 双模型交叉 + 低置信只进集合判分,红队 C4)——
                 # live 步骤,等预算批准;在此之前定位分不可算(scorer 会拒算而不是给 0)。
+                # 已预标的时段由下方 carry_labels() 从冻结文件原样带回,refreeze 不抹标。
                 "gold_localization": {"status": "pending_prelabel", "spans": {}}}
         (dev if pred in DEV_T2 else holdout).append(item)
     for term, q, split, trap in PROBES:
@@ -132,6 +231,15 @@ def build():
     # 被看见,不许静默烙进冻结文件);要重冻结必须显式 --refreeze。
     refreeze = "--refreeze" in sys.argv
     out = Path(__file__).resolve().parent
+    # 批 5-B:refreeze 不许抹预标。build 把 gold_localization 一律置 pending(它是 live
+    # 预标的产物,不是 SQL 能算的)—— 不带回旧标,--refreeze 就会把花真钱标好的时段
+    # 静默清零,而 scorer 只是拒算不报错,损失无声。从冻结文件按 item id 原样带回。
+    for name, items in (("dev", dev), ("holdout", holdout)):
+        p = out / f"longhorizon_bank.{name}.json"
+        if p.exists():
+            old_items = {i["id"]: i for i in
+                         json.loads(p.read_text(encoding="utf-8")).get("items", [])}
+            carry_labels(items, old_items)
     import datetime
     import hashlib
     for name, items in (("dev", dev), ("holdout", holdout)):

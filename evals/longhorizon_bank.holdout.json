@@ -1,7 +1,7 @@
 {
  "meta": {
-  "frozen_at": "2026-08-03T22:48:25.974014+00:00",
-  "items_sha256": "12d83865b15e0f22861108f2a477386c7acde769c1b5d9f4ca3e673416ed7e44",
+  "frozen_at": "2026-08-04T23:23:07.584988+00:00",
+  "items_sha256": "4506c90633bdf3126e0dae0f520c25f596a6e688037581db8fb16cdc8dc31728",
   "category_vocab": [
    "ball sports",
    "beach & leisure",
@@ -36,11 +36,13 @@
    "per_video": "{vid: {category, start_ts, end_ts, evidence}}"
   },
   "notes": "环境冻结要求:关闭 use-to-grow(_index_analyze_result)、DB 快照冻结、T2 谓词 ts 掩码、analyze 缓存按 arm×rep 命名空间(红队 C3)。",
-  "last_prelabel": {
-   "at": "2026-08-03T22:48:25.974014+00:00",
-   "model": "gemini-2.5-pro",
-   "spent_usd": 1.364,
-   "note": "B0-5:6 道 T2 定位 gold 库外预标(pro×2 交叉,23 条视频 20 labeled / 3 分歧降级)"
+  "relabel_5B": {
+   "at": "2026-08-04T23:23:07.584645+00:00",
+   "protocol": "pro pass-1(verify-pack-5B)× pro pass-2(prelabel-pass2-5B)双遍交叉;孤证弃;裁剪窗阴性作决胜票;新采纳两条 pro 主 flash confirm",
+   "dropped": {
+    "v_-NM-0NZXRNw": "(217,218) 超视频时长(200s),废",
+    "v_-jNouTszLJ0": "(101.4,103.2) 裁剪窗阴性 + pass2 缺席,双票否"
+   }
   }
  },
  "split": "holdout",
@@ -49,19 +51,22 @@
    "id": "t1-driving-car",
    "tier": "T1",
    "predicate": "driving car",
-   "question": "找出库里所有有人开车的视频,并给每条标注它属于哪个大类",
+   "question": "找出库里所有有人开车的视频(口径:画面中有汽车正被驾驶即可 —— 车在动就算,不要求看清驾驶员;割草机、碰碰车、船艇不算汽车),并给每条标注它属于哪个大类",
    "rephrased": false,
    "gold": {
     "video_ids": [
+     "v_-OH1BDqao9w",
      "v_-VKGwqL83w8",
      "v_8WJWtfmEipI",
+     "v_9pJBfTZOcxI",
+     "v_CbfgZlo0Ut4",
      "v_px18138660",
      "v_px32093955",
      "v_px3727447",
      "v_px5836409",
      "v_px9935090"
     ],
-    "count": 7,
+    "count": 10,
     "per_video": {
      "v_-VKGwqL83w8": {
       "categories": [
@@ -103,7 +108,27 @@
        "car care",
        "everyday activities"
       ]
+     },
+     "v_9pJBfTZOcxI": {
+      "categories": [
+       "water sports"
+      ]
+     },
+     "v_CbfgZlo0Ut4": {
+      "categories": [
+       "car care"
+      ]
+     },
+     "v_-OH1BDqao9w": {
+      "categories": [
+       "car care"
+      ]
      }
+    },
+    "adjudicated": {
+     "v_-OH1BDqao9w": "核验包 P3:48-53s 男子驾驶座上、96-100s 驶出洗车房 —— 真开车画面",
+     "v_9pJBfTZOcxI": "动作行 driving a car;核验包 P3:SUV/面包车涉水行驶拖曳滑水,宽口径命中",
+     "v_CbfgZlo0Ut4": "动作行 driving car into car wash;核验包 P3:车行驶入洗车房(车外机位)"
     }
    }
   },
@@ -117,12 +142,13 @@
     "video_ids": [
      "v_-E2dqOULQgY",
      "v_-hEr3ydGyoM",
+     "v_-zZJmRT9udU",
      "v_00KMCm2oGhk",
      "v_0KTued0g034",
      "v_0drl-yrfBAA",
      "v_2belnHaa36g"
     ],
-    "count": 6,
+    "count": 7,
     "per_video": {
      "v_-E2dqOULQgY": {
       "categories": [
@@ -153,7 +179,15 @@
       "categories": [
        "music"
       ]
+     },
+     "v_-zZJmRT9udU": {
+      "categories": [
+       "music"
+      ]
      }
+    },
+    "adjudicated": {
+     "v_-zZJmRT9udU": "动作行 playing conga drums(music);跨臂 6/6"
     }
    }
   },
@@ -166,12 +200,14 @@
    "gold": {
     "video_ids": [
      "v_-Lxv663IEaI",
+     "v_0EepbsAtiDk",
      "v_3LyyqeVeYkI",
+     "v_6NQl2Vcf0P0",
      "v_8wB0BOjuyes",
      "v_fO8b3U8fuGo",
      "v_hwGvU9Csz98"
     ],
-    "count": 5,
+    "count": 7,
     "per_video": {
      "v_-Lxv663IEaI": {
       "categories": [
@@ -198,7 +234,21 @@
       "categories": [
        "equestrian"
       ]
+     },
+     "v_0EepbsAtiDk": {
+      "categories": [
+       "equestrian"
+      ]
+     },
+     "v_6NQl2Vcf0P0": {
+      "categories": [
+       "equestrian"
+      ]
      }
+    },
+    "adjudicated": {
+     "v_0EepbsAtiDk": "动作行 horse riding(equestrian);跨臂 6/6 一致摆出",
+     "v_6NQl2Vcf0P0": "rodeo 套牛:mounting/dismounting horse、running to horse;跨臂 6/6"
     }
    }
   },
@@ -350,12 +400,14 @@
    "id": "t2-celebrating",
    "tier": "T2",
    "predicate": "celebrating",
-   "question": "找出所有出现庆祝场面的视频,并给出每条里庆祝的时间段和画面证据",
+   "question": "找出所有出现庆祝场面的视频,并给出每条里庆祝的时间段和画面证据(时段口径:给目标动作【本身】的起止秒,别把前后铺垫并进来;同一动作出现多次就挑最清晰的一次)",
    "rephrased": false,
    "gold": {
     "video_ids": [
      "v_-NM-0NZXRNw",
+     "v_-cJova7MiO8",
      "v_-jNouTszLJ0",
+     "v_079MEwdDNjg",
      "v_0AbJgWxIYVI",
      "v_0J55EGFLglQ",
      "v_BLTOTjVYiuE",
@@ -363,7 +415,7 @@
      "v_c1Gby2EHBzs",
      "v_eRHbpYeYtxo"
     ],
-    "count": 8,
+    "count": 10,
     "per_video": {
      "v_-NM-0NZXRNw": {
       "categories": [
@@ -409,7 +461,22 @@
        "celebration & awards",
        "fitness"
       ]
+     },
+     "v_-cJova7MiO8": {
+      "categories": [
+       "celebration & awards",
+       "martial arts & wrestling"
+      ]
+     },
+     "v_079MEwdDNjg": {
+      "categories": [
+       "ball sports"
+      ]
      }
+    },
+    "adjudicated": {
+     "v_-cJova7MiO8": "动作行 celebrating victory、congratulating(celebration & awards)",
+     "v_079MEwdDNjg": "动作行 baseball players celebrating、players hugging/jumping and cheering"
     }
    },
    "ts_mask": true,
@@ -418,18 +485,56 @@
     "status": "labeled",
     "labeler": "gemini-2.5-pro ×2 交叉",
     "spans": {
-     "v_-NM-0NZXRNw": {
-      "start_ts": 217.0,
-      "end_ts": 218.0
-     },
-     "v_-jNouTszLJ0": {
-      "start_ts": 101.4,
-      "end_ts": 103.2
-     },
-     "v_0AbJgWxIYVI": {
-      "start_ts": 104.0,
-      "end_ts": 114.0
-     },
+     "v_-NM-0NZXRNw": [
+      {
+       "start_ts": 100.0,
+       "end_ts": 102.0
+      },
+      {
+       "start_ts": 137.0,
+       "end_ts": 138.0
+      },
+      {
+       "start_ts": 142.0,
+       "end_ts": 143.0
+      },
+      {
+       "start_ts": 176.0,
+       "end_ts": 189.0
+      }
+     ],
+     "v_-jNouTszLJ0": [
+      {
+       "start_ts": 23.0,
+       "end_ts": 26.0
+      },
+      {
+       "start_ts": 32.0,
+       "end_ts": 34.0
+      },
+      {
+       "start_ts": 62.0,
+       "end_ts": 70.0
+      },
+      {
+       "start_ts": 81.0,
+       "end_ts": 85.0
+      }
+     ],
+     "v_0AbJgWxIYVI": [
+      {
+       "start_ts": 18.0,
+       "end_ts": 26.0
+      },
+      {
+       "start_ts": 101.0,
+       "end_ts": 115.0
+      },
+      {
+       "start_ts": 142.0,
+       "end_ts": 144.0
+      }
+     ],
      "v_0J55EGFLglQ": {
       "start_ts": 16.5,
       "end_ts": 19.0
@@ -449,7 +554,35 @@
      "v_eRHbpYeYtxo": {
       "start_ts": 9.0,
       "end_ts": 14.9
-     }
+     },
+     "v_-cJova7MiO8": [
+      {
+       "start_ts": 14.0,
+       "end_ts": 16.0
+      },
+      {
+       "start_ts": 18.0,
+       "end_ts": 23.0
+      },
+      {
+       "start_ts": 24.0,
+       "end_ts": 25.0
+      }
+     ],
+     "v_079MEwdDNjg": [
+      {
+       "start_ts": 69.0,
+       "end_ts": 81.0
+      },
+      {
+       "start_ts": 108.0,
+       "end_ts": 127.0
+      },
+      {
+       "start_ts": 144.0,
+       "end_ts": 161.0
+      }
+     ]
     },
     "raw": {
      "v_-NM-0NZXRNw": {
@@ -627,7 +760,7 @@
    "id": "t2-playing-water-polo",
    "tier": "T2",
    "predicate": "playing water polo",
-   "question": "找出所有有人打水球的视频,并给出每条里打水球的时间段和画面证据",
+   "question": "找出所有有人打水球的视频,并给出每条里打水球的时间段和画面证据(时段口径:给目标动作【本身】的起止秒,别把前后铺垫并进来;同一动作出现多次就挑最清晰的一次)",
    "rephrased": false,
    "gold": {
     "video_ids": [
@@ -745,7 +878,7 @@
    "id": "t2-playing-tennis",
    "tier": "T2",
    "predicate": "playing tennis",
-   "question": "找出所有有人打网球的视频,并给出每条里打网球的时间段和画面证据",
+   "question": "找出所有有人打网球的视频,并给出每条里打网球的时间段和画面证据(时段口径:给目标动作【本身】的起止秒,别把前后铺垫并进来;同一动作出现多次就挑最清晰的一次)",
    "rephrased": false,
    "gold": {
     "video_ids": [
@@ -778,10 +911,16 @@
     "status": "labeled",
     "labeler": "gemini-2.5-pro ×2 交叉",
     "spans": {
-     "v_g7l-Y_bgPkI": {
-      "start_ts": 23.0,
-      "end_ts": 25.0
-     },
+     "v_g7l-Y_bgPkI": [
+      {
+       "start_ts": 0.0,
+       "end_ts": 3.0
+      },
+      {
+       "start_ts": 23.0,
+       "end_ts": 25.0
+      }
+     ],
      "v_hrwcr7BxS5I": {
       "start_ts": 4.0,
       "end_ts": 7.0
@@ -862,15 +1001,18 @@
    "id": "t2-diving",
    "tier": "T2",
    "predicate": "diving",
-   "question": "找出所有有人跳水的视频,并给出每条里跳水的时间段和画面证据",
+   "question": "找出所有有人跳水的视频,并给出每条里跳水的时间段和画面证据(时段口径:给目标动作【本身】的起止秒,别把前后铺垫并进来;同一动作出现多次就挑最清晰的一次)",
    "rephrased": false,
    "gold": {
     "video_ids": [
      "v_-VKGwqL83w8",
      "v_-voGnJbk3CI",
+     "v_0F8F-ON083s",
+     "v_0gw1Qq3WRbU",
+     "v_j18sB8o2IQw",
      "v_wYIeRRTRtX8"
     ],
-    "count": 3,
+    "count": 6,
     "per_video": {
      "v_-VKGwqL83w8": {
       "categories": [
@@ -886,7 +1028,27 @@
       "categories": [
        "water sports"
       ]
+     },
+     "v_0gw1Qq3WRbU": {
+      "categories": [
+       "water sports"
+      ]
+     },
+     "v_j18sB8o2IQw": {
+      "categories": [
+       "water sports"
+      ]
+     },
+     "v_0F8F-ON083s": {
+      "categories": [
+       "water sports"
+      ]
      }
+    },
+    "adjudicated": {
+     "v_0F8F-ON083s": "动作行 diving from a platform;核验包 P2:10 米台跳水",
+     "v_0gw1Qq3WRbU": "动作行 diving (backward/forward/handstand dive);核验包 P2:跳板跳水",
+     "v_j18sB8o2IQw": "动作行 performing a high dive;核验包 P2:FINA 高台跳水世界杯"
     }
    },
    "ts_mask": true,
@@ -972,15 +1134,16 @@
    "id": "t2-performing-gymnastics",
    "tier": "T2",
    "predicate": "performing gymnastics",
-   "question": "找出所有有人在垫上或器械上做翻腾平衡动作的视频,并给出时间段和画面证据",
+   "question": "找出所有有人在垫上或器械上做翻腾平衡动作的视频,并给出时间段和画面证据(时段口径:给目标动作【本身】的起止秒,别把前后铺垫并进来;同一动作出现多次就挑最清晰的一次)",
    "rephrased": true,
    "gold": {
     "video_ids": [
      "v_0dkIbKXXFzI",
+     "v__AKzq9X1Aik",
      "v_aLv03Fznf5A",
      "v_fRmHJKlQmmw"
     ],
-    "count": 3,
+    "count": 4,
     "per_video": {
      "v_0dkIbKXXFzI": {
       "categories": [
@@ -996,7 +1159,15 @@
       "categories": [
        "fitness"
       ]
+     },
+     "v__AKzq9X1Aik": {
+      "categories": [
+       "fitness"
+      ]
      }
+    },
+    "adjudicated": {
+     "v__AKzq9X1Aik": "动作行 performing gymnastics on parallel bars;核验包 P2:双杠 L-sit/撑体"
     }
    },
    "ts_mask": true,
@@ -1089,7 +1260,7 @@
    "id": "t2-rock-climbing",
    "tier": "T2",
    "predicate": "rock climbing",
-   "question": "找出所有有人徒手或借助绳索攀爬岩壁的视频,并给出时间段和画面证据",
+   "question": "找出所有有人徒手或借助绳索攀爬岩壁的视频,并给出时间段和画面证据(时段口径:给目标动作【本身】的起止秒,别把前后铺垫并进来;同一动作出现多次就挑最清晰的一次)",
    "rephrased": true,
    "gold": {
     "video_ids": [

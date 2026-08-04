@@ -82,7 +82,11 @@ def test_t2_have_ts_mask_and_a_declared_localization_status():
             assert spans, f"{i['id']} 声称 labeled 却没有 spans"
             for vid, sp in spans.items():
                 assert vid in i["gold"]["video_ids"], f"{vid} 不在 gold 里"
-                assert sp["end_ts"] > sp["start_ts"] >= 0, (vid, sp)
+                # 批 5-B 起 spans[vid] 允许多时段列表(多实例视频);单 dict 兼容
+                for one in (sp if isinstance(sp, list) else [sp]):
+                    assert one["end_ts"] > one["start_ts"] >= 0, (vid, one)
+                if isinstance(sp, list):
+                    assert sp, f"{vid} 是空的多时段列表 —— 有列表就得有内容"
 
 
 def test_ids_unique_and_vocab_frozen():
@@ -303,3 +307,41 @@ def test_score_from_tool_ledger_not_scrubbed_answer():
     part = S.score_item(item, scrubbed, DEV["meta"]["category_vocab"], judge=None,
                         surfaced=gold[:len(gold) // 2] + ["v_wrong1", "v_wrong2"])
     assert 0.0 < part["set_f1"] < 1.0                        # 部分命中要有区分度
+
+
+# ── 批 5-B:builder 的两个纯函数(离线,不碰库)────────────────────────
+def test_merge_adjudicated_unions_and_records_evidence():
+    """裁决采纳 = 并集 + 大类 + 证据存档;SQL 直出的行原样保留、不被覆盖。"""
+    from evals.longhorizon_bank_build import merge_adjudicated
+
+    gold = {"video_ids": ["v_a", "v_b"], "count": 2,
+            "per_video": {"v_a": {"categories": ["x"]}, "v_b": {"categories": ["y"]}}}
+    out = merge_adjudicated(gold,
+                            {"v_c": ["water sports"], "v_a": ["改不动"]},
+                            {"v_c": "动作行 driving a car;核验包 P3", "v_a": "已在"})
+    assert out["video_ids"] == ["v_a", "v_b", "v_c"] and out["count"] == 3
+    assert out["per_video"]["v_c"] == {"categories": ["water sports"]}
+    assert out["per_video"]["v_a"] == {"categories": ["x"]}, "SQL 直出的行被裁决覆盖了"
+    assert "P3" in out["adjudicated"]["v_c"], "证据句没存档 —— 验收要求每条带证据"
+
+
+def test_carry_labels_survives_refreeze_and_skips_pending():
+    """refreeze 不许抹预标:labeled 原样带回(含多时段列表),pending 不带。
+
+    没有这条,--refreeze 会把花真钱标好的时段静默清零 —— scorer 只是拒算不报错,
+    损失无声。这正是 5-B 动 gold 前必须先钉死的雷。
+    """
+    from evals.longhorizon_bank_build import carry_labels
+
+    labeled = {"status": "labeled",
+               "spans": {"v1": [{"start_ts": 18.0, "end_ts": 26.0},
+                                {"start_ts": 101.0, "end_ts": 115.0}]}}
+    items = [{"id": "t2-a", "gold_localization": {"status": "pending_prelabel", "spans": {}}},
+             {"id": "t2-b", "gold_localization": {"status": "pending_prelabel", "spans": {}}},
+             {"id": "t2-new", "gold_localization": {"status": "pending_prelabel", "spans": {}}}]
+    old = {"t2-a": {"gold_localization": labeled},
+           "t2-b": {"gold_localization": {"status": "pending_prelabel", "spans": {}}}}
+    carry_labels(items, old)
+    assert items[0]["gold_localization"] == labeled, "labeled 没带回 —— refreeze 抹标"
+    assert items[1]["gold_localization"]["status"] == "pending_prelabel"
+    assert items[2]["gold_localization"]["status"] == "pending_prelabel", "新题不该被旧文件影响"

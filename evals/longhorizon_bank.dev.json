@@ -1,7 +1,7 @@
 {
  "meta": {
-  "frozen_at": "2026-07-30T12:54:29.580439+00:00",
-  "items_sha256": "f0952ca06391d0473a1c0302d6f71ef80e53fdc568d2482a2d14ac42acec6919",
+  "frozen_at": "2026-08-04T23:22:43.656526+00:00",
+  "items_sha256": "a9a785c4ff6375236984d0f41536d6a0d415b93cfa83cd864605b544c83a6e41",
   "category_vocab": [
    "ball sports",
    "beach & leisure",
@@ -178,7 +178,7 @@
    "id": "t2-falling",
    "tier": "T2",
    "predicate": "falling",
-   "question": "找出所有出现摔倒的视频,并给出每条里摔倒发生的时间段和画面证据",
+   "question": "找出所有出现摔倒的视频,并给出每条里摔倒发生的时间段和画面证据(时段口径:给目标动作【本身】的起止秒,别把前后铺垫并进来;同一动作出现多次就挑最清晰的一次)",
    "rephrased": false,
    "gold": {
     "video_ids": [
@@ -246,7 +246,7 @@
    "id": "t2-playing-dodgeball",
    "tier": "T2",
    "predicate": "playing dodgeball",
-   "question": "找出所有在玩「躲避飞来的球」的团队游戏的视频,并给出时间段和画面证据",
+   "question": "找出所有在玩「躲避飞来的球」的团队游戏的视频,并给出时间段和画面证据(时段口径:给目标动作【本身】的起止秒,别把前后铺垫并进来;同一动作出现多次就挑最清晰的一次)",
    "rephrased": true,
    "gold": {
     "video_ids": [
@@ -290,7 +290,7 @@
    "id": "t2-dribbling-basketball",
    "tier": "T2",
    "predicate": "dribbling basketball",
-   "question": "找出所有有人拍着球运球移动的视频,并给出时间段和画面证据",
+   "question": "找出所有有人拍着球运球移动的视频,并给出时间段和画面证据(时段口径:给目标动作【本身】的起止秒,别把前后铺垫并进来;同一动作出现多次就挑最清晰的一次)",
    "rephrased": true,
    "gold": {
     "video_ids": [
