@@ -324,23 +324,34 @@ def test_historical_v3_recompute_matches_acceptance():
     assert sum(1 for x in flat if x["parse_failure"]) == 0, "验收:parse failure = 0"
 
 
-def test_contract_tells_the_agent_where_the_vocabulary_lives():
-    """受控词表必须【指路】,既不能不说、也不能把 26 个词贴进去。
+def test_vocabulary_lives_in_the_system_prompt_and_is_not_repeated_in_the_contract():
+    """受控词表【已经在系统提示里】,契约不许再抄一遍、也不必指路。
 
-    不说的后果(实测):26 个类目只存在于 bank.meta.category_vocab,题面、契约、
-    工具描述里一个都没有 —— 而 category_accuracy 要求预测值同时命中词表【和】该视频的
-    gold 类目集。等于在考一套没公布的闭集,T1 那 40% 权重再怎么修取数侧也接近 0。
+    这条测试记的是一次被我自己纠正的误判,留着免得下次再犯:
+    曾有报告说"26 个类目只存在于 bank.meta.category_vocab、agent 从来看不见,
+    等于在考一套没公布的闭集",我据此往契约里加了一句"去 SELECT label FROM categories"。
+    核实后那个诊断是错的 —— 26 个类目早就写在 `loop_driver._DATA_FACTS` 的
+    「大类词表(共 26 个)」那一节里,属于 _LOOP_SYSTEM 冻结前缀;gate 跑机走
+    `_loop_system`,必然看得见(实测题库那 26 个在 _LOOP_SYSTEM 里 26/26 全命中)。
+    T1 的 category_acc 恒为 0 的真因是【取数断了】(parse_failure 72/72 → per_video 为空),
+    那是 B0-4 修的事,跟词表可不可见没关系 —— 当时把两件事混成了一件。
 
-    贴进去的后果:任务从"找出分类法"变成"抄清单",考的东西变了。
-
-    实测 `SELECT label FROM categories` 精确返回那 26 个(与题库词表 26/26 命中),
-    所以指路是唯一既公平又没改变考点的选项。
+    所以两头都要钉:
+      ① 词表确实在系统提示里 —— 哪天它被挪走了,这条要红,契约那边才该补;
+      ② 契约里【不许】重复 —— 重复等于每次请求多付一份钱,还让人以为它本来看不见。
     """
     from evals import longhorizon_run as R
+    from pipeline import loop_driver as ld
+
+    vocab = BANK["meta"]["category_vocab"]
+    in_prompt = [v for v in vocab if v in ld._LOOP_SYSTEM]
+    assert len(in_prompt) == len(vocab), (
+        f"系统提示里只找到 {len(in_prompt)}/{len(vocab)} 个类目 —— 词表被挪走了?"
+        "那 category_accuracy 才真成了在考没公布的闭集,契约那边得跟着补指路")
 
     c = R.answer_contract()
-    assert "FROM categories" in c, "没告诉 agent 词表在哪 —— 那是在考没公布的闭集"
-    vocab = BANK["meta"]["category_vocab"]
     pasted = [v for v in vocab if v in c]
     assert len(pasted) <= 1, (
-        f"把词表贴进契约了({pasted[:5]}…)—— 任务变成抄清单,考点就变了")
+        f"把词表贴进契约了({pasted[:5]}…)—— 系统提示里已经有,再抄一遍是白花钱")
+    assert "FROM categories" not in c, (
+        "契约在指路让 agent 去查词表 —— 但它在系统提示里本来就看得见,这句是纯冗余")
