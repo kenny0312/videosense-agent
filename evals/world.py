@@ -268,10 +268,25 @@ class LiveWorld:
         # orchestrator.py 的 runtime_facts_line 调用),eval 此前传 None → 评测的 prompt 比生产少一节,
         # 语言指令等段在 eval 里成了死代码。usage_cum 传 None(单题无会话累计),与生产新会话首轮一致。
         rt = loop_driver.runtime_facts_line(None, nl=user_query)
+        # C1 连带(同一个保真问题又长了一次):生产每请求都注入库存快照,eval 不传就又比
+        # 生产少一节 —— 上面 GD-0 那条注释记的正是同形漂移。这里走的是假库(本文件
+        # 把 mcp_client.query_db 换成了 mock_run_sql),所以拿到的是假库的快照,正确。
+        # 【别再手动对齐下一节了】:test_eval_prompt_parity 会在 _loop_system 新增
+        # 任何注入段而这里没跟上时变红。
+        # 【每一节都要传】。保真检查在 tests/evals/test_eval_prompt_parity.py:
+        # _loop_system 新增任何注入段而这里没跟上,那条测试立刻红。
+        # 少一节 = 评测在量一个和生产不一样的系统,这个坑已经长过两次
+        # (GD-0 的 runtime_facts、C1 的 library_state),就在上面那条注释底下。
+        from pipeline import library_state as _lib
+        from pipeline import user_memory as _um
+        lib = _lib.library_state_line()            # 与 orchestrator 同一入口,自带 TTL + fail-open
+        mem = _um.render_section(self.owner)       # 假世界装了记忆替身,读的是 world_state
+        notice, _ = loop_driver.task_done_notice(self.owner)   # USE_TASKS=0 时短路成 ""
         conv = loop_driver.make_conversation(
             config.LOOP_MODEL,
             loop_driver.loop_function_declarations(),
-            loop_driver._loop_system(schema, None, rt),
+            loop_driver._loop_system(schema, None, rt, notice,
+                                     library_state=lib, user_memory=mem),
         )
         execute = loop_driver._make_executor(SandboxClient(), Trace(), schema, None, owner=self.owner)
         res = run_loop(user_query, conv, self.backend.wrap_execute(execute), max_steps=max_steps)
