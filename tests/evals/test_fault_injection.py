@@ -264,6 +264,9 @@ def test_incident_1_todays_code_soft_fails_and_keeps_the_verdict(monkeypatch):
     py = [er for cid, er in r.ledger.items() if cid.endswith("c1_0")][0]
     assert py.ok is False and "沙箱" in py.stderr        # 软失败,不是崩溃
     assert F.verdict_of(r).bought, "sql 那一份必须还在"
+    # 这条的"故障"是【沙箱缺席】本身,不是某次调用被换掉 —— 跟 ③④⑤ 一样走 mark 登记,
+    # 否则零声明的注入器会被 assert_verdict_preserved 的新闸当场揭穿(那个闸是对的)。
+    inj.mark("沙箱缺席")
     F.assert_verdict_preserved(r, inj, expect_terminated="text")
 
 
@@ -524,6 +527,7 @@ def test_incident_5_answer_is_not_none_so_the_ledger_is_not_dropped():
     r = run_loop("q", conv, ex, max_steps=3)
     assert r.terminated == "max_steps"
     assert r.answer is not None and "服务波动" not in r.answer
+    inj.mark("步数烧光")     # 故障 = 撞墙本身(同 ⑤ 的口径),不是某次调用被换掉
     F.assert_verdict_preserved(r, inj, expect_terminated="max_steps")
 
 
@@ -681,8 +685,12 @@ def test_kill_point_loses_the_whole_in_request_verdict():
     已经花钱买到的全部证据 100% 蒸发,没有残值回收、没有断点续跑。
     后台任务那条路有(taskstate 的 CHECKPOINT_SQL,见上面 ④ 的用例)。
 
-    数字钉在这里当棘轮:哪天单次请求也有了残值回收,这条会变红 ——
-    那是好消息,把 0.0 改成新的保留率即可。
+    【哪句是棘轮,说清楚】真正钉住生产行为的是下面那句 pytest.raises:
+    BaseException 原样掀出 run_loop、不产出任何 LoopResult —— 哪天单请求路径
+    有了残值回收(比如 run_loop 学会在被杀前把 ledger 落盘再重抛),raises 这一半
+    就会变红,那是好消息。末尾那两行 retention 算的是【手搓的空 ledger】上的算术
+    (崩溃之后调用方手里就是什么都没有,这是对"没有任何东西幸存"的演算,
+    不是对生产代码的探测)—— 别把它当棘轮引用,它对 pipeline/ 的改动不敏感。
     """
     inj = F.FaultInjector(F.Fault(F.WorkerKilled, where="analyze_video", at=2,
                                   label="实例被回收"))
@@ -717,3 +725,85 @@ def test_kill_point_spares_the_waves_already_checkpointed(task_bed, monkeypatch)
 
     assert db.row["plan"]["done"]["0"]["answer"] == "上一波已经买到的战果"
     assert db.row["status"] != "done"
+
+
+# ══════════════════════════════════════════════════════════════════
+#  尺子自身的卫生(对抗性 review 揪出的五条,每条都有过真实的骗分路径)
+# ══════════════════════════════════════════════════════════════════
+
+def test_gate_envelope_is_not_counted_as_bought():
+    """闸门信封(ok=True 但一帧没看、一分没花)不许算"买到"。
+
+    生产的配额闸/成本闸拦下的调用就是 ok=True + value.gate=="blocked"。
+    把它记进分子分母,保留率量的就成了"信封还在不在" —— 恒真的那种。
+    判据必须复用生产的 _is_gate_envelope,不另写一套。
+    """
+    real = ExecResult(ok=True, value={"video_id": "v1", "answer": "看到了"}, n=1)
+    gate = ExecResult(ok=True, value={"answer": "已达上限", "enough": "no",
+                                      "gate": "blocked"}, n=1)
+    # 真成功也可能 enough="no"(如"视频里没有狗"),不能按 enough 判
+    honest_no = ExecResult(ok=True, value={"video_id": "v2", "answer": "没有狗",
+                                           "enough": "no"}, n=1)
+    inj = F.FaultInjector(F.Fault(F.transient("429"), where="x", at=99))
+    ex = F.wrap_exec(lambda cid, *a: {"c0": real, "c1": gate, "c2": honest_no}[cid], inj)
+    for cid in ("c0", "c1", "c2"):
+        ex(cid, "analyze_video", {}, {}, [])
+    assert set(inj.bought) == {"c0", "c2"}, (
+        f"记账错了:{sorted(inj.bought)} —— 闸门信封混进了'买到'的账本")
+
+
+def test_fingerprint_sees_the_preview_not_just_the_value():
+    """preview 才是真正回喂给大脑的字段(value 不进 prompt)。
+
+    只按 value 算指纹的话,"证据还在、但大脑读到的那份被腰斩了"判成保留率 100% ——
+    而这个仓刚为护栏指令被 _preview 砍掉改过两次代码。
+    """
+    a = ExecResult(ok=True, value={"k": 1}, preview=[{"note": "完整的收口指令,一个字没少"}], n=1)
+    b = ExecResult(ok=True, value={"k": 1}, preview=[{"note": "完整的收口指"}], n=1)
+    assert F._fingerprint(a) != F._fingerprint(b), (
+        "value 相同、preview 被腰斩,指纹却一样 —— 尺子看不见大脑真正读到的那一维")
+
+
+def test_zero_fault_injector_cannot_pass_the_verdict_gate():
+    """忘了把 Fault(...) 传进 FaultInjector(...),整条用例会退化成"无故障跑批也能过"。
+    这正是本模块自称要消灭的那种绿灯,所以门槛断言第一句就要把它揭穿。"""
+    fake = type("R", (), {"ledger": {}, "answer": "x", "terminated": "text"})()
+    with pytest.raises(F.FaultNeverFired, match="一条 Fault 都没有"):
+        F.assert_verdict_preserved(fake, F.FaultInjector(), expect_terminated="text")
+
+
+def test_empty_denominator_is_exposed_not_silently_perfect():
+    """故障打在第一次成功之前 → 分母 0 → 那个 100% 是空转的。
+
+    最容易写出来的注入(默认 at=1)恰好就是这种,所以必须响,
+    除非调用方显式表态只想验诚实收口。
+    """
+    # 工具接缝的注入用 ok=False 信封(生产的 executor 把异常兜成软失败回喂,
+    # 裸抛异常会直接掀掉 run_loop —— 那是 ⑤ 杀点的形状,不是这条要的):
+    inj = F.FaultInjector(F.Fault(
+        ExecResult(ok=False, stderr="429 RESOURCE_EXHAUSTED"), where="sql_query", at=1))
+    ex = make_exec(values={"sql_query": [{"a": 1}]}, faults=inj)
+    conv = Conv([_tool("sql_query", sql="SELECT 1")],
+                tail=([], "第一步就被限流,什么都没查到 —— 如实说没有数据"))
+    r = run_loop("q", conv, ex, max_steps=4)
+    with pytest.raises(AssertionError, match="分母为 0"):
+        F.assert_verdict_preserved(r, inj, expect_terminated="text")
+    v = F.assert_verdict_preserved(r, inj, expect_terminated="text",
+                                   allow_empty_denominator=True)
+    assert v.bought == {}, "前提检查:这条用例的分母必须真的是空,否则上面测的不是它"
+
+
+def test_spend_without_faults_still_burns_money(money):
+    """spend_per_call 单独传也要落账 —— docstring 把它和 faults 列成两项独立能力。
+
+    以前 faults=None 时它被静默丢弃:想单独测"预算耗尽"(只烧钱不注故障)的用例
+    会得到一个永远不触闸、而且是绿的结果。
+    """
+    from pipeline.agentops import usage
+
+    ex = make_exec(values={"sql_query": [{"a": 1}]}, spend_per_call=0.25)
+    for i in range(4):
+        ex(f"c{i}", "sql_query", {"sql": f"SELECT {i}"}, {}, [])
+    # TreeGuard.spent() 读的就是 summarize()["cost_usd"] —— 用同一个口径验
+    assert usage.summarize()["cost_usd"] == pytest.approx(1.0, rel=0.02), (
+        "烧了 4 × $0.25 却没落账 —— spend_per_call 不带 faults 时又被静默丢了")

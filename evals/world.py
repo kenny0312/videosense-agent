@@ -119,10 +119,14 @@ def make_exec(values=None, fail=(), *, faults=None, spend_per_call: float = 0.0)
         return ExecResult(ok=True, value=val, preview=val[:1], n=len(val))
 
     execute.seen = seen
-    if faults is None:
+    if faults is None and not spend_per_call:
         return execute
-    from evals.faults import wrap_exec
-    return wrap_exec(execute, faults, spend_per_call=spend_per_call)
+    # spend_per_call 单独传也要生效:docstring 把它和 faults 列成两项【独立】新能力,
+    # "只烧钱不注故障"(测预算耗尽)是合法用法 —— 以前 faults=None 时它被静默丢弃,
+    # 那种用例会得到一个永远不触闸、而且是绿的结果。
+    from evals.faults import FaultInjector, wrap_exec
+    return wrap_exec(execute, faults if faults is not None else FaultInjector(),
+                     spend_per_call=spend_per_call)
 
 
 class ScriptedWorld:

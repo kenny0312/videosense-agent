@@ -39,6 +39,7 @@ B3 不误进 SqlFixer),seam 的价值是让它们**可回归**,而不是每次�
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -234,7 +235,8 @@ class Fault:
         · Returns(v)            → 返回 v,不调用真实现
         · callable              → 调 effect(),用它的返回值(需要每次造新对象时用)
     where  —— 只对这个 key 计数(工具名 / "generate" / SQL 语句种类)。
-              None = 所有调用共用一个计数器。
+              None = 对任意 key 都可生效(计数仍按 key 各自算 —— _match 里
+              只有一个按当前 key 分桶的计数表,没有全局桶)。
     at     —— 在该 key 的第几次调用上生效(1 = 第一次)。
     times  —— 连续生效几次。analyze 的重试循环要连挂 RETRY_LIMIT+1 次才走到
               ANALYZE_FAILED;只挂 1 次测到的是"重试救回来了",是另一回事。
@@ -269,17 +271,23 @@ class FaultInjector:
         # Verdict 记账(由 wrap_exec 填):cid → 成功结果指纹
         self.bought: dict[str, tuple] = {}
         self.bought_before_fault: dict[str, tuple] | None = None
+        # 计数是读-改-写,而这个注入器恰好站在全系统唯一并发的那条路上:
+        # 同一步 >1 个 analyze 会进 ThreadPoolExecutor(MAX_ANALYZE_PARALLEL 默认 3)。
+        # 生产自己的同类计数器(_make_executor 的 quota)就是带锁的 —— 照做。
+        # 不带锁的症状:times=1 的注入在并发下偶发生效两次/零次,用例随机红绿。
+        self._lock = threading.Lock()
 
     # ── 调度 ──
     def _match(self, key: str) -> "Fault | None":
-        n = self.counts[key] = self.counts.get(key, 0) + 1
-        for i, f in enumerate(self.faults):
-            if f.covers(key, n):
-                self._hits[i] += 1
-                self.fired.append({"key": key, "nth": n, "label": f.label or key})
-                if self.bought_before_fault is None:
-                    self.bought_before_fault = dict(self.bought)
-                return f
+        with self._lock:
+            n = self.counts[key] = self.counts.get(key, 0) + 1
+            for i, f in enumerate(self.faults):
+                if f.covers(key, n):
+                    self._hits[i] += 1
+                    self.fired.append({"key": key, "nth": n, "label": f.label or key})
+                    if self.bought_before_fault is None:
+                        self.bought_before_fault = dict(self.bought)
+                    return f
         return None
 
     def mark(self, label: str) -> None:
@@ -289,11 +297,12 @@ class FaultInjector:
         而是被测系统自己在某一刻改变了状态。这里同样会把此刻的 `bought` 快照成
         `bought_before_fault`,让 Verdict 保留率的分母对所有五种注入是同一把尺子。
         """
-        self.fired.append({"key": label, "nth": self.counts.get(label, 0) + 1,
-                           "label": label, "manual": True})
-        self.counts[label] = self.counts.get(label, 0) + 1
-        if self.bought_before_fault is None:
-            self.bought_before_fault = dict(self.bought)
+        with self._lock:
+            self.fired.append({"key": label, "nth": self.counts.get(label, 0) + 1,
+                               "label": label, "manual": True})
+            self.counts[label] = self.counts.get(label, 0) + 1
+            if self.bought_before_fault is None:
+                self.bought_before_fault = dict(self.bought)
 
     def apply(self, key: str, call: Callable[[], Any]) -> Any:
         """命中 → 按 effect 抛/返回;没命中 → call()(真实现)。"""
@@ -338,18 +347,44 @@ class FaultInjector:
 #  三、层适配器:把注入器接到各个真实接缝上
 # ══════════════════════════════════════════════════════════════════
 
+def _dumps(v) -> str:
+    try:
+        return json.dumps(v, sort_keys=True, ensure_ascii=False, default=str)
+    except Exception:
+        return repr(v)
+
+
 def _fingerprint(er) -> tuple:
     """一条成功工具结果的不可变摘要 —— Verdict 比对用。
 
     比 value 本身稳:value 可能带不可哈希的嵌套结构,而"买到的东西没丢"要判的是
     同一件东西还在,不是对象同一性。
+
+    【preview 必须一起进指纹】:loop_driver 回喂给大脑的 payload 是
+    {result_id, preview, n} —— 那边的注释原话是"preview 才是真正回喂给大脑的字段
+    (value 不进 prompt)"。只按 value 算的话,"value 一模一样、preview 被腰斩成半句"
+    这种结果指纹逐字节相同 → 保留率 100%。而这个仓刚刚为"护栏收口指令被 _preview
+    砍掉"改过两次代码(_gate_preview、_soft_note 全文回喂),那正是这把尺子
+    原本看不见的那一维:证据还在,但大脑读到的那份已经残了。
     """
-    try:
-        body = json.dumps(getattr(er, "value", None), sort_keys=True,
-                          ensure_ascii=False, default=str)
-    except Exception:
-        body = repr(getattr(er, "value", None))
-    return (bool(getattr(er, "ok", False)), int(getattr(er, "n", 0) or 0), body)
+    return (bool(getattr(er, "ok", False)), int(getattr(er, "n", 0) or 0),
+            _dumps(getattr(er, "value", None)), _dumps(getattr(er, "preview", None)))
+
+
+def _is_bought(er) -> bool:
+    """这条结果算不算"花钱买到手的东西"。
+
+    ok=True 还不够 —— 配额闸和成本护栏拦下的调用【就是 ok=True】
+    (loop_driver 里 return ExecResult(ok=True, value={..., "gate": "blocked"})),
+    它一帧没看、一分没花。把它算进分子分母,保留率量的就成了"信封还在不在"。
+    判据直接复用生产那条 _is_gate_envelope,不另写一套:生产为它专门留了
+    gate=="blocked" 这个标记,还写明【不许】改用 enough 去认(真干过活的枝
+    也合法地带 enough="no",subagents 的计数壳与残值回收都踩过这个坑)。
+    """
+    if not getattr(er, "ok", False):
+        return False
+    from pipeline import loop_driver as _ld
+    return not _ld._is_gate_envelope(getattr(er, "value", None))
 
 
 def wrap_exec(execute: Callable, injector: FaultInjector, *,
@@ -373,7 +408,7 @@ def wrap_exec(execute: Callable, injector: FaultInjector, *,
         finally:
             if spend_per_call:
                 spend_usd(spend_per_call)
-        if getattr(res, "ok", False):
+        if _is_bought(res):        # 闸门信封不算"买到"(ok=True 但一帧没看、一分没花)
             injector.bought[cid] = _fingerprint(res)
         return res
 
@@ -641,15 +676,18 @@ def verdict_of(res) -> Verdict:
     return Verdict(answer=getattr(res, "answer", None),
                    terminated=getattr(res, "terminated", "?"),
                    bought={cid: _fingerprint(er) for cid, er in ledger.items()
-                           if getattr(er, "ok", False)})
+                           if _is_bought(er)})    # 与 wrap_exec 同一把尺子,闸门信封两边都不算
 
 
 def retention(res, injector: FaultInjector) -> "tuple[float, list[str]]":
     """**故障注入下的 Verdict 保留率**:故障【之前】买到的东西,故障之后还剩多少。
 
-    分母 = 注入第一次生效那一刻,执行器已经交付过的 ok=True 结果;
-    分子 = 其中在最终 ledger 里【仍然 ok、且指纹相同】的。
-    分母为 0(故障发生在第一次成功之前)→ 1.0,没买到东西就没什么可丢的。
+    分母 = 注入第一次生效那一刻,执行器已经交付过的"真买到"结果
+    (ok=True 且不是闸门信封 —— 见 _is_bought);
+    分子 = 其中在最终 ledger 里【仍然存在、且指纹相同】的。
+    分母为 0(故障发生在第一次成功之前)→ 1.0,没买到东西就没什么可丢的 ——
+    但这是【空转的满分】,单独用 retention 的调用方要自己分辨;
+    走 assert_verdict_preserved 的话它会替你把这种情况当场揭穿(见那边 ④')。
 
     返回 (保留率, 丢失的 cid 列表)。
     """
@@ -664,15 +702,29 @@ def retention(res, injector: FaultInjector) -> "tuple[float, list[str]]":
 
 
 def assert_verdict_preserved(res, injector: FaultInjector, *,
-                             expect_terminated: str | None = None) -> Verdict:
+                             expect_terminated: str | None = None,
+                             allow_empty_denominator: bool = False) -> Verdict:
     """发布门槛「故障注入下 Verdict 保留率 = 100%」的断言体。
 
     四条一起判(少一条都能被绕过):
       ① 注入真的生效了(否则这条断言证明不了任何事)
-      ② answer 不是 None
+      ②  answer 不是 None
       ③ terminated 落在诚实名单里(可指定确切值)
       ④ 保留率 == 1.0
+      ④' 分母 > 0 —— 否则那个 1.0 是空转的:故障打在第一次成功【之前】,
+         压根没有东西可丢,"保留率 100%"什么都没证明。最容易写出来的注入
+         (默认 at=1)恰好就是这种。确实想只验 ②③(比如"开局就挂,系统要
+         诚实收口")的,显式传 allow_empty_denominator=True 表态。
     """
+    if not injector.faults and not injector.fired:
+        # ① 的另一半:零声明的注入器 verify() 恒过(没有 Fault 就没有"没生效"可查)。
+        # 忘了把 Fault(...) 传进 FaultInjector(...) 的用例会悄悄退化成"无故障跑批
+        # 也能过" —— 那正是本模块自称要消灭的那种绿灯。刻意的无故障对照组
+        # 不该走这个断言:它叫 assert_verdict_PRESERVED,没故障就没有"保留"可言。
+        raise FaultNeverFired(
+            "这个注入器一条 Fault 都没有、也没 mark 过任何故障 —— "
+            "assert_verdict_preserved 在无故障跑批上恒过,证明不了任何事。"
+            "对照组请直接断言结果,别借这个门槛的名字。")
     injector.verify()
     v = verdict_of(res)
     assert v.answer is not None, (
@@ -686,4 +738,11 @@ def assert_verdict_preserved(res, injector: FaultInjector, *,
     assert rate == 1.0, (
         f"Verdict 保留率 {rate:.0%} < 100% —— 故障发生前已经花钱买到的 "
         f"{len(lost)} 条结果跟着故障一起丢了:{lost}")
+    before = injector.bought_before_fault
+    denominator = len(before if before is not None else injector.bought)
+    if denominator == 0 and not allow_empty_denominator:
+        raise AssertionError(
+            "④' 分母为 0:故障打在第一次成功之前,这个 100% 是空转的 —— "
+            "什么都没买到就谈不上保留。把 at 往后挪(先让系统买到点东西再打),"
+            "或者你确实只想验诚实收口,就显式传 allow_empty_denominator=True。")
     return v
