@@ -63,8 +63,19 @@ class ScriptedConv:
         return self.script.pop(0)
 
 
-def make_exec(values=None, fail=()):
-    """stub 工具执行器：按工具名返回固定结果（把"工具/数据库的输出"写死）。"""
+def make_exec(values=None, fail=(), *, faults=None, spend_per_call: float = 0.0):
+    """stub 工具执行器：按工具名返回固定结果（把"工具/数据库的输出"写死）。
+
+    `fail=("sql_query",)` 只能让某个工具返回一个 `stderr="boom"` 的空壳 ——
+    生产里不存在"boom"这种故障,所以它测不出任何真实韧性问题。
+
+    批次 3.5 的新能力走【新的关键字参数】(既有签名与行为逐字节不变,全仓一堆调用点在用它):
+      faults          = `evals.faults.FaultInjector`,把真实形状的故障(429/5xx/超时 /
+                        SQLSTATE / 进程杀点)注到【工具执行接缝】上,并顺带记 Verdict 账;
+      spend_per_call  = 每次工具调用真烧多少美元(经 usage.add_usage 落进真账),
+                        供③"预算在特定时刻耗尽"用 —— 钱在调用【结束后】才落账,与生产同序。
+    两个都不传 → 一个字节都不变。
+    """
     seen = []
 
     def execute(cid, name, inputs, upstream, uses):
@@ -75,7 +86,10 @@ def make_exec(values=None, fail=()):
         return ExecResult(ok=True, value=val, preview=val[:1], n=len(val))
 
     execute.seen = seen
-    return execute
+    if faults is None:
+        return execute
+    from evals.faults import wrap_exec
+    return wrap_exec(execute, faults, spend_per_call=spend_per_call)
 
 
 class ScriptedWorld:
