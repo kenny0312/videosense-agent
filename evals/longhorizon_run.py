@@ -53,6 +53,12 @@ COMMON_ENV = {
     "USE_SELF_CHECK_CRITIC": "0",
     "USE_TASKS": "0",                    # 本实验测树引擎,不测任务底座
     "LOOP_THOUGHTS": "1",
+    # B0-2a 的写闸【必须在这里显式开】:上一轮主跑没开,1256 行 av:gate-% 的评测残留
+    # 写进了生产语义索引(R2 花了一次导出+删除才清干净)。闸拦两处:analyze 结果入索引
+    # (node_executor 专门接住 EvalWriteBlocked,买到的结果一条不丢)与 update_memory。
+    # 代价是本轮内 semantic_search 搜不到刚 analyze 出的内容(生产搜得到)——
+    # 用"少一点检索助力"换"不再污染生产库",与合并任务书 R2/B0-2a 的裁决一致。
+    "EVAL_READ_ONLY": "1",
 }
 
 # 答案契约按【产品自己的交付方式】设计,不跟它对着干:VS 的规则是"绝不把内部 id 抄给
