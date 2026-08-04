@@ -235,6 +235,13 @@ USE_BOUNDED_SQL = os.environ.get("USE_BOUNDED_SQL", "0").lower() in ("1", "true"
 # 这个 bug 一直在,只是 A4 之前被伪装成了"看过了、结论是看不清"的失败信封(假成功)。
 ANALYZE_MAX_OUTPUT_TOKENS = int(os.environ.get("ANALYZE_MAX_OUTPUT_TOKENS", "8192"))
 
+# ── C6 ToolEvent:工具调用事件流(内部观测)────────────────────────────
+# "shadow"(默认)= 算出来只写 DEBUG 日志,不影响任何行为;"1"/"on" = 同时写 INFO。
+# 【永远不进 prompt】—— 它是给事后 triage / 完整率核对用的,不是给大脑读的。
+# 为什么默认 shadow 而不是关:这东西的价值在于【连续性】,开开关关的事件流算不出
+# "完整率 ≥99.9%"这种指标;而它是纯投影 + fail-open,shadow 的代价只有几行日志。
+USE_TOOL_EVENT = os.environ.get("USE_TOOL_EVENT", "shadow").strip().lower()
+
 # ── B0-2a 评测写闸 ────────────────────────────────────────────────
 # 评测跑【不许】改动生产数据。实测教训:gate 实验的 1256 行 analyze 产物永久留在
 # 生产 content_embeddings 里(占 18.6%),用户检索会命中评测垃圾 —— 其中还有

@@ -265,3 +265,40 @@ def dump_trace(trace: "Trace", path: str, **meta) -> str:
         json.dump(payload, f, ensure_ascii=False, indent=1, default=str)
     os.replace(tmp, path)
     return path
+
+
+# ── C6 ToolEvent:现有 TraceStep 的一次【确定性投影】 ──────────────────────
+# 为什么不新建一套 schema:TraceStep 已经有全部字段(span_id/parent_id/depth/component/
+# cause/t_start/t_end/tok/cost_usd)。另立三个 dataclass 只会造出【第二份事实】——
+# 两边字段迟早漂移,而漂移的那天没人知道该信哪个。所以 ToolEvent 是个视图,不是个模型。
+#
+# call_id 直接复用 span_id:同一次工具调用在 trace 里和在事件流里必须是【同一个 id】,
+# 否则事后拿事件流回查 trace 就得再维护一张映射表。
+_EXEC_COMPONENT = "exec"
+
+
+def tool_events(steps: "list[TraceStep] | Trace") -> list[dict]:
+    """把 exec 层的 span 投影成扁平事件流。纯函数:同样的输入永远得到同样的输出。
+
+    只取 component=="exec"(工具调用那一层)—— 主循环的 generate、schema 拉取之类
+    不是"工具事件",混进来会让"工具调用了几次"这个数说不清。
+    """
+    src = steps.steps if hasattr(steps, "steps") else (steps or [])
+    out = []
+    for s in src:
+        if getattr(s, "component", None) != _EXEC_COMPONENT:
+            continue
+        out.append({
+            "call_id": s.span_id,               # == span_id,不另造 id
+            "parent_id": s.parent_id,
+            "depth": s.depth,
+            "name": s.name,
+            "status": s.status,                 # ok | error | softfail | refused | running
+            "cause": s.cause,                   # 失败因由码(枚举)
+            "elapsed_ms": s.elapsed_ms,
+            "t_start": s.t_start,
+            "t_end": s.t_end,
+            "tok": dict(s.tok),
+            "cost_usd": s.cost_usd,
+        })
+    return out

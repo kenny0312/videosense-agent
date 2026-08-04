@@ -198,6 +198,28 @@ class LoopResult:
 _TRIP_GRACE_STEPS = 2      # P0-3:触闸后给几步收口机会;用尽即强制终止(terminated="tree_guard")
 # 护栏拦下的失败码。字面量抄一份而不是 import perception —— loop_driver 是纯控制流层,
 # 为一个常量把感知层拉进 import 图不划算;真值由 test 钉住两边一致。
+# ── C6 ToolEvent 发射 ───────────────────────────────────────────────
+# 事件流的价值在【连续性】(要算"完整率 ≥99.9%"这种指标),所以默认 shadow:
+# 算出来只写 DEBUG,不影响任何行为。全程 fail-open —— 观测绝不能拖垮请求,
+# 这是本仓 T-1 就定下的规矩(trace 自己也是这么做的)。
+# 【它永远不进 prompt】:大脑读不到、也不该读。混进去等于每步再付一遍观测的钱。
+def _emit_tool_events(trace, mark: int) -> None:
+    from pipeline import config as _cfg
+    mode = getattr(_cfg, "USE_TOOL_EVENT", "shadow")
+    if mode in ("0", "off", "false", "no"):
+        return
+    try:
+        from pipeline.agentops.trace import tool_events
+        fresh = (getattr(trace, "steps", None) or [])[mark:]
+        for ev in tool_events(fresh):
+            if mode in ("1", "on", "true", "yes"):
+                log.info("[tool_event] %s", ev)
+            else:                                    # shadow:算但只留 DEBUG
+                log.debug("[tool_event] %s", ev)
+    except Exception:                                # 观测出问题绝不影响这一次工具调用
+        log.debug("tool_event 发射失败(fail-open)", exc_info=True)
+
+
 _ERR_GUARD_BLOCKED = "GUARD_BLOCKED"
 
 RUNWAY_WARN_LEFT = 4       # 剩几步时提醒大脑"跑道快到头了"(0=关)
@@ -1030,8 +1052,14 @@ def _make_executor(sandbox, trace, schema, session_id, owner: str = "anon",
                           # 常是临时 class,少一个字段不该把整条执行链炸掉)。
                           attempts=int(getattr(nr, "attempts", 0) or 0))
 
+    def _ev_mark() -> int:
+        """发射前的水位线:只投影【这次调用新产生的】span,不是整条 trace。
+        并行 analyze 会让多个 span 同时落进同一个列表,所以取快照而不是按索引切片。"""
+        return len(getattr(trace, "steps", ()) or ())
+
     def execute(cid, name, inputs, upstream, uses) -> ExecResult:
         t0 = time.perf_counter()                          # M4.2:per-tool 墙钟
+        _ev_mark_val = _ev_mark()
         # P0-3 挂点①:熔断在最前(钱比配额更硬)。show_* 交付类放行:不烧 LLM 钱,
         # 且触闸后仍要能把已有结果交付给用户。admit 放行即预留、settle 释放 ——
         # 否则同一步 K 个并行 analyze 在钱落账前互相看不见,超冲 = K×单次成本(红队 B3,
@@ -1054,6 +1082,7 @@ def _make_executor(sandbox, trace, schema, session_id, owner: str = "anon",
         else:
             res = _do(cid, name, inputs, upstream, uses)
         res.ms = (time.perf_counter() - t0) * 1000.0
+        _emit_tool_events(trace, _ev_mark_val)  # C6:本次调用新产生的 exec span → 事件流
         return res
     # P0-3:把 guard 挂在闭包对象上 —— 子 agent 拿到 execute 就能取到【同一本账】,
     # 不必给 run_fanout 加参数(它的签名是既有契约,改动面越小越好)。
