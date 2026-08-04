@@ -6,7 +6,7 @@
 三个必须守住的东西:
   1. 红线:快照内容【绝不】出现在 `loop_driver._LOOP_SYSTEM`(import 期冻结的
      字节稳定缓存前缀)。进去 = 每轮都 cache miss,而且不会有任何症状。
-  2. 事故形状:`orphan_tables` 必须报出"只在专栏表里、video_facts 查不到"的那批
+  2. 事故形状:`vertical_tables` 必须报出"只在专栏表里、video_facts 查不到"的那批
      (`perception/skydive_schema.py:141-143` 记的跳伞事故)。
   3. 未知 ≠ 零:查询少给了某段 → 对应字段是 null 且进 unavailable_fields,不许默认 0。
 """
@@ -123,7 +123,9 @@ def test_snapshot_has_the_two_mandatory_fields(monkeypatch):
     assert snap["schema_version"] == "vs.library-state/v1"
     assert snap["category_counts"] == [{"category": "skydiving", "videos": 42},
                                        {"category": "winter sports", "videos": 30}]
-    assert snap["orphan_tables"] == [
+    # 覆盖完好的表【也在里面】(12/12)—— 字段列的是"有哪些专栏表",不是"哪些有缺口"。
+    # 这正是它不叫 orphan_tables 的原因:名字要对得上内容,大脑读的就是这个键名。
+    assert snap["vertical_tables"] == [
         {"table": "skydive_segments", "rows": 12, "also_in_video_facts": 12}]
     assert snap["videos_total"] == 100
     assert snap["unindexed_videos"] == 10                 # 100 - 90 有 facts 的
@@ -132,13 +134,13 @@ def test_snapshot_has_the_two_mandatory_fields(monkeypatch):
     assert snap["temporary_uploads_included"] is False
 
 
-def test_orphan_tables_exposes_the_skydive_accident_shape(monkeypatch):
+def test_vertical_tables_exposes_the_skydive_accident_shape(monkeypatch):
     """事故原形:312 行只在 skydive_segments、video_facts 里一条都没有 →
     "库里有跳伞视频吗"走 video_facts.predicate 就被答成"没有"。
     快照必须让这个缺口在【开局第一步】就看得见。"""
     _patch(monkeypatch, _rows(verts=[("skydive_segments", 312, 0)]))
     snap = ls.snapshot()
-    entry = snap["orphan_tables"][0]
+    entry = snap["vertical_tables"][0]
     assert entry == {"table": "skydive_segments", "rows": 312, "also_in_video_facts": 0}
     assert entry["rows"] > entry["also_in_video_facts"], "缺口必须从两个数字上读得出来"
 
@@ -146,7 +148,7 @@ def test_orphan_tables_exposes_the_skydive_accident_shape(monkeypatch):
 def test_empty_vertical_table_costs_no_tokens(monkeypatch):
     """空壳专栏表没有事故面 —— 不占每轮的注入税。"""
     _patch(monkeypatch, _rows(verts=[("skydive_segments", 0, 0)]))
-    assert ls.snapshot()["orphan_tables"] == []
+    assert ls.snapshot()["vertical_tables"] == []
 
 
 def test_category_truncation_reports_how_many_were_omitted(monkeypatch):
@@ -247,7 +249,7 @@ def test_line_is_compact_json_with_a_heading(monkeypatch):
 
 def test_next_vertical_table_is_covered_automatically(monkeypatch):
     """skydive 事故当时的修法是补数据回填,不是补摘要 —— 所以"下一个专栏表还会再犯"。
-    专栏表由 BUSINESS_TABLES 减核心四表推出:新表进白名单就自动被 orphan 检查覆盖,
+    专栏表由 BUSINESS_TABLES 减核心四表推出:新表进白名单就自动被覆盖检查扫到,
     不依赖有人记得回来改 library_state.py。"""
     from pipeline import config
     monkeypatch.setattr(config, "BUSINESS_TABLES",
@@ -256,7 +258,7 @@ def test_next_vertical_table_is_covered_automatically(monkeypatch):
     assert "FROM surfing_segments" in ls.build_sql()
     _patch(monkeypatch, _rows(verts=[("skydive_segments", 12, 12),
                                      ("surfing_segments", 50, 3)]))
-    tables = {e["table"]: e for e in ls.snapshot()["orphan_tables"]}
+    tables = {e["table"]: e for e in ls.snapshot()["vertical_tables"]}
     assert tables["surfing_segments"]["also_in_video_facts"] == 3
 
 

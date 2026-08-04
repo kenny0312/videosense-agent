@@ -13,7 +13,7 @@ video_ids / replay / runtime_facts 是每次都不同的易变段。易变段排
 
 C3 顺序合同(Golden Test 锁的就是这两行,两处【合在一个文件】、不写两套):
 
-    主 loop:  _LOOP_SYSTEM → schema → library_state → runtime_facts → user_memory
+    主 loop:  _LOOP_SYSTEM → schema → library_state → user_memory → runtime_facts
               → task_notice → replay
     子 agent: static prefix → schema → guard notice → video_ids/task
 
@@ -58,11 +58,16 @@ def test_main_loop_prefix_is_identical_up_to_schema_across_requests():
 
 # ── C3 Golden:主 loop 七段【逐位】顺序合同 ───────────────────────────
 def test_main_loop_golden_segment_order():
-    """合同原文:_LOOP_SYSTEM → schema → library_state → runtime_facts → user_memory
+    """合同原文:_LOOP_SYSTEM → schema → library_state → user_memory → runtime_facts
     → task_notice → replay。
 
     每段塞一个唯一哨兵,按它们在成品里的出现位置排序,断言排出来的次序【逐位】等于合同。
-    对调任意相邻两段就红 —— 这正是 A3 那几条性质测试漏掉的那类改动。"""
+    对调任意相邻两段就红 —— 这正是 A3 那几条性质测试漏掉的那类改动。
+
+    2026-08-03 调换 user_memory / runtime_facts:排序尺子是"越稳的越靠前",
+    而 runtime_facts 里带本会话累计 token 与花费,每轮必变;它排在前面时,
+    user_memory 那段每轮都注定 cache miss。下面 `..._is_cached_across_turns`
+    验的就是这次调换真的买到了东西。"""
     from pipeline import loop_driver
     s = loop_driver._loop_system(
         {_SCHEMA_MARK: ["a"]},
@@ -72,7 +77,7 @@ def test_main_loop_golden_segment_order():
         library_state="MARK_G_LIBSTATE",
         user_memory="MARK_G_MEMORY",
     )
-    contract = ["MARK_G_LIBSTATE", "MARK_G_FACTS", "MARK_G_MEMORY",
+    contract = ["MARK_G_LIBSTATE", "MARK_G_MEMORY", "MARK_G_FACTS",
                 "MARK_G_NOTICE", "MARK_G_REPLAY"]
     for m in contract:
         assert m in s, f"{m} 没被注入,这条测试就没在验它想验的东西"
@@ -81,6 +86,34 @@ def test_main_loop_golden_segment_order():
     assert s.index(_SCHEMA_MARK) < min(s.index(m) for m in contract)
     assert sorted(contract, key=s.index) == contract, \
         "主 loop 七段顺序合同被改了(见本文件 docstring 的合同原文)"
+
+
+def test_user_memory_is_cached_across_turns_because_it_precedes_runtime_facts():
+    """验的是【买到的东西】本身,不是顺序这个间接指标。
+
+    同一会话的第二轮:静态前缀、schema、库存快照、用户记忆都没变,变的只有
+    运行时状态(累计 token 每轮都在涨)和回放。那么两轮的公共前缀【必须一路盖过
+    整段用户记忆】—— 盖不过就说明记忆段排在易变段后面,每轮白付一次全价。
+
+    用 800 字符的记忆段:太短的话即使排错了,commonprefix 也可能因为巧合
+    看起来差不多,这条就成了空转的。
+    """
+    from pipeline import loop_driver
+    schema = {_SCHEMA_MARK: ["a"]}
+    mem = "# 用户记忆\n" + "记住我偏好中文回答。" * 80          # ≈800 字符
+    lib = "# 库存快照\n{\"videos_total\":514}"
+    a = loop_driver._loop_system(schema, "第1轮回放",
+                                 "累计 12,345 tokens ≈ $0.0210",
+                                 library_state=lib, user_memory=mem)
+    b = loop_driver._loop_system(schema, "第2轮回放 完全不同",
+                                 "累计 98,765 tokens ≈ $0.1730",
+                                 library_state=lib, user_memory=mem)
+    common = os.path.commonprefix([a, b])
+    assert mem in common, (
+        "两轮的公共前缀没盖住用户记忆段 —— 它排在每轮必变的运行时状态后面了,"
+        "那一段每轮都是 cache miss")
+    assert "累计 12,345" not in common, (
+        "前提检查:两轮的运行时状态必须真的不同,否则这条测试是空转的")
 
 
 def test_main_loop_new_segments_are_keyword_only():

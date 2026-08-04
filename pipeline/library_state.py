@@ -10,7 +10,14 @@
 而"库里有跳伞视频吗"走的是 `video_facts.predicate` —— 于是被答成"没有"
 (事故形状记在 `perception/skydive_schema.py:141-143` 的桥接注释里)。当时的修法是
 【补数据回填】,不是补摘要,所以同形状的下一个专栏表还会再犯一次。
-`orphan_tables` 就是把那次事故做成【每次开局都看得见的一行】。
+`vertical_tables` 就是把那次事故做成【每次开局都看得见的一行】。
+
+字段名【刻意不叫 orphan_tables】(设计稿里的旧名):它列的是【每一张非空的专栏表】,
+连 312 行全都能从 video_facts 查到的那种也在里面。名字叫 orphan、内容却含非 orphan,
+而这个字段名是【大脑直接读到的标签】—— 一张覆盖完好的表顶着"孤儿"的名字进 prompt,
+等于系统亲口告诉它这里有缺口。缺口读的是 rows 与 also_in_video_facts 那两个数,
+不是读表名。全都列出来是【故意的】:skydive 事故的第一层是大脑压根不知道
+`skydive_segments` 这张表存在,只列有缺口的那些就把这层信息又藏回去了。
 
 ## 三条不变量(改本文件前先读)
 
@@ -56,7 +63,7 @@ MAX_CATEGORIES_SHOWN = 12
 
 # 核心表 vs 专栏表:BUSINESS_TABLES 减去这四张核心表 = 专栏(垂直)表。
 # 这样写而不是硬编码 ("skydive_segments",) —— 下一个专栏表进白名单时
-# 自动被 orphan 检查覆盖,不必有人记得回来改这里(skydive 事故正是"没人记得"造成的)。
+# 自动被覆盖检查扫到,不必有人记得回来改这里(skydive 事故正是"没人记得"造成的)。
 CORE_TABLES = ("video_metadata", "video_discovery", "video_facts", "video_fact_instances")
 
 NOTES = [
@@ -157,17 +164,17 @@ def _parse(rows: "list[dict]") -> dict:
     unindexed = (videos_total - with_facts
                  if videos_total is not None and with_facts is not None else None)
 
-    orphan = []
+    verticals = []
     for t in vertical_tables():
         rows_n, join_n = vert.get(t), vjoin.get(t)
         if rows_n is None:
-            unavailable.append(f"orphan_tables.{t}")
+            unavailable.append(f"vertical_tables.{t}")
             continue
         if rows_n <= 0:                       # 空壳表不占 token(它本身就没有事故面)
             continue
-        orphan.append({"table": t, "rows": rows_n, "also_in_video_facts": join_n})
+        verticals.append({"table": t, "rows": rows_n, "also_in_video_facts": join_n})
         if join_n is None:
-            unavailable.append(f"orphan_tables.{t}.also_in_video_facts")
+            unavailable.append(f"vertical_tables.{t}.also_in_video_facts")
 
     coverage = {"title": meta.get("title"), "gcs_uri": meta.get("gcs_uri"),
                 "facts": with_facts}
@@ -188,7 +195,9 @@ def _parse(rows: "list[dict]") -> dict:
         "category_counts": [{"category": c, "videos": n} for c, n in shown],
         "categories_total": len(present),
         "categories_omitted": len(present) - len(shown),
-        "orphan_tables": orphan,
+        # 每张非空专栏表一行:rows 是它自己的行数,also_in_video_facts 是其中
+        # 能从 video_facts 查到的行数。两个数不等 = 差额那批走常规检索看不见。
+        "vertical_tables": verticals,
         "unindexed_videos": unindexed,
         "metadata_coverage": coverage,
         "unavailable_fields": unavailable,

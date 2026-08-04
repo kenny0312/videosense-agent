@@ -1312,8 +1312,17 @@ def _loop_system(schema: dict, replay_context: "str | None",
                  user_memory: "str | None" = None) -> str:
     """运行期拼 system prompt。顺序是【合同】,由 test_prompt_order.py 锁死:
 
-        _LOOP_SYSTEM → schema → library_state → runtime_facts → user_memory
+        _LOOP_SYSTEM → schema → library_state → user_memory → runtime_facts
         → task_notice → replay
+
+    排序依据只有一条:【越稳的越靠前】。隐式缓存逐字符从头比,第一个不同的
+    字符之后全部作废,所以易变段每往前挪一位,就把它后面那些本来能命中的
+    内容一起拖下水。按这条尺子:
+      · library_state 走 45s TTL,连发多轮基本字节相同;
+      · user_memory 只在用户让它记东西时才变,大多数轮次原样;
+      · runtime_facts 里有【本会话累计 token 与花费】—— 每轮必变,是这几段里
+        唯一保证不同的一段。所以它必须排在 user_memory 【之后】:
+        原来排在前面时,user_memory 那段每轮都白付一次全价(2026-08-03 调换)。
 
     C3:library_state / user_memory 两个新参【keyword-only】。
     · user_memory 以前由 orchestrator 拼进 runtime_facts 再传进来 —— 两样不同的
@@ -1325,12 +1334,12 @@ def _loop_system(schema: dict, replay_context: "str | None",
       缓存前缀,而库存快照每个请求都可能不同,进去就是每轮 cache miss。
     """
     s = _LOOP_SYSTEM + "\n# 数据库结构\n" + json.dumps(schema, ensure_ascii=False)
-    if library_state:                                     # C1:库存快照(TTL 缓存,比运行时状态稳)
+    if library_state:                                     # C1:库存快照(45s TTL,多轮内基本不变)
         s += "\n\n" + library_state
-    if runtime_facts:                                     # U3:运行时状态(自我认知)
-        s += "\n\n" + runtime_facts
-    if user_memory:                                       # L2:跨会话用户记忆(owner 作用域)
+    if user_memory:                                       # L2:跨会话用户记忆(只在写记忆时变)
         s += "\n\n" + user_memory
+    if runtime_facts:                                     # U3:运行时状态 —— 含累计用量,每轮必变
+        s += "\n\n" + runtime_facts
     if task_notice:                                       # S-9:后台任务完成通知(一行)
         s += "\n\n" + task_notice
     if replay_context:                                    # M5:transcript 回放(取代 recipe 块)
