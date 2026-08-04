@@ -171,9 +171,40 @@ def category_accuracy(per_video: dict, gold: dict, vocab: list) -> float:
     return ok / len(gold_pv)
 
 
+def _span_hit(ps: float, pe: float, gs: float, ge: float) -> bool:
+    """一条 pred 时段对一条 gold 时段的判定(批 5-A 的 R_min 判据)。
+
+    长度帽在最外层:`pred 长度 ≤ max(60, 2×gold 长度)`。没有它,旧判据的
+    |Δstart|≤10 分支对超宽区间不设防 —— dp-main 实测 (gs-1, 300) 这种"从头圈到尾"
+    的攻击 20/20 白过、(0, 300) 12/20 白过;而现有 77 个真 OK 里 0 个超过 60s,
+    两个 split 的 gold 时段 0 个超过 55s → 封顶对真实数据零误伤。
+    取 max(60, 2×gold) 而不是硬 60:哪天出现 55s 的长动作 gold,一条 62s 的
+    诚实 pred 不该死在帽上;对 1-2s 的短 gold(占大头),帽仍然是 60。
+
+    三个"算对"分支:
+      |Δstart|≤10  —— 起点找准了(1-2s 的短 gold 基本只能靠这条)
+      IoU≥0.3      —— 区间重叠够大
+      pred ⊆ gold  —— 【5-A 补的洞】agent 指了正确活动里的一个瞬间。
+                       dp-main 实测 (29,31) ⊂ gold(0,32) 被旧判据判 0:
+                       IoU=0.06、Δstart=29,可它指的就是这段动作 —— 冤案。
+    """
+    if (pe - ps) > max(60.0, 2.0 * (ge - gs)):
+        return False
+    inter = max(0.0, min(pe, ge) - max(ps, gs))
+    union = max(pe, ge) - min(ps, gs)
+    iou = inter / union if union > 0 else 0.0
+    inside = ps >= gs and pe <= ge and pe > ps
+    return abs(ps - gs) <= 10.0 or iou >= 0.3 or inside
+
+
 def localization_score(per_video: dict, gold_loc: dict) -> "float | None":
-    """T2 定位:每个有 gold 时段的视频,|Δstart|≤10s 或 IoU≥0.3 → 1。
-    gold 预标未完成(status != labeled)→ 返回 None =【拒算】,调用方必须区别对待。"""
+    """T2 定位:每个有 gold 时段的视频,pred 命中【任一条】gold 时段 → 1(判据见 _span_hit)。
+    gold 预标未完成(status != labeled)→ 返回 None =【拒算】,调用方必须区别对待。
+
+    spans[vid] 兼容两种形状:单 dict(既有 gold 原样)或 dict 列表(批 5-B 起,
+    多实例视频 —— 同一动作在片里发生多次,gold 单时段会把"挑了另一次真实时刻"
+    判成错;dp-main 的 18 个 FAR_OFF 里 9-11 个是这形状)。取最优匹配 = 命中任一条即对。
+    """
     if (gold_loc or {}).get("status") != "labeled":
         return None
     spans = gold_loc.get("spans") or {}
@@ -184,14 +215,16 @@ def localization_score(per_video: dict, gold_loc: dict) -> "float | None":
         got = per_video.get(vid) or {}
         try:
             ps, pe = float(got.get("start_ts")), float(got.get("end_ts"))
-            gs, ge = float(g["start_ts"]), float(g["end_ts"])
-        except (TypeError, ValueError, KeyError):
+        except (TypeError, ValueError):
             continue
-        inter = max(0.0, min(pe, ge) - max(ps, gs))
-        union = max(pe, ge) - min(ps, gs)
-        iou = inter / union if union > 0 else 0.0
-        if abs(ps - gs) <= 10.0 or iou >= 0.3:
-            ok += 1
+        for one in (g if isinstance(g, list) else [g]):
+            try:
+                gs, ge = float(one["start_ts"]), float(one["end_ts"])
+            except (TypeError, ValueError, KeyError):
+                continue
+            if _span_hit(ps, pe, gs, ge):
+                ok += 1
+                break
     return ok / len(spans)
 
 

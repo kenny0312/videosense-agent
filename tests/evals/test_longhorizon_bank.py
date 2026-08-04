@@ -180,6 +180,66 @@ def test_localization_refuses_without_gold():
     assert S.localization_score(got, gold) == pytest.approx(0.5)
 
 
+def test_localization_wide_span_attack_is_dead():
+    """批 5-A 封的洞:旧判据的 |Δstart|≤10 分支对超宽区间不设防。
+
+    dp-main 实测:对 20 条 gold 时段构造 (gs-1, 300) —— "从 gold 前一秒圈到片尾" ——
+    旧判据 20/20 白过;(0, 300) 全片区间 12/20 白过。这不是理论攻击:agent 只要学会
+    "给个大区间总没错",定位轴就测不出任何东西。新判据加长度帽 max(60, 2×gold长度),
+    这两族攻击必须全灭,而现有 77 个真 OK(0 个超 60s)零反转 —— 那一半由
+    离线重判的对照报告守着,这里守攻击面。
+    """
+    gold = {"status": "labeled",
+            "spans": {"v1": {"start_ts": 101.4, "end_ts": 103.2}}}   # 真实 gold 形状:1.8s
+    assert S.localization_score({"v1": {"start_ts": 100.4, "end_ts": 300.0}}, gold) == 0.0, \
+        "(gs-1, 300) 攻击还能白过 —— 长度帽没起作用"
+    assert S.localization_score({"v1": {"start_ts": 0.0, "end_ts": 300.0}}, gold) == 0.0, \
+        "(0, 300) 全片区间还能白过"
+    # 同样起点、诚实长度 → 必须仍然对(帽不能连正常答案一起杀)
+    assert S.localization_score({"v1": {"start_ts": 100.4, "end_ts": 106.0}}, gold) == 1.0
+
+
+def test_localization_pred_inside_gold_is_a_hit_now():
+    """批 5-A 翻的冤案:agent 指了正确活动里的一个瞬间,旧判据判 0。
+
+    dp-main 实案 v_aLv03Fznf5A:pred (29,31) ⊂ gold (0,32),IoU=0.06、Δstart=29,
+    两个跑次都被判 FAR_OFF —— 可它指的就是这段动作。pred 完全落在 gold 内 = 对。
+    """
+    gold = {"status": "labeled", "spans": {"v1": {"start_ts": 0.0, "end_ts": 32.0}}}
+    assert S.localization_score({"v1": {"start_ts": 29.0, "end_ts": 31.0}}, gold) == 1.0
+    # 零长度 pred 不算"落在内部"(end<=start 是坏数据,不是瞬间)
+    assert S.localization_score({"v1": {"start_ts": 29.0, "end_ts": 29.0}}, gold) == 0.0
+
+
+def test_localization_multi_span_gold_takes_best_match():
+    """批 5-B 的多实例 gold:同一动作在片里发生多次,spans[vid] 是列表,命中任一条即对。
+
+    dp-main 的 18 个 FAR_OFF 里 9-11 个是"挑了另一次真实时刻"——gold 单时段把
+    真实答案判成错。列表形状落地在先(5-A),gold 内容等核验闸过了才进(5-B)。
+    单 dict(既有 gold)必须原样兼容 —— 两种形状同一函数,不搞两套。
+    """
+    gold = {"status": "labeled",
+            "spans": {"v1": [{"start_ts": 16.0, "end_ts": 26.0},
+                             {"start_ts": 104.0, "end_ts": 114.0}]}}
+    assert S.localization_score({"v1": {"start_ts": 17.0, "end_ts": 25.0}}, gold) == 1.0, \
+        "挑了第一次真实时刻,该对"
+    assert S.localization_score({"v1": {"start_ts": 105.0, "end_ts": 113.0}}, gold) == 1.0, \
+        "挑了第二次真实时刻,也该对"
+    assert S.localization_score({"v1": {"start_ts": 60.0, "end_ts": 70.0}}, gold) == 0.0, \
+        "两次都没挑中,该错"
+
+
+def test_localization_length_cap_scales_with_wide_gold():
+    """帽是 max(60, 2×gold长度),不是硬 60:哪天出现 55s 的长动作 gold,
+    一条 62s 的诚实 pred 不该死在帽上;对短 gold 帽仍是 60(攻击面不回开)。"""
+    wide = {"status": "labeled", "spans": {"v1": {"start_ts": 10.0, "end_ts": 65.0}}}  # 55s
+    assert S.localization_score({"v1": {"start_ts": 8.0, "end_ts": 70.0}}, wide) == 1.0, \
+        "62s pred 对 55s gold(帽=110)被误杀了"
+    short = {"status": "labeled", "spans": {"v1": {"start_ts": 100.0, "end_ts": 102.0}}}
+    assert S.localization_score({"v1": {"start_ts": 99.0, "end_ts": 180.0}}, short) == 0.0, \
+        "短 gold 的帽必须还是 60 —— 81s 的圈地又能过了"
+
+
 def test_probe_scoring_zero_on_fabrication():
     ok = S.probe_score([], "库里没有浮潜相关的视频。")
     assert ok["score"] == 1.0 and ok["abstain_language"]
