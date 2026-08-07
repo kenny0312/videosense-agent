@@ -53,28 +53,40 @@ def _ok_exec(*a, **k):
     return LD.ExecResult(ok=True, value=[{"v": 1}], preview=[{"v": 1}], n=1)
 
 
-def test_last_n_steps_only_offer_show_video():
-    """烧到墙的跑次:最后 2 步的 generate 必须带 allowed_tools=('show_video',),之前不带。"""
+def test_last_n_steps_only_offer_delivery_tools():
+    """烧到墙的跑次:最后 2 步的 generate 必须带 allowed_tools=交付工具族,之前不带。
+
+    白名单是【族】不是单个 show_video:收窄砍的是探查工具(sql/semantic/analyze),
+    不是交付通道 —— 生产的表格/统计类长请求末步同样要交付(review 抓的波及面)。
+    """
     conv = _NarrowAwareConv()
     r = LD.run_loop("q", conv, _ok_exec, max_steps=8, narrow_last=2)
     assert r.terminated == "max_steps"
-    narrowed = [i for i, (_, a) in enumerate(conv.sent) if a == ("show_video",)]
+    narrowed = [i for i, (_, a) in enumerate(conv.sent) if a == LD.NARROW_DELIVERY_TOOLS]
     plain = [i for i, (_, a) in enumerate(conv.sent) if a is None]
     assert narrowed, "一步都没收窄 —— 机制没接上"
     assert all(i >= len(conv.sent) - 2 for i in narrowed), (
         f"收窄发生在倒数第 3 步之前:{narrowed}(总 {len(conv.sent)} 步)—— 收早了是抢大脑的活")
     assert plain and max(plain) < min(narrowed), "收窄前的步子也被收了"
+    assert "show_table" in LD.NARROW_DELIVERY_TOOLS and "show_stat" in LD.NARROW_DELIVERY_TOOLS, \
+        "交付族缺表格/统计 —— 生产末步的表格交付通道又被收走了"
 
 
-def test_narrow_label_note_fires_exactly_once():
-    """机制要配标签:大脑得知道工具是系统收走的。只发一次,别每步都念。"""
+def test_narrow_label_note_fires_exactly_once_and_in_sync():
+    """机制要配标签,且标签必须与首个收窄步【同一步】生效 —— 先收工具、下一步才解释,
+    大脑中间那步会懵。
+
+    (第一版的同步断言是 `x == y or x >= 1` 的恒真式 —— review 变异实测 9/9 全绿。
+    现在钉死:max_steps=8、narrow_last=2 → 首个收窄步 = 第 6 步,标签也必须在第 6 步。)
+    """
     conv = _NarrowAwareConv()
     r = LD.run_loop("q", conv, _ok_exec, max_steps=8, narrow_last=2)
     notes = [t for t in r.turns if "工具面已收窄" in str(t.get("nudge", ""))]
     assert len(notes) == 1, f"标签行发了 {len(notes)} 次"
-    # 标签和收窄必须同一步生效 —— 先收走工具、下一步才解释,大脑中间那步会懵
-    first_narrow_step = len(conv.sent) - sum(1 for _, a in conv.sent if a is not None)
-    assert notes[0]["step"] == first_narrow_step + 1 or notes[0]["step"] >= 1
+    first_narrow_idx = min(i for i, (_, a) in enumerate(conv.sent) if a is not None)
+    assert first_narrow_idx == 6, f"前提:8 步窗 2,首个收窄步应是第 6 步,实际 {first_narrow_idx}"
+    assert notes[0]["step"] == 6, (
+        f"标签在第 {notes[0]['step']} 步、收窄在第 6 步 —— 不同步,大脑有一步看着工具消失没人解释")
 
 
 def test_subagent_style_opt_out_disables_narrowing():
@@ -118,6 +130,49 @@ def test_genai_backend_declares_the_capability():
     """能力声明是机制的开关面:GenAIConversation 必须带 supports_narrowing=True,
     哪天有人重构丢了它,收窄会静默失效(run_loop 只认这个属性),这里要红。"""
     assert getattr(LD.GenAIConversation, "supports_narrowing", False) is True
+
+
+def test_narrowed_step_blocks_execution_of_revoked_tools():
+    """执行层背书(review 的 HIGH):genai 对声明集不做硬约束 —— 模型凭规划惯性照吐
+    sql_query 时,只收声明等于没收。收窄步里非交付工具的调用必须【不执行】:
+    execute 闭包一次都不被调,错误回灌带收窄说明,error_code=NARROW_BLOCKED 供验尸。
+    """
+    calls_seen = []
+
+    def _spy_exec(cid, name, inputs, upstream, uses):
+        calls_seen.append(name)
+        return LD.ExecResult(ok=True, value=[{"v": 1}], preview=[{"v": 1}], n=1)
+
+    conv = _NarrowAwareConv()          # 无视收窄、一直吐 sql_query —— 正是要治的行为
+    r = LD.run_loop("q", conv, _spy_exec, max_steps=8, narrow_last=2)
+    n_narrowed = sum(1 for _, a in conv.sent if a is not None)
+    assert n_narrowed >= 1
+    # 收窄步的 sql_query 一次都不许真执行
+    assert len(calls_seen) == len(conv.sent) - n_narrowed, (
+        f"收窄步的被收工具照样执行了:执行 {len(calls_seen)} 次,"
+        f"应为 {len(conv.sent) - n_narrowed}(非收窄步数)—— 声明层收窄被静默绕穿")
+    blocked = [t for t in r.trace if t.get("error_code") == "NARROW_BLOCKED"]
+    assert blocked, "被拦的调用在 trace 里无迹可寻 —— 验尸分不清'服软'与'硬闯被拦'"
+    assert all(not t["ok"] for t in blocked)
+
+
+def test_narrowed_step_still_executes_delivery_tools():
+    """背书只拦探查工具:收窄步里的 show_video / show_table 必须照常执行。"""
+    calls_seen = []
+
+    def _spy_exec(cid, name, inputs, upstream, uses):
+        calls_seen.append(name)
+        return LD.ExecResult(ok=True, value=[{"v": 1}], preview=[{"v": 1}], n=1)
+
+    class _Conv(_NarrowAwareConv):
+        def send(self, msg, *, allowed_tools=None):
+            self.sent.append((msg, allowed_tools))
+            if allowed_tools is not None:
+                return [LD.Call("show_video", {"video_ids": ["v001"]}, [])], None
+            return [LD.Call("sql_query", {"sql": "SELECT 1"}, [])], None
+
+    LD.run_loop("q", _Conv(), _spy_exec, max_steps=6, narrow_last=2)
+    assert "show_video" in calls_seen, "收窄步的交付工具也被拦了 —— 把交付通道砍了机制就成了纯惩罚"
 
 
 def test_text_collapse_still_possible_under_narrowing():

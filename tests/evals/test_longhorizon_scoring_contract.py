@@ -373,3 +373,15 @@ def test_gate_runner_masks_by_gold_video_ids_not_predicate(monkeypatch):
 
     R._set_env("A", {**item, "ts_mask": False}, rep=1)
     assert os.environ["GATE_TS_MASK_VIDEO_IDS"] == ""
+
+
+def test_batch6_treatment_variable_is_pinned_in_common_env():
+    """批 6 的处理变量必须钉死在跑机的 COMMON_ENV 里,不许靠壳环境默认值活着。
+
+    review 抓的:调 parity 时壳里 export 过 RUNWAY_NARROW_LEFT=0 的残留会让整批
+    静默变成安慰剂 —— $5.3 花完得出"机制无效"的假结论,事后只能人工翻 turns 才发现。
+    """
+    from evals.longhorizon_run import COMMON_ENV
+
+    assert COMMON_ENV.get("RUNWAY_NARROW_LEFT") == "2", (
+        "跑机没钉本批的处理变量 —— 壳残留可以让整批变安慰剂")

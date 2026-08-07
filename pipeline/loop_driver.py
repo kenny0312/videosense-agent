@@ -501,13 +501,14 @@ def run_loop(user_query: str, conversation, execute: Callable, *,
         narrowing = can_narrow and step > 0 and (max_steps - step) <= narrow_last
         if narrowing and not narrow_noted:
             narrow_noted = True
-            note = (f"[系统] 跑道最后 {max_steps - step} 步:工具面已收窄,只剩 show_video。"
-                    "把已确认符合条件的视频摆出来;摆完直接写最终答案,"
-                    "没核实的部分在答案里标【未核查】。")
+            note = (f"[系统] 跑道最后 {max_steps - step} 步:工具面已收窄,只剩交付工具"
+                    "(show_video / show_table / show_stat)。把已确认符合条件的结果交付出来"
+                    " —— 要摆的视频超过 8 个就在【同一步】并行发多次 show_video,一次全摆完;"
+                    "交付完直接写最终答案,没核实的部分标【未核查】。")
             msg = _attach_envelope(msg, note)
             turns.append({"step": step, "nudge": note})
         try:
-            calls, text = (conversation.send(msg, allowed_tools=("show_video",))
+            calls, text = (conversation.send(msg, allowed_tools=NARROW_DELIVERY_TOOLS)
                            if narrowing else conversation.send(msg))
         finally:
             if reserved:                     # 异常也要释放在飞预留(实测已由 add_usage 落账)
@@ -594,6 +595,17 @@ def run_loop(user_query: str, conversation, execute: Callable, *,
                 # 失败模式(坏 JSON / 429 / GCS 权限)正好接到了这条没补的绳子上。
                 return LoopResult(REPEAT_ANSWER, step, "repeat", trace, ledger, llm_calls,
                                   step_walls, turns)
+            # 批 6 执行层背书:收窄不能只靠声明 —— genai 对声明集【不做硬约束】,模型凭
+            # 规划惯性照吐 sql_query 时,声明层收窄被静默绕穿(review 用真 run_loop 复现:
+            # 收窄步的 sql_query 原样执行、无任何痕迹)。而"无视收口指令的惯性"正是本机制
+            # 要治、已被 4/4 跑次证实的行为。走 A2 preflight 同款路径:不执行、错误回灌、
+            # function_response 与 function_call 配对(协议合法),error_code 供验尸分辨
+            # "模型服软"与"模型硬闯被拦"。
+            if narrowing and call.name not in NARROW_DELIVERY_TOOLS:
+                preflight[cid] = ExecResult(ok=False, error_code=_ERR_NARROW_BLOCKED,
+                                            stderr=_NARROW_BLOCKED_NOTE)
+                prepared.append((cid, call, sig, {}))
+                continue
             # A2:引用了本轮账本里没有的 result_id → 硬失败(旧写法静默丢弃,工具照跑,
             # 于是"按那批视频回答"悄悄变成"对着空数据回答")。不执行,直接判失败回灌。
             missing = [u for u in call.uses if u not in ledger]
@@ -647,7 +659,10 @@ def run_loop(user_query: str, conversation, execute: Callable, *,
             # 字符串("c{轮}_{i}" 切片)倒推轮号 —— id 的格式一变(A2 加了请求前缀)整列就错。
             trace.append({"cid": cid, "tool": call.name, "inputs": call.inputs,
                           "uses": call.uses, "ok": res.ok, "turn": step,
-                          "ms": round(res.ms, 1), "cache_hit": res.cache_hit})
+                          "ms": round(res.ms, 1), "cache_hit": res.cache_hit,
+                          # 批 6:错误码进 trace(空串省略靠消费方 get 兜底)。没有它,
+                          # "收窄步模型硬闯被拦"在跑批数据里无迹可寻,验尸只能人工对表。
+                          "error_code": res.error_code or ""})
             step_tools.append({"tool": call.name, "cid": cid, "ok": res.ok})
             if res.ok:
                 payload = {"result_id": cid, "preview": res.preview, "n": res.n}
@@ -800,6 +815,20 @@ class GeminiConversation:
 
 
 # ── U5:google-genai 后端(gemini-3.x 起【只】在新 SDK + global 端点可用;spike 已验函数调用往返)──
+# 批 6:收窄白名单 = 【交付工具族】,不是只有 show_video。收窄的设计意图是砍探查工具
+# (sql/semantic/analyze/web),不是砍交付通道 —— 生产的表格/统计/图表类长请求在末步
+# 同样要交付,只留 show_video 会把 show_table/show_stat/plot 的交付通道一并收走
+# (review 实测:系统提示自己教的就是"需要展示视频/表格就先调对应的 show_ 工具")。
+NARROW_DELIVERY_TOOLS = ("show_video", "show_table", "show_stat", "plot")
+
+_ERR_NARROW_BLOCKED = "NARROW_BLOCKED"
+
+_NARROW_BLOCKED_NOTE = (
+    "[系统] 跑道末步工具面已收窄:这一步只能用交付工具(show_video/show_table/show_stat/plot)"
+    "或直接用文字写最终答案 —— 该调用【没有执行】。把已确认的交付出来,然后作答;"
+    "没核实的部分在答案里标【未核查】。")
+
+
 def _filter_decls(declarations: "list[dict]", allowed: "tuple[str, ...]") -> "list[dict]":
     """按名过滤工具声明(批 6 末步收窄用;纯函数)。
 

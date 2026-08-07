@@ -41,6 +41,9 @@ ARMS = {
 }
 # 三臂共同的控制变量(每题跑前重设,防上一题的残留)
 COMMON_ENV = {
+    # 批 6:本批测的就是这个变量 —— 必须钉死,不许靠壳环境的默认值活着
+    # (review:调 parity 时壳里 export 过 0 的残留会让整批静默变成安慰剂)。
+    "RUNWAY_NARROW_LEFT": "2",
     "USE_WEB_SEARCH": "0",
     "USE_IN_VIDEO_SEARCH": "1",          # 三臂同开(§3.3)
     "USE_SEMANTIC_SEARCH": "1",
@@ -244,6 +247,11 @@ def run_one(item: dict, arm: str, rep: int, owner: str = "gate-eval") -> dict:
         rec["terminated"] = lo.terminated
         rec["steps"] = lo.steps
         rec["tools"] = [s.get("tool") for s in (lo.trace or [])]
+        # 批 6:每行数据自证处理条件(narrow 值)+ 被执行层背书拦下的次数(验尸分辨
+        # "模型服软"与"硬闯被拦",不用人工对表)。
+        rec["narrow_left"] = os.environ.get("RUNWAY_NARROW_LEFT", "")
+        rec["narrow_blocked"] = sum(
+            1 for s in (lo.trace or []) if s.get("error_code") == "NARROW_BLOCKED")
         # 大脑原话(思考摘要):验尸时要能看出"它为什么这么决定"。
         # 【全量记录,不截断】—— 第一版只存前 6 轮 × 600 字,结果验尸时发现关键决策
         # (拆分发生在第 5 步、跑道提醒发在第 12 步)全在截断之外,看不到。
