@@ -49,11 +49,23 @@ def _injection_params() -> list[str]:
             if p.default is not inspect.Parameter.empty]
 
 
+# 函数名 → 它定义在哪个模块(位置实参折算要查签名)。加新入口先在这里登记。
+_FN_MODULE = {
+    "_loop_system": "pipeline.loop_driver",
+    "run_loop": "pipeline.loop_driver",
+    "_make_executor": "pipeline.loop_driver",
+    "runtime_facts_line": "pipeline.loop_driver",
+    "build_loop_context": "pipeline.loop_memory",
+    "record_loop_turn": "pipeline.loop_memory",
+}
+
+
 def _param_names(fn_name: str) -> list[str]:
     """被调函数的形参名(用来把位置实参也折算成参数名)。"""
-    from pipeline import loop_driver
+    import importlib
 
-    return list(inspect.signature(getattr(loop_driver, fn_name)).parameters)
+    mod = importlib.import_module(_FN_MODULE[fn_name])
+    return list(inspect.signature(getattr(mod, fn_name)).parameters)
 
 
 def _kwargs_passed_at(path: str, fn_name: str = "_loop_system") -> set[str]:
@@ -86,7 +98,14 @@ PROD_SITE = {
     "run_loop": "pipeline/loop_driver.py",            # 同上
     "_make_executor": "pipeline/loop_driver.py",      # 同上
     "runtime_facts_line": "pipeline/orchestrator.py",
+    # T1 修复(多轮记忆走生产同款回放)后,多轮车道也调这两个 —— 一并纳入 ⊇ 规则。
+    # 只对多轮车道生效(单轮一题一请求,没有跨轮记忆可回放),见 _SESSION_ONLY。
+    "build_loop_context": "pipeline/orchestrator.py",
+    "record_loop_turn": "pipeline/orchestrator.py",
 }
+
+# 只有多轮车道才该调的入口(单轮车道没有跨轮记忆,不调不算漂移)。
+_SESSION_ONLY = {"build_loop_context", "record_loop_turn"}
 
 # 允许评测不传的参 —— 每一条都要写清【为什么它不影响"考的是不是同一个系统"】。
 # 加一条就是一次明知故犯,不是随手放行。
@@ -125,6 +144,8 @@ def test_eval_passes_at_least_what_production_passes(fn_name, prod_path, eval_pa
     这条替代了"每加一个入口就再写一条测试"。它盯的不是某个具体参数,
     而是【生产开始传而评测没跟上】这个形状本身 —— 那正是长了七次的那个坑。
     """
+    if fn_name in _SESSION_ONLY and eval_path != "evals/session.py":
+        pytest.skip("单轮车道没有跨轮记忆,不调回放入口不算漂移")
     prod = _kwargs_passed_at(prod_path, fn_name)
     assert prod, (f"{prod_path} 里没找到 {fn_name}(...) 调用 —— "
                   "生产侧的落点挪了,PROD_SITE 要跟着改,否则这条是空转的")
