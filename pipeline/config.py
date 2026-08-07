@@ -235,6 +235,14 @@ USE_BOUNDED_SQL = os.environ.get("USE_BOUNDED_SQL", "0").lower() in ("1", "true"
 # 这个 bug 一直在,只是 A4 之前被伪装成了"看过了、结论是看不清"的失败信封(假成功)。
 ANALYZE_MAX_OUTPUT_TOKENS = int(os.environ.get("ANALYZE_MAX_OUTPUT_TOKENS", "8192"))
 
+# ── 批 6:跑道末步工具面收窄(机制,非话术)────────────────────────────
+# 主循环最后 N 步,发给大脑的工具声明只剩 show_video(文本收口始终可用)。
+# 为什么是机制:nudge 文案两版、两次跑批(dp-main / 5d-newbase)各 4 个跑次
+# 在收到"硬顺序"提醒后照样烧查询到死 —— 大脑在规划惯性里不执行收口指令,
+# 措辞救不了,只能把别的工具从声明面上拿走。0 = 关(行为与批 6 之前逐字节一致);
+# 子 agent 豁免(subagents 显式传 narrow_last=0:它的交付物是文本证据,不是 show_video)。
+RUNWAY_NARROW_LEFT = int(os.environ.get("RUNWAY_NARROW_LEFT", "2"))
+
 # ── C6 ToolEvent:工具调用事件流(内部观测)────────────────────────────
 # "shadow"(默认)= 算出来只写 DEBUG 日志,不影响任何行为;"1"/"on" = 同时写 INFO。
 # 【永远不进 prompt】—— 它是给事后 triage / 完整率核对用的,不是给大脑读的。

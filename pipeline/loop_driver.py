@@ -422,13 +422,21 @@ def _soft_note(note: str) -> "ExecResult":
 def run_loop(user_query: str, conversation, execute: Callable, *,
              max_steps: int | None = None, repeat_limit: int | None = None,
              on_step=None, critic=None, max_critic: int | None = None,
-             guard=None, req_short: str = "") -> LoopResult:
+             guard=None, req_short: str = "",
+             narrow_last: "int | None" = None) -> LoopResult:
     """req_short(A2):本请求的 8 位短串,拼进 result_id 前缀,让【上一轮的 id】一眼可辨、
     不再与本轮的 c{step}_{i} 撞号。带默认值的 keyword 形参 = run_loop 仍是【纯控制流】
-    (不生成 id、不读环境、离线可测);空串 = 不加前缀,与升级前逐字节一致。"""
+    (不生成 id、不读环境、离线可测);空串 = 不加前缀,与升级前逐字节一致。
+
+    narrow_last(批 6):最后 N 步把工具声明面收窄到只剩 show_video(机制,非话术 ——
+    nudge 文案两版两跑证伪:4/4 收到硬顺序照样烧查询到死)。None = 用
+    config.RUNWAY_NARROW_LEFT;0 = 关(子 agent 传 0:它的交付物是文本证据)。
+    只对声明了 supports_narrowing 的 conversation 生效 —— 测试替身/旧后端不受影响。"""
     max_steps = config.MAX_LOOP_STEPS if max_steps is None else max_steps
     repeat_limit = config.LOOP_REPEAT_LIMIT if repeat_limit is None else repeat_limit
     max_critic = config.SELF_CHECK_MAX_ROUNDS if max_critic is None else max_critic
+    narrow_last = config.RUNWAY_NARROW_LEFT if narrow_last is None else narrow_last
+    can_narrow = bool(narrow_last) and getattr(conversation, "supports_narrowing", False)
     ledger: dict[str, ExecResult] = {}
     trace: list[dict] = []
     seen: dict = {}
@@ -442,6 +450,7 @@ def run_loop(user_query: str, conversation, execute: Callable, *,
     steps_after_trip = 0                     # 触闸后的宽限步数(有界,防继续空转烧钱)
     envelope_seen = False                    # 收口信封是否已进过【本】conversation
     runway_warned = False                    # 跑道将尽提醒只发一次
+    narrow_noted = False                     # 批 6:收窄的标签行只发一次(机制要配说明,否则大脑只看到工具消失)
     quota_told = 0                           # C4:上次【告诉过大脑】的 analyze 已用数。
     #   从 0 起而不是 None:整轮一次 analyze 都没有的请求(大多数)一个字都不该多花。
     #   之后只在数字【变了】或本步真有 analyze 时才复述 —— 同一个数每步念一遍是纯浪费,
@@ -486,8 +495,20 @@ def run_loop(user_query: str, conversation, execute: Callable, *,
             note = _runway_note(step, max_steps)
             msg = _attach_envelope(msg, note)
             turns.append({"step": step, "nudge": note})
+        # 批 6 末步收窄:最后 narrow_last 步,这一次 generate 的工具面只剩 show_video
+        # (文本收口始终可用 —— 收窄逼的是"要么摆、要么答",不是逼调用)。
+        # 标签行只发一次:大脑得知道工具是【系统收走的】,不是自己看错了声明。
+        narrowing = can_narrow and step > 0 and (max_steps - step) <= narrow_last
+        if narrowing and not narrow_noted:
+            narrow_noted = True
+            note = (f"[系统] 跑道最后 {max_steps - step} 步:工具面已收窄,只剩 show_video。"
+                    "把已确认符合条件的视频摆出来;摆完直接写最终答案,"
+                    "没核实的部分在答案里标【未核查】。")
+            msg = _attach_envelope(msg, note)
+            turns.append({"step": step, "nudge": note})
         try:
-            calls, text = conversation.send(msg)
+            calls, text = (conversation.send(msg, allowed_tools=("show_video",))
+                           if narrowing else conversation.send(msg))
         finally:
             if reserved:                     # 异常也要释放在飞预留(实测已由 add_usage 落账)
                 guard.settle()
@@ -779,9 +800,22 @@ class GeminiConversation:
 
 
 # ── U5:google-genai 后端(gemini-3.x 起【只】在新 SDK + global 端点可用;spike 已验函数调用往返)──
+def _filter_decls(declarations: "list[dict]", allowed: "tuple[str, ...]") -> "list[dict]":
+    """按名过滤工具声明(批 6 末步收窄用;纯函数)。
+
+    过滤出来是空的 → 返回【原声明】(fail-open):收窄的目的是逼收口,
+    不是把大脑的手全捆上 —— allowed 里的工具不在声明里(比如 show_video 被上游
+    按 owner/sandbox 过滤掉了)时,宁可这一步不收窄,也不能发一个零工具请求。
+    """
+    kept = [d for d in declarations if d.get("name") in allowed]
+    return kept or declarations
+
+
 class GenAIConversation:
     """google-genai 后端;接口与 GeminiConversation 完全一致(send(msg)->(calls,text))。
     声明沿用原生 dict(spike 验过 genai 接受);usage_metadata 字段名与旧 SDK 相同,add_usage 直用。"""
+    supports_narrowing = True    # 批 6:send 接受 allowed_tools(其他后端没有此能力,run_loop 按此判)
+
     def __init__(self, model_name: str, declarations: list[dict], system: str,
                  image: "tuple[bytes, str] | None" = None):
         from google.genai import types
@@ -798,11 +832,27 @@ class GenAIConversation:
             thinking_config=think)
         self._chat = get_client().chats.create(model=model_name, config=cfg)
         self._model_name = model_name
+        self._decls = declarations           # 批 6:收窄时按名过滤用
+        self._system = system
+        self._think = think
         self.tokens = 0
         self.last_thoughts = ""              # 最近一轮的思考摘要(send() 每轮覆写)
         self._pending_image = image          # (bytes, mime):粘贴的截图,首轮附在用户消息里
 
-    def send(self, msg):
+    def _narrowed_config(self, allowed: "tuple[str, ...]"):
+        """一次性 config:与会话 config 逐项相同,只有工具面被过滤。
+
+        genai 的 send_message(config=...) 是【整体替换】不是合并
+        (chats.Chat 源码:`config=config if config else self._config`)——
+        所以 system/温度/思考配置必须原样重带,漏一项就是静默改行为。
+        """
+        t = self._types
+        return t.GenerateContentConfig(
+            temperature=0.0, system_instruction=self._system,
+            tools=[t.Tool(function_declarations=_filter_decls(self._decls, allowed))],
+            thinking_config=self._think)
+
+    def send(self, msg, *, allowed_tools: "tuple[str, ...] | None" = None):
         from pipeline.agentops import usage
         t = self._types
         if isinstance(msg, str):
@@ -813,7 +863,9 @@ class GenAIConversation:
                 self._pending_image = None        # 只附一次(图属于这一轮)
         else:
             payload = [t.Part.from_function_response(name=n, response=r) for n, r in msg]
-        resp = _send_with_retry(lambda: self._chat.send_message(payload))
+        cfg = self._narrowed_config(allowed_tools) if allowed_tools else None
+        resp = _send_with_retry(lambda: self._chat.send_message(payload, config=cfg)
+                                if cfg is not None else self._chat.send_message(payload))
         try:
             self.tokens += resp.usage_metadata.total_token_count
             usage.add_usage(resp, self._model_name)

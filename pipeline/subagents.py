@@ -248,8 +248,11 @@ def _run_one(task: dict, *, execute, sandbox, trace, schema, session_id, owner,
         # P0-3:子 agent 的 mini-loop 也要过每步 generate 闸 —— 否则一个进入 Trap 的子 agent
         # 可以在闸外只思考不调工具地烧钱。guard 从父 execute 闭包上取(全树一本账);
         # 取不到(离线单测/无父闭包)则由 run_loop 侧按 None 处理 = 不闸。
+        # 批 6:子 agent 豁免末步收窄(narrow_last=0)。它的交付物是【文本证据】回流给
+        # 主脑综合,不是 show_video —— 把它的末步捆成只剩 show_video 是拿错了尺子;
+        # 它的烧穿病由 SUBAGENT_MAX_STEPS + _no_answer_output 残值回收另管。
         r = loop_driver.run_loop(instruction, conv, ex, max_steps=max_steps, critic=None,
-                                 guard=getattr(ex, "tree_guard", None))
+                                 guard=getattr(ex, "tree_guard", None), narrow_last=0)
         if getattr(r, "terminated", "") == "tree_guard":
             # 被全树成本护栏硬终止:r.answer 是面向最终用户的系统占位话术("调高成本上限"
             # 之类),不是子任务结论 —— 原样回流会被主脑当"证据"综合(K 个触闸 = K 份),
