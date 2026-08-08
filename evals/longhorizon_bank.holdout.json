@@ -1,7 +1,7 @@
 {
  "meta": {
-  "frozen_at": "2026-08-04T23:23:07.584988+00:00",
-  "items_sha256": "4506c90633bdf3126e0dae0f520c25f596a6e688037581db8fb16cdc8dc31728",
+  "frozen_at": "2026-08-08T01:20:44.490118+00:00",
+  "items_sha256": "95b926375ce995772c4dc01df17a40fe2094f395b3b86aafe7ef9fc5782c2e1f",
   "category_vocab": [
    "ball sports",
    "beach & leisure",
@@ -42,6 +42,13 @@
    "dropped": {
     "v_-NM-0NZXRNw": "(217,218) 超视频时长(200s),废",
     "v_-jNouTszLJ0": "(101.4,103.2) 裁剪窗阴性 + pass2 缺席,双票否"
+   }
+  },
+  "relabel_divgym": {
+   "at": "2026-08-08T01:20:44.489761+00:00",
+   "protocol": "pro×2 双遍交叉:pass1 为主、pass2 取起点±3s 内最近者、终版交集(≥1s)、孤证弃;证据 evals/runs/prelabel-divgym.jsonl",
+   "dropped": {
+    "v_j18sB8o2IQw": "p1 尾段(10,14)与(1,2)未获 pass2 确认,弃"
    }
   }
  },
@@ -1064,7 +1071,85 @@
      "v_wYIeRRTRtX8": {
       "start_ts": 9.0,
       "end_ts": 11.0
-     }
+     },
+     "v_0gw1Qq3WRbU": [
+      {
+       "start_ts": 0.0,
+       "end_ts": 3.0
+      },
+      {
+       "start_ts": 10.0,
+       "end_ts": 12.0
+      },
+      {
+       "start_ts": 18.0,
+       "end_ts": 21.0
+      },
+      {
+       "start_ts": 26.0,
+       "end_ts": 29.0
+      },
+      {
+       "start_ts": 33.0,
+       "end_ts": 36.0
+      },
+      {
+       "start_ts": 44.0,
+       "end_ts": 47.0
+      },
+      {
+       "start_ts": 53.0,
+       "end_ts": 55.0
+      },
+      {
+       "start_ts": 60.0,
+       "end_ts": 63.0
+      },
+      {
+       "start_ts": 68.0,
+       "end_ts": 70.0
+      },
+      {
+       "start_ts": 74.0,
+       "end_ts": 76.0
+      },
+      {
+       "start_ts": 81.0,
+       "end_ts": 83.0
+      },
+      {
+       "start_ts": 88.0,
+       "end_ts": 90.0
+      },
+      {
+       "start_ts": 97.0,
+       "end_ts": 98.0
+      },
+      {
+       "start_ts": 105.0,
+       "end_ts": 107.0
+      }
+     ],
+     "v_j18sB8o2IQw": [
+      {
+       "start_ts": 2.0,
+       "end_ts": 6.0
+      },
+      {
+       "start_ts": 8.0,
+       "end_ts": 9.0
+      }
+     ],
+     "v_0F8F-ON083s": [
+      {
+       "start_ts": 7.0,
+       "end_ts": 10.0
+      },
+      {
+       "start_ts": 34.0,
+       "end_ts": 36.0
+      }
+     ]
     },
     "raw": {
      "v_-VKGwqL83w8": {
@@ -1187,7 +1272,17 @@
      "v_fRmHJKlQmmw": {
       "start_ts": 0.0,
       "end_ts": 12.1
-     }
+     },
+     "v__AKzq9X1Aik": [
+      {
+       "start_ts": 2.0,
+       "end_ts": 9.0
+      },
+      {
+       "start_ts": 18.0,
+       "end_ts": 23.0
+      }
+     ]
     },
     "raw": {
      "v_0dkIbKXXFzI": {
