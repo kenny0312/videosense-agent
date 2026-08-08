@@ -75,7 +75,12 @@ def test_index_entry_guard_sits_outside_its_own_failopen(monkeypatch):
 
 def test_update_memory_fails_the_tool_loudly(monkeypatch):
     """用户显式要求写记忆 → 挡下时必须让工具失败,大脑才会如实告诉用户没写成。
-    静默跳过会让用户以为记住了。"""
+    静默跳过会让用户以为记住了。
+
+    前提是【没有豁免声明】—— EvalBackend.install() 会往进程环境写
+    EVAL_READ_ONLY_ALLOW=update_memory(替身豁免),同套件里先跑过它的话
+    这里就顺序相关;显式清掉,本测试测的是"无豁免时的默认拦截"。"""
+    monkeypatch.delenv("EVAL_READ_ONLY_ALLOW", raising=False)
     monkeypatch.setattr(config, "EVAL_READ_ONLY", True)
     monkeypatch.setattr(config, "USE_USER_MEMORY", True)
     from pipeline import node_executor as ne
@@ -169,3 +174,35 @@ def test_guard_hit_is_logged_at_error_with_a_greppable_marker(monkeypatch, caplo
     assert hits[0].levelno >= logging.ERROR, (
         f"用了 {hits[0].levelname} —— 生产日志里出现这条意味着开关被带上线了,该是 ERROR")
     assert "v9" in hits[0].getMessage(), "没说是哪个视频,查起来还得翻 trace"
+
+
+# ── 豁免名单(EVAL_READ_ONLY_ALLOW)────────────────────────────────
+def test_allowlist_admits_named_path_only(monkeypatch):
+    """闸挡的是【写生产库】,不是"写"这个动作:评测世界把记忆换成 world_state 替身后,
+    update_memory 物理到不了生产 —— 由装替身的一方显式豁免;索引两路照拦。
+    (多轮基线实测:不豁免时记忆题 agent 全轴满分、state_assertions 恒 0 —— 量的是闸。)"""
+    from pipeline import config
+    from pipeline import eval_write_guard as G
+
+    monkeypatch.setattr(config, "EVAL_READ_ONLY", True)
+    monkeypatch.setenv("EVAL_READ_ONLY_ALLOW", "update_memory")
+    G.reset_blocked()
+    G.assert_writes_allowed("update_memory")          # 豁免:不抛、不计数
+    assert G.blocked_count("update_memory") == 0
+    import pytest as _pt
+    with _pt.raises(G.EvalWriteBlocked):
+        G.assert_writes_allowed("semantic_index.index_entry")   # 真打生产的照拦
+    assert G.blocked_count("semantic_index.index_entry") == 1
+
+
+def test_allowlist_defaults_to_empty(monkeypatch):
+    """不声明就没有豁免 —— 默认全拦,豁免必须是显式动作。"""
+    from pipeline import config
+    from pipeline import eval_write_guard as G
+
+    monkeypatch.setattr(config, "EVAL_READ_ONLY", True)
+    monkeypatch.delenv("EVAL_READ_ONLY_ALLOW", raising=False)
+    G.reset_blocked()
+    import pytest as _pt
+    with _pt.raises(G.EvalWriteBlocked):
+        G.assert_writes_allowed("update_memory")

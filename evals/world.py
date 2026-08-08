@@ -204,6 +204,11 @@ class EvalBackend:
         user_memory.update = _mem_update
         user_memory.load = lambda owner: backend.world_state["memory"]
         user_memory.render_section = lambda owner: backend.world_state["memory"]
+        # 记忆已经换成替身(写 world_state,物理到不了生产)→ 向写闸显式声明豁免
+        # update_memory 这一路。索引两路不豁免:它们真打生产 pg,必须照拦。
+        # 多轮基线实测的教训:不豁免的话,记忆类的题 agent 全轴满分、state_assertions
+        # 恒 0 —— 闸把替身写入当生产写入拦了,量的是闸不是 agent。
+        os.environ["EVAL_READ_ONLY_ALLOW"] = "update_memory"
 
         config.USE_USER_MEMORY = True         # 记偏好工具要对大脑可见（写入走上面的替身）
         # 语义检索：默认关（它连的是生产库）。要测你自己改的 semantic_search，用 --semantic 打开——

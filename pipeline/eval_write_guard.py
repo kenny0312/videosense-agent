@@ -39,9 +39,22 @@ class EvalWriteBlocked(RuntimeError):
 
 
 def assert_writes_allowed(what: str) -> None:
-    """写生产库之前调一次。EVAL_READ_ONLY 关(默认)时是空操作。"""
+    """写生产库之前调一次。EVAL_READ_ONLY 关(默认)时是空操作。
+
+    EVAL_READ_ONLY_ALLOW(逗号分隔的 what 名单)= 显式豁免。闸挡的是【写生产库】,
+    不是"写"这个动作本身 —— 评测假世界把 user_memory 换成了 world_state 替身
+    (evals/world.py install),那条路物理上到不了生产,再拦它就是拦错了对象:
+    多轮基线实测 dualcontrol-memory-wingsuit-only-26 记忆全轴满分、唯独
+    state_assertions 0 —— agent 干对了,是闸把替身写入拦了。豁免必须由装了替身
+    的那一方显式声明(install() 设 env),不许默认;索引两路(真打生产 pg)照拦。
+    """
     from pipeline import config
     if not getattr(config, "EVAL_READ_ONLY", False):
+        return
+    import os
+    allowed = {x.strip() for x in os.environ.get("EVAL_READ_ONLY_ALLOW", "").split(",")
+               if x.strip()}
+    if what in allowed:
         return
     with _lock:
         _blocked[what] = _blocked.get(what, 0) + 1
