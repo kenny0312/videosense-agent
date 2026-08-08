@@ -135,7 +135,10 @@ class DualControlSession:
                                                  owner=self.owner, guard=guard)
             critic = (loop_driver.make_self_check_critic()
                       if config.USE_SELF_CHECK_CRITIC else None)
-            usage.reset_usage()                          # 生产每请求 reset,会话层累计
+            # 用量记账走【差分】不走 reset:runner 的 run_case_multi 靠"每 rollout reset
+            # 一次、跑完 summarize"记整场成本 —— 这里每轮再 reset 会把它的账砍到只剩
+            # 最后一轮。前后快照相减,既给 usage_cum 喂每轮增量,又不动 runner 的账。
+            _before = usage.summarize()
             # req_short:生产每请求发一个新前缀(A2)。不传的话每轮都从 c0_0 起号,
             # runner 平铺合并 ledger 时同名键后覆盖前,判分取错行(实测)。
             r = loop_driver.run_loop(ut["utterance"], conv, execute,
@@ -153,7 +156,10 @@ class DualControlSession:
             loop_memory.record_loop_turn(store, self.owner, sid, turn_no,
                                          ut["utterance"], r.trace, r.ledger, atext,
                                          blob_put=None)
-            usage_cum = _accumulate_usage(usage_cum, usage.summarize())
+            _after = usage.summarize()
+            usage_cum = _accumulate_usage(usage_cum, {
+                k: (_after.get(k, 0) or 0) - (_before.get(k, 0) or 0)
+                for k in ("tokens_total", "cost_usd", "llm_calls")})
             history.append({"who": "agent", "text": atext or ""})
             turns.append(TurnRecord("agent", atext or "", trace=r.trace, ledger=r.ledger,
                                     llm_calls=r.llm_calls))
