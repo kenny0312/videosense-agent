@@ -6,7 +6,7 @@ google-genai>=1.74.0
 psycopg2-binary>=2.9.12
 
 # MCP Protocol (Stage 3)
-mcp>=1.0.0
+mcp>=1.0.0,<2            # 2.0.0 大版本改了 Server API(list_tools 没了);升 2.x 是独立任务,别顺手
 
 # Planner / Code Generator validation (Stage 4 / 6)
 pydantic>=2.0.0
