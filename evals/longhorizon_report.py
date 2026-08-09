@@ -436,8 +436,10 @@ def main():
             else:
                 w("```\n(空 —— 什么都没交出来)\n```")
 
-    (ROOT / a.out).write_text("\n".join(out), encoding="utf-8")
-    print(f"报告已写入 {a.out}({len('\n'.join(out))} 字符,{len(bad)} 条错误跑次)")
+    body = "\n".join(out)
+    (ROOT / a.out).write_text(body, encoding="utf-8")
+    # f-string 表达式里不放反斜杠/嵌套引号:3.12+ 才合法,CI 的 3.11 导入即炸(实测)
+    print(f"报告已写入 {a.out}({len(body)} 字符,{len(bad)} 条错误跑次)")
 
 
 if __name__ == "__main__":

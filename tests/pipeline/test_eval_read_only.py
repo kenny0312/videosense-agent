@@ -101,6 +101,11 @@ def test_analyze_indexing_is_blocked_but_never_loses_the_paid_result(monkeypatch
     monkeypatch.setattr(config, "EVAL_READ_ONLY", True)
     monkeypatch.setattr(config, "USE_SEMANTIC_SEARCH", True)
     from pipeline import node_executor as ne
+    # 环境解耦:embed 走真凭据,CI 上没有 → 在 embed 就断了,闸根本没被够到
+    # (本地有 .env 一直是真跑,所以这两条只在 CI 红 —— "GCP_PROJECT 假失败")。
+    # 桩掉向量这一环,analyze_snippet 与 index_entry 里的闸仍是真货。
+    monkeypatch.setattr("pipeline.embeddings.embed_texts",
+                        lambda texts, **kw: [[0.0] * 768 for _ in texts])
 
     # 不抛出去 = 调用方拿得到返回、analyze 结果不受影响
     ne._index_analyze_result("v1", {"answer": "看到有人滑雪", "enough": "yes"}, "av:v1:abc")
@@ -165,6 +170,11 @@ def test_guard_hit_is_logged_at_error_with_a_greppable_marker(monkeypatch, caplo
     monkeypatch.setattr(config, "EVAL_READ_ONLY", True)
     monkeypatch.setattr(config, "USE_SEMANTIC_SEARCH", True)
     monkeypatch.setattr(ne, "log", logging.getLogger("test.ne2"))
+    # 环境解耦:embed 走真凭据,CI 上没有 → 在 embed 就断了,闸根本没被够到
+    # (本地有 .env 一直是真跑,所以这两条只在 CI 红 —— "GCP_PROJECT 假失败")。
+    # 桩掉向量这一环,analyze_snippet 与 index_entry 里的闸仍是真货。
+    monkeypatch.setattr("pipeline.embeddings.embed_texts",
+                        lambda texts, **kw: [[0.0] * 768 for _ in texts])
 
     with caplog.at_level(logging.DEBUG, logger="test.ne2"):
         ne._index_analyze_result("v9", {"answer": "x", "enough": "yes"}, "av:v9:k")
