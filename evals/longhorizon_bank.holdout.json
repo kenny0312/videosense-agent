@@ -1,0 +1,1471 @@
+{
+ "meta": {
+  "frozen_at": "2026-08-08T01:20:44.490118+00:00",
+  "items_sha256": "95b926375ce995772c4dc01df17a40fe2094f395b3b86aafe7ef9fc5782c2e1f",
+  "category_vocab": [
+   "ball sports",
+   "beach & leisure",
+   "car care",
+   "celebration & awards",
+   "climbing",
+   "cooking & food",
+   "cycling",
+   "dancing",
+   "diy & crafts",
+   "equestrian",
+   "everyday activities",
+   "fitness",
+   "holiday & party",
+   "household & cleaning",
+   "martial arts & wrestling",
+   "motorsports",
+   "music",
+   "paintball & shooting",
+   "personal care",
+   "shopping",
+   "skateboarding",
+   "skydiving",
+   "spectating",
+   "talking & presenting",
+   "water sports",
+   "winter sports"
+  ],
+  "answer_contract": {
+   "video_ids": "list[str]",
+   "count": "int",
+   "per_video": "{vid: {category, start_ts, end_ts, evidence}}"
+  },
+  "notes": "环境冻结要求:关闭 use-to-grow(_index_analyze_result)、DB 快照冻结、T2 谓词 ts 掩码、analyze 缓存按 arm×rep 命名空间(红队 C3)。",
+  "relabel_5B": {
+   "at": "2026-08-04T23:23:07.584645+00:00",
+   "protocol": "pro pass-1(verify-pack-5B)× pro pass-2(prelabel-pass2-5B)双遍交叉;孤证弃;裁剪窗阴性作决胜票;新采纳两条 pro 主 flash confirm",
+   "dropped": {
+    "v_-NM-0NZXRNw": "(217,218) 超视频时长(200s),废",
+    "v_-jNouTszLJ0": "(101.4,103.2) 裁剪窗阴性 + pass2 缺席,双票否"
+   }
+  },
+  "relabel_divgym": {
+   "at": "2026-08-08T01:20:44.489761+00:00",
+   "protocol": "pro×2 双遍交叉:pass1 为主、pass2 取起点±3s 内最近者、终版交集(≥1s)、孤证弃;证据 evals/runs/prelabel-divgym.jsonl",
+   "dropped": {
+    "v_j18sB8o2IQw": "p1 尾段(10,14)与(1,2)未获 pass2 确认,弃"
+   }
+  }
+ },
+ "split": "holdout",
+ "items": [
+  {
+   "id": "t1-driving-car",
+   "tier": "T1",
+   "predicate": "driving car",
+   "question": "找出库里所有有人开车的视频(口径:画面中有汽车正被驾驶即可 —— 车在动就算,不要求看清驾驶员;割草机、碰碰车、船艇不算汽车),并给每条标注它属于哪个大类",
+   "rephrased": false,
+   "gold": {
+    "video_ids": [
+     "v_-OH1BDqao9w",
+     "v_-VKGwqL83w8",
+     "v_8WJWtfmEipI",
+     "v_9pJBfTZOcxI",
+     "v_CbfgZlo0Ut4",
+     "v_px18138660",
+     "v_px32093955",
+     "v_px3727447",
+     "v_px5836409",
+     "v_px9935090"
+    ],
+    "count": 10,
+    "per_video": {
+     "v_-VKGwqL83w8": {
+      "categories": [
+       "water sports"
+      ]
+     },
+     "v_8WJWtfmEipI": {
+      "categories": [
+       "car care",
+       "everyday activities"
+      ]
+     },
+     "v_px18138660": {
+      "categories": [
+       "car care",
+       "everyday activities"
+      ]
+     },
+     "v_px32093955": {
+      "categories": [
+       "car care",
+       "everyday activities"
+      ]
+     },
+     "v_px3727447": {
+      "categories": [
+       "car care",
+       "everyday activities"
+      ]
+     },
+     "v_px5836409": {
+      "categories": [
+       "car care",
+       "everyday activities"
+      ]
+     },
+     "v_px9935090": {
+      "categories": [
+       "car care",
+       "everyday activities"
+      ]
+     },
+     "v_9pJBfTZOcxI": {
+      "categories": [
+       "water sports"
+      ]
+     },
+     "v_CbfgZlo0Ut4": {
+      "categories": [
+       "car care"
+      ]
+     },
+     "v_-OH1BDqao9w": {
+      "categories": [
+       "car care"
+      ]
+     }
+    },
+    "adjudicated": {
+     "v_-OH1BDqao9w": "核验包 P3:48-53s 男子驾驶座上、96-100s 驶出洗车房 —— 真开车画面",
+     "v_9pJBfTZOcxI": "动作行 driving a car;核验包 P3:SUV/面包车涉水行驶拖曳滑水,宽口径命中",
+     "v_CbfgZlo0Ut4": "动作行 driving car into car wash;核验包 P3:车行驶入洗车房(车外机位)"
+    }
+   }
+  },
+  {
+   "id": "t1-playing-drums",
+   "tier": "T1",
+   "predicate": "playing drums",
+   "question": "找出库里所有有人打鼓的视频,并给每条标注它属于哪个大类",
+   "rephrased": false,
+   "gold": {
+    "video_ids": [
+     "v_-E2dqOULQgY",
+     "v_-hEr3ydGyoM",
+     "v_-zZJmRT9udU",
+     "v_00KMCm2oGhk",
+     "v_0KTued0g034",
+     "v_0drl-yrfBAA",
+     "v_2belnHaa36g"
+    ],
+    "count": 7,
+    "per_video": {
+     "v_-E2dqOULQgY": {
+      "categories": [
+       "music"
+      ]
+     },
+     "v_-hEr3ydGyoM": {
+      "categories": [
+       "music"
+      ]
+     },
+     "v_00KMCm2oGhk": {
+      "categories": [
+       "music"
+      ]
+     },
+     "v_0KTued0g034": {
+      "categories": [
+       "music"
+      ]
+     },
+     "v_0drl-yrfBAA": {
+      "categories": [
+       "music"
+      ]
+     },
+     "v_2belnHaa36g": {
+      "categories": [
+       "music"
+      ]
+     },
+     "v_-zZJmRT9udU": {
+      "categories": [
+       "music"
+      ]
+     }
+    },
+    "adjudicated": {
+     "v_-zZJmRT9udU": "动作行 playing conga drums(music);跨臂 6/6"
+    }
+   }
+  },
+  {
+   "id": "t1-riding-horse",
+   "tier": "T1",
+   "predicate": "riding horse",
+   "question": "找出库里所有有人骑马的视频,并给每条标注它属于哪个大类",
+   "rephrased": false,
+   "gold": {
+    "video_ids": [
+     "v_-Lxv663IEaI",
+     "v_0EepbsAtiDk",
+     "v_3LyyqeVeYkI",
+     "v_6NQl2Vcf0P0",
+     "v_8wB0BOjuyes",
+     "v_fO8b3U8fuGo",
+     "v_hwGvU9Csz98"
+    ],
+    "count": 7,
+    "per_video": {
+     "v_-Lxv663IEaI": {
+      "categories": [
+       "equestrian",
+       "motorsports"
+      ]
+     },
+     "v_3LyyqeVeYkI": {
+      "categories": [
+       "equestrian"
+      ]
+     },
+     "v_8wB0BOjuyes": {
+      "categories": [
+       "equestrian"
+      ]
+     },
+     "v_fO8b3U8fuGo": {
+      "categories": [
+       "equestrian"
+      ]
+     },
+     "v_hwGvU9Csz98": {
+      "categories": [
+       "equestrian"
+      ]
+     },
+     "v_0EepbsAtiDk": {
+      "categories": [
+       "equestrian"
+      ]
+     },
+     "v_6NQl2Vcf0P0": {
+      "categories": [
+       "equestrian"
+      ]
+     }
+    },
+    "adjudicated": {
+     "v_0EepbsAtiDk": "动作行 horse riding(equestrian);跨臂 6/6 一致摆出",
+     "v_6NQl2Vcf0P0": "rodeo 套牛:mounting/dismounting horse、running to horse;跨臂 6/6"
+    }
+   }
+  },
+  {
+   "id": "t1-throwing-ball",
+   "tier": "T1",
+   "predicate": "throwing ball",
+   "question": "找出库里所有有人扔球的视频,并给每条标注它属于哪个大类",
+   "rephrased": false,
+   "gold": {
+    "video_ids": [
+     "v_-5Q7iNtaWCU",
+     "v_-ZBsdK10Trs",
+     "v_4BofYu8Soz8",
+     "v_OHNH7IV0768",
+     "v_cICxG-28hK0",
+     "v_dB4SbhaQQV8"
+    ],
+    "count": 6,
+    "per_video": {
+     "v_-5Q7iNtaWCU": {
+      "categories": [
+       "ball sports"
+      ]
+     },
+     "v_-ZBsdK10Trs": {
+      "categories": [
+       "ball sports"
+      ]
+     },
+     "v_4BofYu8Soz8": {
+      "categories": [
+       "ball sports",
+       "beach & leisure"
+      ]
+     },
+     "v_OHNH7IV0768": {
+      "categories": [
+       "ball sports",
+       "water sports"
+      ]
+     },
+     "v_cICxG-28hK0": {
+      "categories": [
+       "ball sports"
+      ]
+     },
+     "v_dB4SbhaQQV8": {
+      "categories": [
+       "ball sports",
+       "beach & leisure"
+      ]
+     }
+    }
+   }
+  },
+  {
+   "id": "t1-cheering",
+   "tier": "T1",
+   "predicate": "cheering",
+   "question": "找出库里所有观众在为场上的人助威呐喊的视频,并给每条标注它属于哪个大类",
+   "rephrased": true,
+   "gold": {
+    "video_ids": [
+     "v_-9l1Rh10bO8",
+     "v_-TuxT19bogQ",
+     "v_-jNouTszLJ0",
+     "v_0drl-yrfBAA",
+     "v_AGDsfpZQBIs",
+     "v_clUgEizjVkM",
+     "v_qBqUu4_qOnU"
+    ],
+    "count": 7,
+    "per_video": {
+     "v_-9l1Rh10bO8": {
+      "categories": [
+       "cooking & food",
+       "martial arts & wrestling"
+      ]
+     },
+     "v_-TuxT19bogQ": {
+      "categories": [
+       "ball sports"
+      ]
+     },
+     "v_-jNouTszLJ0": {
+      "categories": [
+       "celebration & awards",
+       "holiday & party"
+      ]
+     },
+     "v_0drl-yrfBAA": {
+      "categories": [
+       "music"
+      ]
+     },
+     "v_AGDsfpZQBIs": {
+      "categories": [
+       "ball sports"
+      ]
+     },
+     "v_clUgEizjVkM": {
+      "categories": [
+       "ball sports"
+      ]
+     },
+     "v_qBqUu4_qOnU": {
+      "categories": [
+       "holiday & party"
+      ]
+     }
+    }
+   }
+  },
+  {
+   "id": "t1-shoveling-snow",
+   "tier": "T1",
+   "predicate": "shoveling snow",
+   "question": "找出库里所有有人在清理地上积雪的视频,并给每条标注它属于哪个大类",
+   "rephrased": true,
+   "gold": {
+    "video_ids": [
+     "v_-G-sh-NhYtk",
+     "v_8WJWtfmEipI",
+     "v_bY0vSkxH0PE"
+    ],
+    "count": 3,
+    "per_video": {
+     "v_-G-sh-NhYtk": {
+      "categories": [
+       "everyday activities"
+      ]
+     },
+     "v_8WJWtfmEipI": {
+      "categories": [
+       "car care",
+       "everyday activities"
+      ]
+     },
+     "v_bY0vSkxH0PE": {
+      "categories": [
+       "household & cleaning"
+      ]
+     }
+    }
+   }
+  },
+  {
+   "id": "t2-celebrating",
+   "tier": "T2",
+   "predicate": "celebrating",
+   "question": "找出所有出现庆祝场面的视频,并给出每条里庆祝的时间段和画面证据(时段口径:给目标动作【本身】的起止秒,别把前后铺垫并进来;同一动作出现多次就挑最清晰的一次)",
+   "rephrased": false,
+   "gold": {
+    "video_ids": [
+     "v_-NM-0NZXRNw",
+     "v_-cJova7MiO8",
+     "v_-jNouTszLJ0",
+     "v_079MEwdDNjg",
+     "v_0AbJgWxIYVI",
+     "v_0J55EGFLglQ",
+     "v_BLTOTjVYiuE",
+     "v_QacSWR8c-8Y",
+     "v_c1Gby2EHBzs",
+     "v_eRHbpYeYtxo"
+    ],
+    "count": 10,
+    "per_video": {
+     "v_-NM-0NZXRNw": {
+      "categories": [
+       "celebration & awards",
+       "paintball & shooting"
+      ]
+     },
+     "v_-jNouTszLJ0": {
+      "categories": [
+       "celebration & awards",
+       "holiday & party"
+      ]
+     },
+     "v_0AbJgWxIYVI": {
+      "categories": [
+       "celebration & awards"
+      ]
+     },
+     "v_0J55EGFLglQ": {
+      "categories": [
+       "ball sports",
+       "celebration & awards"
+      ]
+     },
+     "v_BLTOTjVYiuE": {
+      "categories": [
+       "fitness"
+      ]
+     },
+     "v_QacSWR8c-8Y": {
+      "categories": [
+       "fitness"
+      ]
+     },
+     "v_c1Gby2EHBzs": {
+      "categories": [
+       "ball sports",
+       "celebration & awards"
+      ]
+     },
+     "v_eRHbpYeYtxo": {
+      "categories": [
+       "celebration & awards",
+       "fitness"
+      ]
+     },
+     "v_-cJova7MiO8": {
+      "categories": [
+       "celebration & awards",
+       "martial arts & wrestling"
+      ]
+     },
+     "v_079MEwdDNjg": {
+      "categories": [
+       "ball sports"
+      ]
+     }
+    },
+    "adjudicated": {
+     "v_-cJova7MiO8": "动作行 celebrating victory、congratulating(celebration & awards)",
+     "v_079MEwdDNjg": "动作行 baseball players celebrating、players hugging/jumping and cheering"
+    }
+   },
+   "ts_mask": true,
+   "db_spans_available": 8,
+   "gold_localization": {
+    "status": "labeled",
+    "labeler": "gemini-2.5-pro ×2 交叉",
+    "spans": {
+     "v_-NM-0NZXRNw": [
+      {
+       "start_ts": 100.0,
+       "end_ts": 102.0
+      },
+      {
+       "start_ts": 137.0,
+       "end_ts": 138.0
+      },
+      {
+       "start_ts": 142.0,
+       "end_ts": 143.0
+      },
+      {
+       "start_ts": 176.0,
+       "end_ts": 189.0
+      }
+     ],
+     "v_-jNouTszLJ0": [
+      {
+       "start_ts": 23.0,
+       "end_ts": 26.0
+      },
+      {
+       "start_ts": 32.0,
+       "end_ts": 34.0
+      },
+      {
+       "start_ts": 62.0,
+       "end_ts": 70.0
+      },
+      {
+       "start_ts": 81.0,
+       "end_ts": 85.0
+      }
+     ],
+     "v_0AbJgWxIYVI": [
+      {
+       "start_ts": 18.0,
+       "end_ts": 26.0
+      },
+      {
+       "start_ts": 101.0,
+       "end_ts": 115.0
+      },
+      {
+       "start_ts": 142.0,
+       "end_ts": 144.0
+      }
+     ],
+     "v_0J55EGFLglQ": {
+      "start_ts": 16.5,
+      "end_ts": 19.0
+     },
+     "v_BLTOTjVYiuE": {
+      "start_ts": 11.5,
+      "end_ts": 16.5
+     },
+     "v_QacSWR8c-8Y": {
+      "start_ts": 9.0,
+      "end_ts": 16.0
+     },
+     "v_c1Gby2EHBzs": {
+      "start_ts": 16.0,
+      "end_ts": 20.0
+     },
+     "v_eRHbpYeYtxo": {
+      "start_ts": 9.0,
+      "end_ts": 14.9
+     },
+     "v_-cJova7MiO8": [
+      {
+       "start_ts": 14.0,
+       "end_ts": 16.0
+      },
+      {
+       "start_ts": 18.0,
+       "end_ts": 23.0
+      },
+      {
+       "start_ts": 24.0,
+       "end_ts": 25.0
+      }
+     ],
+     "v_079MEwdDNjg": [
+      {
+       "start_ts": 69.0,
+       "end_ts": 81.0
+      },
+      {
+       "start_ts": 108.0,
+       "end_ts": 127.0
+      },
+      {
+       "start_ts": 144.0,
+       "end_ts": 161.0
+      }
+     ]
+    },
+    "raw": {
+     "v_-NM-0NZXRNw": {
+      "status": "labeled",
+      "start_ts": 217.0,
+      "end_ts": 218.0,
+      "iou": 1.0,
+      "evidence": "视频中，一群穿着黑绿色队服的队员站在一起，举起双手庆祝胜利。",
+      "a": {
+       "present": true,
+       "start_ts": 217.0,
+       "end_ts": 218.0,
+       "confidence": "high",
+       "evidence": "视频中，一群穿着黑绿色队服的队员站在一起，举起双手庆祝胜利。"
+      },
+      "b": {
+       "present": true,
+       "start_ts": 217.0,
+       "end_ts": 218.0,
+       "confidence": "high",
+       "evidence": "一群穿着绿色和黑色队服的彩弹球员站在一起，笑着举起手做胜利的姿势。"
+      }
+     },
+     "v_-jNouTszLJ0": {
+      "status": "labeled",
+      "start_ts": 101.4,
+      "end_ts": 103.2,
+      "iou": 0.48,
+      "evidence": "A player in a white shirt jumps up and down and cheers after making a shot.",
+      "a": {
+       "present": true,
+       "start_ts": 101.8,
+       "end_ts": 103.5,
+       "confidence": "high",
+       "evidence": "A player in a white shirt jumps up and down and cheers after making a shot."
+      },
+      "b": {
+       "present": true,
+       "start_ts": 101.0,
+       "end_ts": 103.0,
+       "confidence": "high",
+       "evidence": "A player in a white shirt jumps up and down and pumps his fists after making the winning shot."
+      }
+     },
+     "v_0AbJgWxIYVI": {
+      "status": "labeled",
+      "start_ts": 104.0,
+      "end_ts": 114.0,
+      "iou": 1.0,
+      "evidence": "在一个滑板店内，一名男子收到一块印有他头像的滑板后，周围的人们为他欢呼、拥抱和庆祝。",
+      "a": {
+       "present": true,
+       "start_ts": 104.0,
+       "end_ts": 114.0,
+       "confidence": "high",
+       "evidence": "在一个滑板店内，一名男子收到一块印有他头像的滑板后，周围的人们为他欢呼、拥抱和庆祝。"
+      },
+      "b": {
+       "present": true,
+       "start_ts": 104.0,
+       "end_ts": 114.0,
+       "confidence": "high",
+       "evidence": "在一家滑板店里,一个年轻人收到了一块印有他肖像的滑板,他和其他人一起大笑和拥抱庆祝。"
+      }
+     },
+     "v_0J55EGFLglQ": {
+      "status": "labeled",
+      "start_ts": 16.5,
+      "end_ts": 19.0,
+      "iou": 0.67,
+      "evidence": "进球后，两名身穿红色球衣的球员拥抱在一起庆祝。",
+      "a": {
+       "present": true,
+       "start_ts": 16.0,
+       "end_ts": 19.0,
+       "confidence": "high",
+       "evidence": "进球后，两名身穿红色球衣的球员拥抱在一起庆祝。"
+      },
+      "b": {
+       "present": true,
+       "start_ts": 17.0,
+       "end_ts": 19.0,
+       "confidence": "high",
+       "evidence": "进球后,两名身穿红色球衣的球员拥抱庆祝。"
+      }
+     },
+     "v_BLTOTjVYiuE": {
+      "status": "labeled",
+      "start_ts": 11.5,
+      "end_ts": 16.5,
+      "iou": 0.25,
+      "evidence": "一名身穿蓝黑色运动服的男运动员举起双臂,食指向上指,庆祝自己的成绩。",
+      "a": {
+       "present": true,
+       "start_ts": 11.0,
+       "end_ts": 19.0,
+       "confidence": "high",
+       "evidence": "一名身穿蓝黑色运动服的男运动员举起双臂,食指向上指,庆祝自己的成绩。"
+      },
+      "b": {
+       "present": true,
+       "start_ts": 12.0,
+       "end_ts": 14.0,
+       "confidence": "high",
+       "evidence": "一名黑人运动员举起双臂庆祝。"
+      }
+     },
+     "v_QacSWR8c-8Y": {
+      "status": "labeled",
+      "start_ts": 9.0,
+      "end_ts": 16.0,
+      "iou": 1.0,
+      "evidence": "一名女运动员成功跳过横杆后，在垫子上站起来，举起双臂，大声呐喊庆祝。",
+      "a": {
+       "present": true,
+       "start_ts": 9.0,
+       "end_ts": 16.0,
+       "confidence": "high",
+       "evidence": "一名女运动员成功跳过横杆后，在垫子上站起来，举起双臂，大声呐喊庆祝。"
+      },
+      "b": {
+       "present": true,
+       "start_ts": 9.0,
+       "end_ts": 16.0,
+       "confidence": "high",
+       "evidence": "视频里一名身穿“RUSSIA”字样上衣的女运动员在成功完成撑杆跳后，举起双臂，张嘴呐喊庆祝。"
+      }
+     },
+     "v_c1Gby2EHBzs": {
+      "status": "labeled",
+      "start_ts": 16.0,
+      "end_ts": 20.0,
+      "iou": 1.0,
+      "evidence": "一名男子在将球打过球门横梁后，张开双臂大声欢呼庆祝。",
+      "a": {
+       "present": true,
+       "start_ts": 16.0,
+       "end_ts": 20.0,
+       "confidence": "high",
+       "evidence": "一名男子在将球打过球门横梁后，张开双臂大声欢呼庆祝。"
+      },
+      "b": {
+       "present": true,
+       "start_ts": 16.0,
+       "end_ts": 20.0,
+       "confidence": "high",
+       "evidence": "一个男子在用球棍把球打进球门后，张开双臂庆祝。"
+      }
+     },
+     "v_eRHbpYeYtxo": {
+      "status": "labeled",
+      "start_ts": 9.0,
+      "end_ts": 14.9,
+      "iou": 0.97,
+      "evidence": "一名男子在成功举重后,大喊一声并举起双臂庆祝。",
+      "a": {
+       "present": true,
+       "start_ts": 9.0,
+       "end_ts": 14.8,
+       "confidence": "high",
+       "evidence": "一名男子在成功举重后,大喊一声并举起双臂庆祝。"
+      },
+      "b": {
+       "present": true,
+       "start_ts": 9.0,
+       "end_ts": 15.0,
+       "confidence": "high",
+       "evidence": "视频中，举重运动员成功举起杠铃后，放下杠铃，大声呐喊并跳起来举起双臂庆祝。"
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "t2-playing-water-polo",
+   "tier": "T2",
+   "predicate": "playing water polo",
+   "question": "找出所有有人打水球的视频,并给出每条里打水球的时间段和画面证据(时段口径:给目标动作【本身】的起止秒,别把前后铺垫并进来;同一动作出现多次就挑最清晰的一次)",
+   "rephrased": false,
+   "gold": {
+    "video_ids": [
+     "v_8Ny9NjNpQQA",
+     "v_OHNH7IV0768",
+     "v_Te1d8H4VWYw"
+    ],
+    "count": 3,
+    "per_video": {
+     "v_8Ny9NjNpQQA": {
+      "categories": [
+       "water sports"
+      ]
+     },
+     "v_OHNH7IV0768": {
+      "categories": [
+       "ball sports",
+       "water sports"
+      ]
+     },
+     "v_Te1d8H4VWYw": {
+      "categories": [
+       "water sports"
+      ]
+     }
+    }
+   },
+   "ts_mask": true,
+   "db_spans_available": 3,
+   "gold_localization": {
+    "status": "labeled",
+    "labeler": "gemini-2.5-pro ×2 交叉",
+    "spans": {
+     "v_8Ny9NjNpQQA": {
+      "start_ts": 0.0,
+      "end_ts": 15.5
+     },
+     "v_OHNH7IV0768": {
+      "start_ts": 0.0,
+      "end_ts": 17.5
+     },
+     "v_Te1d8H4VWYw": {
+      "start_ts": 0.0,
+      "end_ts": 13.5
+     }
+    },
+    "raw": {
+     "v_8Ny9NjNpQQA": {
+      "status": "labeled",
+      "start_ts": 0.0,
+      "end_ts": 15.5,
+      "iou": 0.94,
+      "evidence": "画面中，有几个人在海里的一个球门附近游泳玩球。",
+      "a": {
+       "present": true,
+       "start_ts": 0.0,
+       "end_ts": 16.0,
+       "confidence": "high",
+       "evidence": "画面中，有几个人在海里的一个球门附近游泳玩球。"
+      },
+      "b": {
+       "present": true,
+       "start_ts": 0.0,
+       "end_ts": 15.0,
+       "confidence": "high",
+       "evidence": "视频中，海里有一个水球球门，几个人正在水里游泳并玩一个黄色的球。"
+      }
+     },
+     "v_OHNH7IV0768": {
+      "status": "labeled",
+      "start_ts": 0.0,
+      "end_ts": 17.5,
+      "iou": 0.94,
+      "evidence": "视频中有多名运动员在泳池里进行水球比赛，他们争抢球并射门。",
+      "a": {
+       "present": true,
+       "start_ts": 0.0,
+       "end_ts": 17.0,
+       "confidence": "high",
+       "evidence": "视频中有多名运动员在泳池里进行水球比赛，他们争抢球并射门。"
+      },
+      "b": {
+       "present": true,
+       "start_ts": 0.0,
+       "end_ts": 18.0,
+       "confidence": "high",
+       "evidence": "视频中，一群戴着泳帽的运动员在泳池里争抢一个黄色的球，并试图将其射入球门。"
+      }
+     },
+     "v_Te1d8H4VWYw": {
+      "status": "labeled",
+      "start_ts": 0.0,
+      "end_ts": 13.5,
+      "iou": 0.8,
+      "evidence": "视频中有多名穿着水球帽的运动员在泳池里争抢一个球，并最终射门得分。",
+      "a": {
+       "present": true,
+       "start_ts": 0.0,
+       "end_ts": 15.0,
+       "confidence": "high",
+       "evidence": "视频中有多名穿着水球帽的运动员在泳池里争抢一个球，并最终射门得分。"
+      },
+      "b": {
+       "present": true,
+       "start_ts": 0.0,
+       "end_ts": 12.0,
+       "confidence": "high",
+       "evidence": "视频中有多名戴着水球帽的运动员在泳池里争抢一个球，并最终射门得分。"
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "t2-playing-tennis",
+   "tier": "T2",
+   "predicate": "playing tennis",
+   "question": "找出所有有人打网球的视频,并给出每条里打网球的时间段和画面证据(时段口径:给目标动作【本身】的起止秒,别把前后铺垫并进来;同一动作出现多次就挑最清晰的一次)",
+   "rephrased": false,
+   "gold": {
+    "video_ids": [
+     "v_g7l-Y_bgPkI",
+     "v_hrwcr7BxS5I",
+     "v_qPZBSTNEl78"
+    ],
+    "count": 3,
+    "per_video": {
+     "v_g7l-Y_bgPkI": {
+      "categories": [
+       "ball sports"
+      ]
+     },
+     "v_hrwcr7BxS5I": {
+      "categories": [
+       "ball sports"
+      ]
+     },
+     "v_qPZBSTNEl78": {
+      "categories": [
+       "ball sports"
+      ]
+     }
+    }
+   },
+   "ts_mask": true,
+   "db_spans_available": 3,
+   "gold_localization": {
+    "status": "labeled",
+    "labeler": "gemini-2.5-pro ×2 交叉",
+    "spans": {
+     "v_g7l-Y_bgPkI": [
+      {
+       "start_ts": 0.0,
+       "end_ts": 3.0
+      },
+      {
+       "start_ts": 23.0,
+       "end_ts": 25.0
+      }
+     ],
+     "v_hrwcr7BxS5I": {
+      "start_ts": 4.0,
+      "end_ts": 7.0
+     },
+     "v_qPZBSTNEl78": {
+      "start_ts": 3.0,
+      "end_ts": 21.0
+     }
+    },
+    "raw": {
+     "v_g7l-Y_bgPkI": {
+      "status": "labeled",
+      "start_ts": 23.0,
+      "end_ts": 25.0,
+      "iou": 1.0,
+      "evidence": "一个穿着灰色上衣、戴着白色帽子的男子在网球场上发球。",
+      "a": {
+       "present": true,
+       "start_ts": 23.0,
+       "end_ts": 25.0,
+       "confidence": "high",
+       "evidence": "一个穿着灰色上衣、戴着白色帽子的男子在网球场上发球。"
+      },
+      "b": {
+       "present": true,
+       "start_ts": 23.0,
+       "end_ts": 25.0,
+       "confidence": "high",
+       "evidence": "视频中，一名男子在网球场上发球。"
+      }
+     },
+     "v_hrwcr7BxS5I": {
+      "status": "labeled",
+      "start_ts": 4.0,
+      "end_ts": 7.0,
+      "iou": 1.0,
+      "evidence": "一个穿着红色上衣的男子在网球场上发球。",
+      "a": {
+       "present": true,
+       "start_ts": 4.0,
+       "end_ts": 7.0,
+       "confidence": "high",
+       "evidence": "一个穿着红色上衣的男子在网球场上发球。"
+      },
+      "b": {
+       "present": true,
+       "start_ts": 4.0,
+       "end_ts": 7.0,
+       "confidence": "high",
+       "evidence": "视频中，一名男子在网球场上跳起，挥拍击打网球。"
+      }
+     },
+     "v_qPZBSTNEl78": {
+      "status": "labeled",
+      "start_ts": 3.0,
+      "end_ts": 21.0,
+      "iou": 0.33,
+      "evidence": "视频中，两名女孩在网球场上持续地进行对打练习。",
+      "a": {
+       "present": true,
+       "start_ts": 3.0,
+       "end_ts": 30.0,
+       "confidence": "high",
+       "evidence": "视频中，两名女孩在网球场上持续地进行对打练习。"
+      },
+      "b": {
+       "present": true,
+       "start_ts": 3.0,
+       "end_ts": 12.0,
+       "confidence": "high",
+       "evidence": "视频中，两个女孩在网球场上来回击打网球。"
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "t2-diving",
+   "tier": "T2",
+   "predicate": "diving",
+   "question": "找出所有有人跳水的视频,并给出每条里跳水的时间段和画面证据(时段口径:给目标动作【本身】的起止秒,别把前后铺垫并进来;同一动作出现多次就挑最清晰的一次)",
+   "rephrased": false,
+   "gold": {
+    "video_ids": [
+     "v_-VKGwqL83w8",
+     "v_-voGnJbk3CI",
+     "v_0F8F-ON083s",
+     "v_0gw1Qq3WRbU",
+     "v_j18sB8o2IQw",
+     "v_wYIeRRTRtX8"
+    ],
+    "count": 6,
+    "per_video": {
+     "v_-VKGwqL83w8": {
+      "categories": [
+       "water sports"
+      ]
+     },
+     "v_-voGnJbk3CI": {
+      "categories": [
+       "water sports"
+      ]
+     },
+     "v_wYIeRRTRtX8": {
+      "categories": [
+       "water sports"
+      ]
+     },
+     "v_0gw1Qq3WRbU": {
+      "categories": [
+       "water sports"
+      ]
+     },
+     "v_j18sB8o2IQw": {
+      "categories": [
+       "water sports"
+      ]
+     },
+     "v_0F8F-ON083s": {
+      "categories": [
+       "water sports"
+      ]
+     }
+    },
+    "adjudicated": {
+     "v_0F8F-ON083s": "动作行 diving from a platform;核验包 P2:10 米台跳水",
+     "v_0gw1Qq3WRbU": "动作行 diving (backward/forward/handstand dive);核验包 P2:跳板跳水",
+     "v_j18sB8o2IQw": "动作行 performing a high dive;核验包 P2:FINA 高台跳水世界杯"
+    }
+   },
+   "ts_mask": true,
+   "db_spans_available": 3,
+   "gold_localization": {
+    "status": "labeled",
+    "labeler": "gemini-2.5-pro ×2 交叉",
+    "spans": {
+     "v_-VKGwqL83w8": {
+      "start_ts": 10.5,
+      "end_ts": 12.0
+     },
+     "v_wYIeRRTRtX8": {
+      "start_ts": 9.0,
+      "end_ts": 11.0
+     },
+     "v_0gw1Qq3WRbU": [
+      {
+       "start_ts": 0.0,
+       "end_ts": 3.0
+      },
+      {
+       "start_ts": 10.0,
+       "end_ts": 12.0
+      },
+      {
+       "start_ts": 18.0,
+       "end_ts": 21.0
+      },
+      {
+       "start_ts": 26.0,
+       "end_ts": 29.0
+      },
+      {
+       "start_ts": 33.0,
+       "end_ts": 36.0
+      },
+      {
+       "start_ts": 44.0,
+       "end_ts": 47.0
+      },
+      {
+       "start_ts": 53.0,
+       "end_ts": 55.0
+      },
+      {
+       "start_ts": 60.0,
+       "end_ts": 63.0
+      },
+      {
+       "start_ts": 68.0,
+       "end_ts": 70.0
+      },
+      {
+       "start_ts": 74.0,
+       "end_ts": 76.0
+      },
+      {
+       "start_ts": 81.0,
+       "end_ts": 83.0
+      },
+      {
+       "start_ts": 88.0,
+       "end_ts": 90.0
+      },
+      {
+       "start_ts": 97.0,
+       "end_ts": 98.0
+      },
+      {
+       "start_ts": 105.0,
+       "end_ts": 107.0
+      }
+     ],
+     "v_j18sB8o2IQw": [
+      {
+       "start_ts": 2.0,
+       "end_ts": 6.0
+      },
+      {
+       "start_ts": 8.0,
+       "end_ts": 9.0
+      }
+     ],
+     "v_0F8F-ON083s": [
+      {
+       "start_ts": 7.0,
+       "end_ts": 10.0
+      },
+      {
+       "start_ts": 34.0,
+       "end_ts": 36.0
+      }
+     ]
+    },
+    "raw": {
+     "v_-VKGwqL83w8": {
+      "status": "labeled",
+      "start_ts": 10.5,
+      "end_ts": 12.0,
+      "iou": 0.5,
+      "evidence": "视频中一个穿着脚蹼的人从船上跳入水中。",
+      "a": {
+       "present": true,
+       "start_ts": 10.0,
+       "end_ts": 12.0,
+       "confidence": "high",
+       "evidence": "视频中一个穿着脚蹼的人从船上跳入水中。"
+      },
+      "b": {
+       "present": true,
+       "start_ts": 11.0,
+       "end_ts": 12.0,
+       "confidence": "high",
+       "evidence": "第一人称视角下,一个人穿着脚蹼从船边跳入水中。"
+      }
+     },
+     "v_-voGnJbk3CI": {
+      "status": "low_confidence",
+      "why": "两次标注分歧(IoU=0.00)",
+      "a": {
+       "present": true,
+       "start_ts": 107.0,
+       "end_ts": 109.0,
+       "confidence": "high",
+       "evidence": "一名穿着蓝色泳裤的男子跳水运动员从高台跳入水中。"
+      },
+      "b": {
+       "present": true,
+       "start_ts": 45.0,
+       "end_ts": 47.0,
+       "confidence": "high",
+       "evidence": "一名穿着红色泳裤的男子从跳台上起跳，在空中翻转后入水。"
+      }
+     },
+     "v_wYIeRRTRtX8": {
+      "status": "labeled",
+      "start_ts": 9.0,
+      "end_ts": 11.0,
+      "iou": 1.0,
+      "evidence": "视频中一名身穿蓝色泳衣的人从高台跳入水中。",
+      "a": {
+       "present": true,
+       "start_ts": 9.0,
+       "end_ts": 11.0,
+       "confidence": "high",
+       "evidence": "视频中一名身穿蓝色泳衣的人从高台跳入水中。"
+      },
+      "b": {
+       "present": true,
+       "start_ts": 9.0,
+       "end_ts": 11.0,
+       "confidence": "high",
+       "evidence": "一名身穿蓝色泳衣的人从跳台上后空翻跳入水中。"
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "t2-performing-gymnastics",
+   "tier": "T2",
+   "predicate": "performing gymnastics",
+   "question": "找出所有有人在垫上或器械上做翻腾平衡动作的视频,并给出时间段和画面证据(时段口径:给目标动作【本身】的起止秒,别把前后铺垫并进来;同一动作出现多次就挑最清晰的一次)",
+   "rephrased": true,
+   "gold": {
+    "video_ids": [
+     "v_0dkIbKXXFzI",
+     "v__AKzq9X1Aik",
+     "v_aLv03Fznf5A",
+     "v_fRmHJKlQmmw"
+    ],
+    "count": 4,
+    "per_video": {
+     "v_0dkIbKXXFzI": {
+      "categories": [
+       "fitness"
+      ]
+     },
+     "v_aLv03Fznf5A": {
+      "categories": [
+       "fitness"
+      ]
+     },
+     "v_fRmHJKlQmmw": {
+      "categories": [
+       "fitness"
+      ]
+     },
+     "v__AKzq9X1Aik": {
+      "categories": [
+       "fitness"
+      ]
+     }
+    },
+    "adjudicated": {
+     "v__AKzq9X1Aik": "动作行 performing gymnastics on parallel bars;核验包 P2:双杠 L-sit/撑体"
+    }
+   },
+   "ts_mask": true,
+   "db_spans_available": 3,
+   "gold_localization": {
+    "status": "labeled",
+    "labeler": "gemini-2.5-pro ×2 交叉",
+    "spans": {
+     "v_0dkIbKXXFzI": {
+      "start_ts": 0.0,
+      "end_ts": 14.5
+     },
+     "v_aLv03Fznf5A": {
+      "start_ts": 0.0,
+      "end_ts": 32.0
+     },
+     "v_fRmHJKlQmmw": {
+      "start_ts": 0.0,
+      "end_ts": 12.1
+     },
+     "v__AKzq9X1Aik": [
+      {
+       "start_ts": 2.0,
+       "end_ts": 9.0
+      },
+      {
+       "start_ts": 18.0,
+       "end_ts": 23.0
+      }
+     ]
+    },
+    "raw": {
+     "v_0dkIbKXXFzI": {
+      "status": "labeled",
+      "start_ts": 0.0,
+      "end_ts": 14.5,
+      "iou": 0.93,
+      "evidence": "一名女体操运动员在平衡木上保持着劈叉平衡的姿势。",
+      "a": {
+       "present": true,
+       "start_ts": 0.0,
+       "end_ts": 14.0,
+       "confidence": "high",
+       "evidence": "一名女体操运动员在平衡木上保持着劈叉平衡的姿势。"
+      },
+      "b": {
+       "present": true,
+       "start_ts": 0.0,
+       "end_ts": 15.0,
+       "confidence": "high",
+       "evidence": "一名身穿蓝白色体操服的女孩在平衡木上做一字马平衡动作。"
+      }
+     },
+     "v_aLv03Fznf5A": {
+      "status": "labeled",
+      "start_ts": 0.0,
+      "end_ts": 32.0,
+      "iou": 1.0,
+      "evidence": "一名男子在鞍马上进行了一套完整的体操动作，并最终稳稳落地。",
+      "a": {
+       "present": true,
+       "start_ts": 0.0,
+       "end_ts": 32.1,
+       "confidence": "high",
+       "evidence": "一名男子在鞍马上进行了一套完整的体操动作，并最终稳稳落地。"
+      },
+      "b": {
+       "present": true,
+       "start_ts": 0.0,
+       "end_ts": 32.0,
+       "confidence": "high",
+       "evidence": "一名赤裸上身的男子穿着白色短裤，在体育馆的鞍马上进行一套体操动作。"
+      }
+     },
+     "v_fRmHJKlQmmw": {
+      "status": "labeled",
+      "start_ts": 0.0,
+      "end_ts": 12.1,
+      "iou": 0.98,
+      "evidence": "一名男体操运动员正在鞍马上进行一套连贯的平衡和旋转动作，并最终跳下器械。",
+      "a": {
+       "present": true,
+       "start_ts": 0.0,
+       "end_ts": 12.0,
+       "confidence": "high",
+       "evidence": "一名男体操运动员正在鞍马上进行一套连贯的平衡和旋转动作，并最终跳下器械。"
+      },
+      "b": {
+       "present": true,
+       "start_ts": 0.0,
+       "end_ts": 12.2,
+       "confidence": "high",
+       "evidence": "一名男性体操运动员在鞍马上进行一套动作，包括腿部环绕和手倒立。"
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "t2-rock-climbing",
+   "tier": "T2",
+   "predicate": "rock climbing",
+   "question": "找出所有有人徒手或借助绳索攀爬岩壁的视频,并给出时间段和画面证据(时段口径:给目标动作【本身】的起止秒,别把前后铺垫并进来;同一动作出现多次就挑最清晰的一次)",
+   "rephrased": true,
+   "gold": {
+    "video_ids": [
+     "v_--1DO2V4K74",
+     "v_0HhNhRExwSQ",
+     "v_kr4RUFi1UGs"
+    ],
+    "count": 3,
+    "per_video": {
+     "v_--1DO2V4K74": {
+      "categories": [
+       "climbing"
+      ]
+     },
+     "v_0HhNhRExwSQ": {
+      "categories": [
+       "climbing"
+      ]
+     },
+     "v_kr4RUFi1UGs": {
+      "categories": [
+       "climbing"
+      ]
+     }
+    }
+   },
+   "ts_mask": true,
+   "db_spans_available": 3,
+   "gold_localization": {
+    "status": "labeled",
+    "labeler": "gemini-2.5-pro ×2 交叉",
+    "spans": {
+     "v_kr4RUFi1UGs": {
+      "start_ts": 2.0,
+      "end_ts": 35.0
+     }
+    },
+    "raw": {
+     "v_--1DO2V4K74": {
+      "status": "low_confidence",
+      "why": "两次标注分歧(IoU=0.00)",
+      "a": {
+       "present": true,
+       "start_ts": 74.0,
+       "end_ts": 88.0,
+       "confidence": "high",
+       "evidence": "一名没穿上衣的男子背对镜头，正在向上攀爬一面棕色的岩壁。"
+      },
+      "b": {
+       "present": true,
+       "start_ts": 115.0,
+       "end_ts": 117.0,
+       "confidence": "high",
+       "evidence": "A shirtless man jumps from one hold to another while climbing a rock face."
+      }
+     },
+     "v_0HhNhRExwSQ": {
+      "status": "low_confidence",
+      "why": "两次标注分歧(IoU=0.00)",
+      "a": {
+       "present": true,
+       "start_ts": 105.0,
+       "end_ts": 119.0,
+       "confidence": "high",
+       "evidence": "俯拍视角下,一名穿着格子衬衫、戴着红色头盔的男子正在岩壁上攀爬。"
+      },
+      "b": {
+       "present": true,
+       "start_ts": 65.0,
+       "end_ts": 79.0,
+       "confidence": "high",
+       "evidence": "从俯视视角看,一名戴着红色头盔、穿着格子衬衫的人正在向上攀爬岩壁。"
+      }
+     },
+     "v_kr4RUFi1UGs": {
+      "status": "labeled",
+      "start_ts": 2.0,
+      "end_ts": 35.0,
+      "iou": 1.0,
+      "evidence": "视频中一名戴着红色头盔的男子正在攀爬岩壁。",
+      "a": {
+       "present": true,
+       "start_ts": 2.0,
+       "end_ts": 35.0,
+       "confidence": "high",
+       "evidence": "视频中一名戴着红色头盔的男子正在攀爬岩壁。"
+      },
+      "b": {
+       "present": true,
+       "start_ts": 2.1,
+       "end_ts": 35.0,
+       "confidence": "high",
+       "evidence": "一个没穿上衣、戴着红色头盔的男子正在攀爬一处岩壁。"
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "probe-golf",
+   "tier": "PROBE",
+   "predicate": "golf",
+   "question": "找出库里所有打高尔夫的视频",
+   "rephrased": false,
+   "trap": "有网球/羽毛球/乒乓球等大量球类内容作相似诱惑,但高尔夫为零",
+   "gold": {
+    "video_ids": [],
+    "count": 0,
+    "per_video": {}
+   }
+  }
+ ]
+}

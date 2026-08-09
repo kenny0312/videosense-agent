@@ -270,3 +270,31 @@ def test_dedupe_by_video_keeps_best_row():
     out = _dedupe_by_video(rows, 8)
     assert [r["video_id"] for r in out] == ["a", "b"]          # 每视频一行
     assert out[0]["score"] == 0.9 and out[0]["n"] == 1         # 保最高分,重编号
+
+
+def test_semantic_search_rows_pass_through_ts_mask(monkeypatch):
+    """批 5-C 第二挂点:semantic_search 是谓词掩码时代被实测使用的旁路 ——
+    fact 行进了 content_embeddings,带着 start_ts/end_ts 从这条路原样回来,
+    考感知的题照样抄库。评测态(GATE_TS_MASK_VIDEO_IDS 置位)下,gold 视频
+    经 semantic_search 返回的行也必须没有时间戳;非 gold 视频不动。"""
+    from pipeline import config, embeddings as e, semantic_index as si
+    from pipeline import node_executor as nx
+    from pipeline.dag_schema import Node
+
+    monkeypatch.setattr(config, "USE_SEMANTIC_SEARCH", True)
+    monkeypatch.setattr(e, "embed_query", lambda q: [0.0] * 768)
+    monkeypatch.setattr(nx, "_translate_query_en", lambda q: None)
+    rows = [{"video_id": "v_gold1", "source": "vf", "snippet": "celebrating 217s",
+             "start_ts": 217.0, "end_ts": 218.0, "score": 0.9, "relevance": "strong"},
+            {"video_id": "v_free1", "source": "vf", "snippet": "swimming",
+             "start_ts": 30.0, "end_ts": 40.0, "score": 0.85, "relevance": "strong"}]
+    monkeypatch.setattr(si, "search", lambda lit, k, **kw: [dict(r) for r in rows])
+    monkeypatch.setenv("GATE_TS_MASK_VIDEO_IDS", "v_gold1")
+
+    nr = nx._run_semantic_search(Node(id="n1", tool="semantic_search",
+                                      inputs={"query": "celebration"}, depends_on=[]))
+    assert nr.ok
+    got = {r["video_id"]: r for r in nr.value}
+    assert got["v_gold1"]["start_ts"] is None and got["v_gold1"]["end_ts"] is None, \
+        "gold 视频从 semantic_search 这条路还在漏时间戳 —— 旁路没堵上"
+    assert got["v_free1"]["start_ts"] == 30.0, "非 gold 视频被误伤"

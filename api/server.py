@@ -84,7 +84,7 @@ def _parse_access_keys(raw: str) -> tuple[list[str], dict[str, str]]:
 
 
 _ACCESS_KEYS, _KEY_TO_NAME = _parse_access_keys(os.environ.get("APP_ACCESS_KEYS", ""))
-_OPEN_PATHS = {"/health"}
+_OPEN_PATHS = {"/health", "/internal/tasks/advance"}   # advance 豁免口令墙,被 OIDC 罩住(S-3)
 
 # ── fail-closed:生产环境(APP_ENV=prod)必须设 APP_ACCESS_KEYS,否则拒绝启动 ──
 # 防"忘设/写错口令 = 全站裸奔"(videosense-pyai 就是这么死的:allUsers + 无口令 → 匿名可烧钱)。
@@ -234,6 +234,255 @@ def health():
             "gated": bool(_ACCESS_KEYS)}
 
 
+# ── S-2 任务底座四端点(设计 docs/longhorizon-task-substrate-plan.md §S-2)────────
+# USE_TASKS=0 → 全 404(特性不存在);guest 一律 403(公开部署日不返工);
+# owner 隔离在 task_store 的 SQL WHERE 里(不靠这里自觉)。
+class TaskCreateRequest(BaseModel):
+    goal: str
+    budget_cap: "float | None" = None
+    parent_task_id: "str | None" = None       # S-10 续作:基于哪个已完成任务的报告再做一版
+
+
+def _tasks_gate(request: Request) -> "Response | None":
+    if not config.USE_TASKS:
+        return Response(status_code=404)
+    owner = getattr(request.state, "app_user", "anon")
+    if _is_guest(owner):
+        return Response(json.dumps({"error": "游客不能使用后台任务"}),
+                        status_code=403, media_type="application/json")
+    return None
+
+
+@app.post("/v1/tasks")
+def task_create(req: TaskCreateRequest, request: Request):
+    if (r := _tasks_gate(request)) is not None:
+        return r
+    owner = getattr(request.state, "app_user", "anon")
+    goal = (req.goal or "").strip()
+    if not goal or len(goal) > 2000:
+        return Response(json.dumps({"error": "goal 必填且 ≤2000 字"}),
+                        status_code=422, media_type="application/json")
+    # 只做 ratelimit precheck 校验、不扣占位(红队:占位与日顶制度双向冲突)。
+    # sid 必须传 None:常量 sid 是全用户共享的伪会话桶 —— review 实测一个登录用户把自己
+    # 会话取名同值烧到 $0.75 就能让【全站】立项 429 二十四小时(投毒 DoS)。
+    # S-3 记账处同禁:任务花费绝不许挂常量 sid。
+    if (rl := _rate_limited(request, owner, sid=None)) is not None:
+        return rl
+    # cap 夹在 (0, min(单任务硬顶, 任务日顶)]。NaN 必拒:json/pydantic 默认放行裸 NaN,
+    # 而 min(nan, x)=nan、nan<=0=False → 穿透夹紧入库 = 预算闸对该任务失明 + 任务页
+    # 序列化 500(review 实测);0 也必拒(旧写法 or 会把显式 0 静默换成默认再开跑烧钱)。
+    import math
+    cap_in = config.TASK_DEFAULT_CAP_USD if req.budget_cap is None else float(req.budget_cap)
+    if not math.isfinite(cap_in) or cap_in <= 0:
+        return Response(json.dumps({"error": "budget_cap 必须是正的有限数"}),
+                        status_code=422, media_type="application/json")
+    cap = min(cap_in, config.TASK_MAX_CAP_USD, config.RL_TASK_DAILY_COST_USD)
+    from pipeline import task_queue, task_store
+    parent = (req.parent_task_id or "").strip() or None
+    if parent and task_store.owner_of(parent) != owner:    # 只能续自己的任务
+        return Response(status_code=404)
+    task_id, created = task_store.create_task(owner, goal, cap, parent_task_id=parent)
+    if not created:                                       # 幂等命中(含前端双击)
+        # pending 幽灵自愈(review 确认两个触发器:commit→enqueue 窗口进程死 / _execute
+        # 盲重试撞自己刚插的行把 created 翻成 False)—— 命中的行若还停在 pending,
+        # 说明第一波从没投出去,这里补投一次(命名任务/CLAIM CAS 天然幂等,重复无害)。
+        st = task_store.status_of(task_id)
+        if st and st[0] == "pending":
+            try:
+                task_queue.enqueue_advance(task_id, st[1])
+            except Exception as e:
+                log.warning("pending 幽灵补投失败 %s: %r", task_id, e)
+                return Response(json.dumps({"error": "任务已登记但排队服务暂时不可用,"
+                                                     "请稍后重试(费用未发生)"}),
+                                status_code=503, media_type="application/json")
+        return {"task_id": task_id, "created": False,
+                "note": "同目标的任务已在进行中,直接看它的进度即可"}
+    try:
+        task_queue.enqueue_advance(task_id, 0)            # 投第一波(wave 0 = 规划波)
+    except Exception as e:                                # fail-closed:不留 running/pending 幽灵
+        log.warning("任务 %s 投递失败(fail-closed → paused_error): %r", task_id, e)
+        try:
+            task_store.set_status(task_id, "paused_error")
+            task_store.add_event(task_id, "enqueue_failed", {"error": repr(e)[:200]})
+        except Exception:
+            log.error("任务 %s 投递失败后的 fail-closed 处置也失败", task_id, exc_info=True)
+        return Response(json.dumps({"error": "任务已登记但排队服务暂时不可用,"
+                                             "请稍后在任务页点重试(费用未发生)"}),
+                        status_code=503, media_type="application/json")
+    return {"task_id": task_id, "created": True}
+
+
+@app.get("/v1/tasks/{task_id}")
+def task_get(task_id: str, request: Request):
+    if (r := _tasks_gate(request)) is not None:
+        return r
+    owner = getattr(request.state, "app_user", "anon")
+    from pipeline import task_store
+    view = task_store.get_view(owner, task_id)
+    if view is None:                                      # 不存在或不属于你,同一口径(防枚举)
+        return Response(status_code=404)
+    return view
+
+
+@app.post("/v1/tasks/{task_id}/notes")
+def task_note(task_id: str, request: Request, body: dict):
+    if (r := _tasks_gate(request)) is not None:
+        return r
+    owner = getattr(request.state, "app_user", "anon")
+    note = str((body or {}).get("note") or "").strip()
+    if not note or len(note) > 1000:
+        return Response(json.dumps({"error": "note 必填且 ≤1000 字"}),
+                        status_code=422, media_type="application/json")
+    from pipeline import task_store
+    if task_store.owner_of(task_id) != owner:
+        return Response(status_code=404)
+    task_store.add_event(task_id, "user_note", {"note": note})   # 下一波组装注入(S-3)
+    return {"ok": True}
+
+
+def _oidc_claims(token: str) -> dict:
+    """Google OIDC token → claims(单测打桩点;live 走 google-auth 验签)。"""
+    from google.auth.transport import requests as garequests
+    from google.oauth2 import id_token as gid
+    return gid.verify_oauth2_token(token, garequests.Request(),
+                                   audience=config.TASKS_ADVANCE_URL)
+
+
+def _verify_advance_auth(request: Request, authorization: "str | None",
+                         shared: "str | None") -> bool:
+    """S-3 鉴权:生产(K_SERVICE 在场)只认 Cloud Tasks 的 OIDC(audience 钉死 advance
+    完整 URL);共享密钥仅限本地(检测到 K_SERVICE 直接禁用 —— 红队:不留降级到生产)。
+    校验失败一律 False(端点回 403 fail-closed)。"""
+    on_cloudrun = bool(os.environ.get("K_SERVICE"))
+    if authorization and authorization.lower().startswith("bearer "):
+        try:
+            claims = _oidc_claims(authorization.split(None, 1)[1])
+            # 【必须钉调用者身份】(review-HIGH):verify 只校验 签名/exp/aud,而 SA 的
+            # ID token audience 谁都能自选 —— 任何 Google 账号都能铸出 aud=本服务的合法
+            # token。audience 之外必须比对 email == 我们配置的投递 SA,未配置 = fail-closed。
+            return (bool(config.TASKS_ADVANCE_URL) and bool(config.TASKS_INVOKER_SA)
+                    and claims.get("email") == config.TASKS_INVOKER_SA
+                    and claims.get("email_verified") is True)
+        except Exception:
+            log.warning("advance OIDC 校验失败", exc_info=True)
+            return False
+    if on_cloudrun:                                        # 云上无 OIDC = 拒,密钥路径禁用
+        return False
+    import hmac as _hmac
+    want = os.environ.get("TASKS_SHARED_SECRET", "")
+    return bool(want) and bool(shared) and _hmac.compare_digest(want, shared)
+
+
+@app.post("/internal/tasks/advance")
+def tasks_advance(request: Request, body: dict):
+    """Cloud Tasks 回调:推进一波。RETRY → 503(让队列退避重来,跨过租约期);其余 200。
+    inline 驱动不经这里(daemon 线程直调 task_runner.advance,同一代码路径)。"""
+    if not config.USE_TASKS:
+        return Response(status_code=404)
+    if not _verify_advance_auth(request, request.headers.get("Authorization"),
+                                request.headers.get("X-Tasks-Secret")):
+        return Response(status_code=403)
+    task_id = str((body or {}).get("task_id") or "")
+    wave_n = (body or {}).get("wave_n")
+    if not task_id or not isinstance(wave_n, int) or wave_n < 0:
+        return Response(json.dumps({"error": "需要 task_id 与 wave_n(int≥0)"}),
+                        status_code=422, media_type="application/json")
+    from pipeline import task_runner
+    out = task_runner.advance(task_id, wave_n)
+    if out.get("result") == task_runner.RETRY:
+        return Response(json.dumps(out), status_code=503, media_type="application/json")
+    return out
+
+
+@app.post("/v1/tasks/{task_id}/resume")
+def task_resume(task_id: str, request: Request, body: dict | None = None):
+    """S-4 复活(paused_budget 提额 / paused_error 重试):新 cap + 回 running + 清租约
+    + 【必须投递】当前波(红队 HIGH:v1 的 resume 没投递 = 必死锁)。
+    投递名带 salt 绕命名任务墓碑(执行过的名字 ~1h 内裸重投会静默丢投 = 假活)。"""
+    if (r := _tasks_gate(request)) is not None:
+        return r
+    owner = getattr(request.state, "app_user", "anon")
+    from pipeline import task_queue, task_store
+    if task_store.owner_of(task_id) != owner:
+        return Response(status_code=404)
+    raw = (body or {}).get("budget_cap")
+    import math
+    if raw is None:
+        new_cap = config.TASK_MAX_CAP_USD
+    else:
+        new_cap = float(raw)
+        if not math.isfinite(new_cap) or new_cap <= 0:
+            return Response(json.dumps({"error": "budget_cap 必须是正的有限数"}),
+                            status_code=422, media_type="application/json")
+    new_cap = min(new_cap, config.TASK_MAX_CAP_USD, config.RL_TASK_DAILY_COST_USD)
+    # 贴顶诚实回话(review-HIGH:硬顶之上任何 cap 都过不了波开头闸,旧写法回 200
+    # "已恢复"却下一波立刻又暂停 = 假成功骗 UI)。收口波有收尾额度,所以只有"连收尾
+    # 都不够"才算真到顶。
+    try:
+        live = task_store.live_state(task_id)
+    except Exception:                          # 读不到就照常恢复(波开头闸会兜住),不拦用户
+        log.warning("resume 读实时账目失败(fail-open)", exc_info=True)
+        live = None
+    if live and live[1] > new_cap + config.TASK_FINALIZE_GRACE_USD:
+        return {"ok": True, "resumed": False,
+                "note": (f"这个任务已经花了 ${live[1]:.2f},到了单任务的花费上限 "
+                         f"(${config.TASK_MAX_CAP_USD:.2f}),再恢复也推不动了。"
+                         "要继续请提高上限后重开一个任务,或就现有结果收尾。")}
+    got = task_store.resume(task_id, new_cap)
+    if got is None:                                        # 不在暂停态 → 幂等,不报错
+        return {"ok": True, "resumed": False,
+                "note": "这个任务现在不处于暂停状态,不需要恢复"}
+    wave_n, cap = got
+    task_store.add_event(task_id, "resumed", {"wave": wave_n, "new_cap": cap})
+    try:
+        task_queue.enqueue_advance(task_id, wave_n, salt=uuid.uuid4().hex[:8])
+    except Exception as e:                                 # 投不出去 → 回 paused_error,别假活
+        log.warning("resume 投递失败 %s: %r", task_id, e)
+        task_store.set_status(task_id, "paused_error")
+        task_store.add_event(task_id, "enqueue_failed", {"error": repr(e)[:200],
+                                                         "at": "resume"})
+        return Response(json.dumps({"error": "恢复失败:排队服务暂时不可用,请稍后再试"}),
+                        status_code=503, media_type="application/json")
+    return {"ok": True, "resumed": True, "wave_n": wave_n, "budget_cap": cap}
+
+
+@app.post("/v1/tasks/{task_id}/nudge")
+def task_nudge(task_id: str, request: Request):
+    """S-5 唯一必做件:人肉救援通道 —— 对"running 但久未推进"的任务重投当前波。
+    命名任务带 salt 绕墓碑;CLAIM 的 CAS 保证真在跑的波不会被重复执行。"""
+    if (r := _tasks_gate(request)) is not None:
+        return r
+    owner = getattr(request.state, "app_user", "anon")
+    from pipeline import task_queue, task_store
+    if task_store.owner_of(task_id) != owner:
+        return Response(status_code=404)
+    st = task_store.status_of(task_id)
+    if not st or st[0] != "running":
+        return {"ok": True, "nudged": False,
+                "note": "只有卡住的进行中任务需要重推;暂停的请用恢复"}
+    try:
+        task_queue.enqueue_advance(task_id, st[1], salt=uuid.uuid4().hex[:8])
+    except Exception as e:
+        log.warning("nudge 投递失败 %s: %r", task_id, e)
+        return Response(json.dumps({"error": "重推失败:排队服务暂时不可用"}),
+                        status_code=503, media_type="application/json")
+    return {"ok": True, "nudged": True, "wave_n": st[1]}
+
+
+@app.post("/v1/tasks/{task_id}/cancel")
+def task_cancel(task_id: str, request: Request):
+    if (r := _tasks_gate(request)) is not None:
+        return r
+    owner = getattr(request.state, "app_user", "anon")
+    from pipeline import task_store
+    if task_store.owner_of(task_id) != owner:
+        return Response(status_code=404)
+    changed = task_store.set_status(task_id, "cancelled")  # 终态同语句清租约;非法前驱=0 行
+    if changed:
+        task_store.add_event(task_id, "cancelled", {})
+    return {"ok": True, "changed": changed}                # 已终态的重复 cancel 幂等
+
+
 # 同会话请求在本进程内串行化 —— 端点是 sync def,FastAPI 放线程池并发执行;一次请求是
 # read(get_or_create)→ mutate(run_query)→ write(save) 的非原子序列,两个同 session_id
 # 请求重叠会"后写覆盖"整轮(丢一轮记忆)。每会话一把锁把这段串起来 → 单副本即安全。
@@ -286,6 +535,10 @@ def _audit(request: Request, req: VibeQueryRequest, result: dict,
         "tokens_in":    usage.get("tokens_in", 0),
         "tokens_out":   usage.get("tokens_out", 0),
         "tokens_total": usage.get("tokens_total", 0),
+        # P0-1:思考/工具用提示 token 单列 —— 思考按 out 价计费,是深跑账单的大头;
+        # 不落日志则"成本全口径可见"红线在唯一的生产消费方处失效。
+        "tokens_thought": usage.get("tokens_thought", 0),
+        "tokens_tool":  usage.get("tokens_tool", 0),
         "llm_calls":    usage.get("llm_calls", 0),
         "cost_usd":     usage.get("cost_usd", 0.0),
         # 序列化成字符串:模型名带点/横线(gemini-2.5-pro),作 JSON 对象会在 BigQuery 里炸成一堆动态列
@@ -301,8 +554,15 @@ def _audit(request: Request, req: VibeQueryRequest, result: dict,
     record["trace_summary"]     = result.get("trace_summary")
     if result.get("status") == "error":                  # 失败轮落完整 trace,供事后重建
         record["trace"]         = json.dumps(result.get("trace", []), ensure_ascii=False)
+    # P0-1 fail-loud:成本里有按【兜底最贵单价】估的模型 → 抬 severity 让 Cloud Logging 能配告警,
+    # 并报出模型名(否则运维只看到一个偏高的 cost_usd,永不知道该往 _PRICE 里加哪一行)。
+    if usage.get("unpriced_models"):
+        record["unpriced_models"] = usage["unpriced_models"]
+        record["severity"] = "WARNING"
     record["message"] = (f'audit user={record["app_user"]} status={record["status"]} '
-                         f'tokens={record["tokens_total"]} cost=${record["cost_usd"]}')
+                         f'tokens={record["tokens_total"]} cost=${record["cost_usd"]}'
+                         + (f' UNPRICED={record.get("unpriced_models")}'
+                            if usage.get("unpriced_models") else ''))
     print(json.dumps(record, ensure_ascii=False), flush=True)
     # P0-2 记账:把本次实际成本累加进限流的当日/会话桶(供下一请求的 precheck 比对)。fail-open。
     try:
@@ -422,12 +682,96 @@ def resign(req: ResignRequest, request: Request):
 
 class EnrichRequest(BaseModel):
     video_id: str = Field(..., description="要富化的视频 id(上传 PUT 成功后调用)")
+    duration_sec: float | None = Field(
+        None, description="素材时长(秒),可选。给了就按它算死线,不给则走死线上限。"
+                          "前端上传流程会尽力测量后带上(web/index.html 的 videoDurationSec:"
+                          "离屏 <video> 只读 metadata);测不到就不带这个字段。"
+                          "只影响本次死线,且已被上下限夹住(见 _enrich_deadline_sec)")
+
+
+# ── A8(P0-5)enrich 判死:按素材时长算死线 + 状态位 + 查询端点 ────────────────
+# 现状病灶:enrich 起一个 daemon 线程就返回 {"status":"started"},之后【没有任何终点】——
+# 卡住的 generate_content 会一直挂着,调用方永远等不到下文,也没处查它到底成没成。
+#
+# 死线口径:max(5min, min(60min, 2×时长))。为什么按时长而不是像 taskstate.TASK_LEASE_MIN 那样
+# 用一个常数:一个 10 秒的短片和一个 3 小时的讲座,合理耗时差两个数量级,同一个常数要么把长片
+# 误杀、要么给短片留半小时的无谓等待。上下限是防呆(时长脏数据/极端素材)。
+ENRICH_DEADLINE_FLOOR_SEC = 5 * 60
+ENRICH_DEADLINE_CAP_SEC = 60 * 60
+_ENRICH_STATUS: "dict[str, dict]" = {}      # video_id → 状态记录(进程内;跨实例见 GET 端点兜底)
+_ENRICH_LOCK = threading.RLock()            # 可重入:判死/收工都要在锁内"读状态再写"(见下)
+_ENRICH_STATUS_MAX = 256                    # 有界:长跑进程别把状态位攒成内存泄漏
+
+
+def _enrich_deadline_sec(duration_sec) -> int:
+    """按素材时长给死线。时长【测不到】→ 给上限 60min:判死是为了让卡住的活有终点,
+    不是为了砍慢活 —— 宁可多等 60 分钟,也不要把一份 3 小时素材的合法富化误杀。
+
+    时长源:web/index.html 的上传流程会尽力测量并带上(离屏 <video> 读 metadata,
+    三道守卫:3 秒上限 / Number.isFinite 挡 WebM 的 Infinity / >0)。测不到就不带,
+    这条公式落在上限 3600s —— 那也是可接受的终点,A8 的底线是"从无穷到有界"。"""
+    try:
+        d = float(duration_sec)
+    except (TypeError, ValueError):
+        return ENRICH_DEADLINE_CAP_SEC
+    if not (d > 0):                                   # 0 / 负数 / NaN 全归"测不到"
+        return ENRICH_DEADLINE_CAP_SEC
+    return int(max(ENRICH_DEADLINE_FLOOR_SEC, min(ENRICH_DEADLINE_CAP_SEC, 2.0 * d)))
+
+
+def _hinted_duration_sec(hinted) -> "float | None":
+    """时长只认请求体带来的那一个数,不去查库。理由(实测过调用面,不是省事):
+    本端点【只】被前端直传流程调用(web/index.html 上传成功后 fire-and-forget),
+    传进来的恒是 up_ 临时视频 —— 它按设计【不进 video_metadata】,查库必然空手而归。
+    库内视频的批量富化走的是 perception/setup_enrichment.py 那个脚本,根本不经过这里。
+    (时长查询本可以搭 already_enriched 那条常驻 psycopg 连接,不贵 —— 不做的理由
+    只有"查了必空手"这一条,不是成本。)
+
+    脏值(None / 非数 / ≤0 / NaN / ±inf)→ None,由 _enrich_deadline_sec 归到"测不到"。
+    +inf 必须显式挡:min(cap, 2*inf) == cap 恰好成立,所以死线看起来没问题,
+    但 inf 会被原样写进状态位,GET /v1/enrich/{vid} 序列化时 500(JSON 没有 Infinity),
+    且该 vid 【永久】查不了。而这条路是可达的 —— 上传白名单里有 video/webm,
+    MediaRecorder 产出的 WebM 其 <video>.duration === Infinity。"""
+    try:
+        d = float(hinted)
+    except (TypeError, ValueError):
+        return None
+    if d != d or d in (float("inf"), float("-inf")):      # NaN(d!=d)与 ±inf
+        return None
+    return d if d > 0 else None
+
+
+def _enrich_set(vid: str, status: str, **fields) -> None:
+    """写状态位(started/ok/failed)。同一 vid 的记录就地更新,超过上限按最早登记的先淘汰。"""
+    with _ENRICH_LOCK:
+        rec = _ENRICH_STATUS.get(vid) or {"video_id": vid}
+        rec.update(fields)
+        rec["status"] = status
+        rec["updated_at"] = time.time()
+        _ENRICH_STATUS[vid] = rec
+        while len(_ENRICH_STATUS) > _ENRICH_STATUS_MAX:
+            _ENRICH_STATUS.pop(next(iter(_ENRICH_STATUS)))
+
+
+def _enrich_finish(vid: str, box: dict) -> None:
+    """干活线程收工时落终态。已经被判死的:只补记【迟到的下场】,不翻案 ——
+    死线判决一旦下了就算数(调用方可能早就按 failed 走了别的路),悄悄改回 ok 比 failed 更坏。"""
+    ok = "result" in box                              # 按"拿到结果"判,不按"没抛异常"判
+    with _ENRICH_LOCK:                                # 读状态+写状态在同一把锁内 —— 与判死互斥
+        cur = (_ENRICH_STATUS.get(vid) or {}).get("status")
+        if cur == "started" or cur is None:
+            _enrich_set(vid, "ok" if ok else "failed",
+                        result=box.get("result"), error=box.get("error"))
+        else:
+            _enrich_set(vid, cur, late_status="ok" if ok else "failed",
+                        late_error=box.get("error"))
 
 
 @app.post("/v1/enrich")
 def enrich(req: EnrichRequest, request: Request):
     """V1.5:入库富化(转录+caption → 语义索引)。前端直传 GCS 成功后调用;幂等
-    (已富化直接返回);后台线程执行不阻塞。语义层关闭时 no-op。全程 fail-open。"""
+    (已富化直接返回);后台线程执行不阻塞。语义层关闭时 no-op。全程 fail-open。
+    A8:后台活带死线 + started/ok/failed 状态位,查询走 GET /v1/enrich/{video_id}。"""
     from pipeline.node_executor import _VIDEO_ID_RE, _resolve_gcs
     if not config.USE_SEMANTIC_SEARCH:
         return {"status": "disabled"}
@@ -443,14 +787,71 @@ def enrich(req: EnrichRequest, request: Request):
         gcs = None
     if not gcs:
         return Response(status_code=404, content="找不到该视频")
+    duration = _hinted_duration_sec(req.duration_sec)
+    deadline = _enrich_deadline_sec(duration)
 
     def work():
-        try:
-            log.info("enrich 完成: %s", enrichment.enrich_video(vid, gcs))
-        except Exception:
-            log.warning("enrich 失败(fail-open): %s", vid, exc_info=True)
-    threading.Thread(target=work, daemon=True).start()
-    return {"status": "started"}
+        box: dict = {}
+
+        def run():
+            try:
+                box["result"] = enrichment.enrich_video(vid, gcs)
+                log.info("enrich 完成: %s", box["result"])
+            except Exception as e:
+                box["error"] = repr(e)[:300]
+                log.warning("enrich 失败(fail-open): %s", vid, exc_info=True)
+            finally:
+                _enrich_finish(vid, box)              # finally:干活线程无论怎么退场都留下终态
+
+        _enrich_set(vid, "started", started_at=time.time(),
+                    deadline_sec=deadline, duration_sec=duration,
+                    result=None, error=None)
+        t = threading.Thread(target=run, daemon=True, name=f"enrich-{vid[:16]}")
+        t.start()
+        t.join(deadline)
+        if not t.is_alive():
+            return
+        # 判死。注意这【不是】强杀:Python 杀不掉线程,里面挂着的是一次阻塞式
+        # generate_content。它是 daemon,进程退出即回收;这里只负责【下结论】,
+        # 让调用方不必无限等。它若日后真跑完,_enrich_finish 记 late_status,不翻案。
+        # 锁内再确认一次"还是 started":join 超时与干活线程恰好收工是并发的,
+        # 不确认会把一个【已经成功】的记录改写成 failed。
+        with _ENRICH_LOCK:
+            if (_ENRICH_STATUS.get(vid) or {}).get("status") != "started":
+                return
+            _enrich_set(vid, "failed", timeout=True,
+                        error=f"deadline exceeded ({deadline}s)")
+        log.warning("enrich 超时判死(死线 %ss,时长 %s): %s", deadline, duration, vid)
+
+    # 外层线程只负责"等 + 判死",本身不阻塞请求(与改动前一样,端点立刻返回)。
+    threading.Thread(target=work, daemon=True, name=f"enrich-watch-{vid[:16]}").start()
+    return {"status": "started", "video_id": vid, "deadline_sec": deadline}
+
+
+@app.get("/v1/enrich/{video_id}")
+def enrich_status(video_id: str, request: Request):
+    """A8:查一次富化的下场(只读,绝不触发富化)。
+
+    进程内状态位优先;查不到(跨实例 / 进程重启后)退回"这视频到底富化过没有"的探测 ——
+    这条兜底让答案在多实例下仍然有用,只是丢掉 started/failed 的细节。
+    owner 隔离口径与 POST /v1/enrich、/v1/resign 一致(都不做)—— 单用户下无影响。"""
+    from pipeline.node_executor import _VIDEO_ID_RE
+    if not config.USE_SEMANTIC_SEARCH:
+        return {"status": "disabled"}
+    vid = str(video_id or "")
+    if not _VIDEO_ID_RE.match(vid):
+        return Response(status_code=422, content="非法 video_id")
+    with _ENRICH_LOCK:
+        rec = _ENRICH_STATUS.get(vid)
+    if rec is not None:
+        return dict(rec)
+    from pipeline import enrichment
+    try:
+        if enrichment.already_enriched(vid):
+            return {"video_id": vid, "status": "already"}
+    except Exception:
+        log.warning("enrich 状态兜底探测失败(fail-open): %s", vid, exc_info=True)
+    return {"video_id": vid, "status": "unknown"}
 
 
 @app.post("/v1/video_vibe_query/stream")

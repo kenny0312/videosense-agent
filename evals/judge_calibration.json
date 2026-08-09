@@ -1,0 +1,8 @@
+{
+ "kappa": 1.0,
+ "agreement": 1.0,
+ "n": 25,
+ "judge_model": "gpt-5-mini",
+ "date": "2026-07-08",
+ "scope": "honesty/负事实/检索理由类 nl_assertions（对表覆盖的题型）"
+}

@@ -51,9 +51,13 @@ def record(*, query: str, owner: str, lo, ledger: dict,
             out = ((getattr(er, "preview", None) if ok
                     else (getattr(er, "stderr", "") or getattr(er, "preview", None)))
                    if er else "")
-            try:                                     # cid = "c{轮}_{i}" → 这步属于第几轮
-                turn_no = int(str(s.get("cid", "c0_0"))[1:].split("_")[0])
-            except (ValueError, IndexError):
+            # 轮号读事件里的显式 turn 字段(loop_driver 写 trace 时就带上了)。
+            # 旧写法反解析 cid 字符串("c{轮}_{i}" 掐掉首字符再切 "_")—— id 格式一变
+            # (A2 给 result_id 加了请求短前缀 r_xxxxxxxx_)整列轮号就静默错成 0,
+            # 决策对话流会把所有步塞进第 0 轮。格式不该是数据结构。
+            try:
+                turn_no = int(s.get("turn", 0))
+            except (TypeError, ValueError):
                 turn_no = 0
             steps.append({
                 "tool": tool, "ok": ok, "turn": turn_no,

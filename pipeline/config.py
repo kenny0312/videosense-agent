@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import logging
 import os
 
 
@@ -87,9 +88,35 @@ USER_MEMORY_MAX_CHARS = int(os.environ.get("USER_MEMORY_MAX_CHARS", "6000"))   #
 # V1:语义检索(pgvector 内容级;semantic_search 工具 + analyze 随用写钩子)。
 #   0 = 工具从声明消失且写钩子停用(零残留)。S4 验收通过(2026-07-02)→ 默认开。
 USE_SEMANTIC_SEARCH = os.environ.get("USE_SEMANTIC_SEARCH", "1").lower() in ("1", "true", "yes")
+# P0-5 长程引擎:semantic_search 的 video_ids 过滤(视频内下钻)。关 = 参数对大脑不可见、
+# 行为与升级前逐字节一致;深度 2 三臂实验【同开】(控制变量)。
+USE_IN_VIDEO_SEARCH = os.environ.get("USE_IN_VIDEO_SEARCH", "0").lower() in ("1", "true", "yes")
 SEMANTIC_SEARCH_K   = int(os.environ.get("SEMANTIC_SEARCH_K", "8"))
 MAX_LOOP_STEPS     = int(os.environ.get("MAX_LOOP_STEPS", "16"))    # 终止护栏:防死循环
 LOOP_REPEAT_LIMIT  = int(os.environ.get("LOOP_REPEAT_LIMIT", "2"))  # 同一(工具,参数)连续失败上限
+
+# ── P0-3 长程引擎护栏:per-tree(=per-request)美元熔断 + 墙钟 ────────────────
+# 与 RL_* 的分工:RL_* 是【跨请求】的日/会话顶(事后 record);这两条是【请求内】的实时闸,
+# 治的是"一次请求里一棵树把钱烧穿"—— DVD 实测 Trace 税 12× 成本方差正是这个形状。
+# 两处挂点(缺一不可,红队 B1):工具执行前 + 主循环每步 generate 前 —— 只闸工具挡不住
+# "进入 Trap 循环只思考不调工具"的烧钱。
+# 默认 0 = 关(Part 0 不变量①:开关全关时行为与升级前逐字节等价)。
+# 【下限约束,启动时校验,见本文件末 _validate_tree_guard_budget()】开启(>0)时必须
+#   MAX_TREE_COST_USD >= TREE_ANALYZE_ESTIMATE_USD × MAX_ANALYZE_PARALLEL(默认 0.30×3 = 0.90),
+#   否则一步内的并行 analyze 会把闸在【实花几乎为零】时顶掉(admit 一旦拦下就 _trip 整棵树,
+#   之后每个工具调用全被拦 —— 不是"这次不看",是整次请求瘫痪)。
+#   低于单次预留(< TREE_ANALYZE_ESTIMATE_USD)时 pro 档 analyze 永远进不来 → 直接 raise 拒绝启动;
+#   够单次但不够满并行时 → 启动告警(别再靠人肉发现"怎么第三个 analyze 就熄火了")。
+# 0=关;开启的实验值建议 0.90(旧注释写的 0.80 在 pro 档不满足上式,只在 flash 档安全)。
+MAX_TREE_COST_USD  = float(os.environ.get("MAX_TREE_COST_USD", "0"))
+MAX_TREE_WALL_S    = float(os.environ.get("MAX_TREE_WALL_S", "0"))     # 0=关;生产建议 900
+# 触闸判据是"预估后比 + 在飞预留":spent + pending + 本次估价 > cap 即拦(而非事后发现超了),
+# 否则最后一次调用总能越线、K 个并行调用在钱落账前互相看不见(超冲 K×,review 变异验证)。
+TREE_CALL_ESTIMATE_USD = float(os.environ.get("TREE_CALL_ESTIMATE_USD", "0.05"))
+# analyze_video 单独给悲观口径:pro/长视频单次 $0.10~0.30(60k tok × pro 价),按 $0.05 预留
+# 会让并行 analyze 把 cap 冲穿 80%+(review 验算)。代价是缓存命中(免费)也按此预留 ——
+# 保守方向,与"宁可早触闸"的设计一致。
+TREE_ANALYZE_ESTIMATE_USD = float(os.environ.get("TREE_ANALYZE_ESTIMATE_USD", "0.30"))
 
 # 自检 B(设计 self-check-critic.md):收口前插一个显式 critic 判"满足用户没",没满足喂回再来一轮。
 #   2026-07-16 判决:12 争议题×两臂×n=3,成功数 20 vs 20 完全打平(无功也无害)→ 默认关,
@@ -105,8 +132,36 @@ SELF_CHECK_MAX_ROUNDS = int(os.environ.get("SELF_CHECK_MAX_ROUNDS", "1"))
 #   FANOUT = 一次最多并行几个子 agent(扇出/成本护栏);MAX_STEPS = 每个子 agent 的循环步上限(防子循环空转)。
 USE_SUBAGENTS       = os.environ.get("USE_SUBAGENTS", "0").lower() in ("1", "true", "yes")
 SUBAGENT_MAX_FANOUT = int(os.environ.get("SUBAGENT_MAX_FANOUT", "6"))
-SUBAGENT_MAX_STEPS  = int(os.environ.get("SUBAGENT_MAX_STEPS", "4"))
+#   基线 4 → 6(2026-08-02 实测改):真机 14 个子 agent,拿 4~5 步的 10 个【无一收敛】、
+#   拿 6 步的 4 个【全部收敛】。且与"派了几个视频"无关 —— 同一步内 analyze 是并行的
+#   (loop_driver 线程池),N 个视频本来就能一步看完;卡死的是固定开销:定位 1~2 步 + 看 1 步
+#   + 汇总 1 步 ≈ 4,4 步等于零余量。实测有子 agent 拿 2 视频/4 步,一个视频都没看成就撞墙。
+SUBAGENT_MAX_STEPS  = int(os.environ.get("SUBAGENT_MAX_STEPS", "6"))
+#   MAX_STEPS 是【基线】,实际步数按这个子任务要看几个视频动态给(subagents._steps_for):
+#   4 步装不下「读任务 + 逐个看 N 个视频 + 汇总成文」—— 点名 3 个视频的子 agent 会在看完最后一个
+#   那步被掐断,钱花了、结论没有。公式 min(CAP, max(MAX_STEPS, len(video_ids)+2));
+#   没点名 video_ids 时恒等于 MAX_STEPS(与动态化之前逐字节一致)。CAP = 硬顶(更多步 = 更多钱)。
+SUBAGENT_MAX_STEPS_CAP = int(os.environ.get("SUBAGENT_MAX_STEPS_CAP", "8"))
 SUBAGENT_MODEL      = os.environ.get("SUBAGENT_MODEL", LOOP_MODEL)   # 默认同主脑;可单独覆盖(如子 agent 用更强/更省档,见 SA-0 spike)
+# ── P0-6 长程引擎:裸 depth-2(实验对象,默认关;依赖 USE_SUBAGENTS=1)──────────
+# 只做深度穿透,不带 DAG/蒸馏/分层(红队 C2:实验测单变量)。关 = 全部路径与现状逐字节一致。
+USE_DEPTH2          = os.environ.get("USE_DEPTH2", "0").lower() in ("1", "true", "yes")
+# ── 线2 任务底座(S-1 起;默认全关,行为与升级前等价)────────────────────────
+USE_TASKS           = os.environ.get("USE_TASKS", "0").lower() in ("1", "true", "yes")
+RL_TASK_DAILY_COST_USD = float(os.environ.get("RL_TASK_DAILY_COST_USD", "2.0"))  # 任务自己的日顶(独立于对话 $2 日顶)
+TASK_MAX_CAP_USD    = float(os.environ.get("TASK_MAX_CAP_USD", "2.0"))           # 单任务 cap 硬顶(resume 提额也不越)
+TASK_DEFAULT_CAP_USD = float(os.environ.get("TASK_DEFAULT_CAP_USD", "0.5"))      # 立项不填 cap 时的默认
+# 收尾额度:已花钱买到的战果必须能变成交付物 —— 收口波(一次 LLM 调用)在 cap 之上额外
+# 允许这一点点,否则花满预算的任务会因差几分钱的收尾费永远出不了报告(review 实测的死锁)。
+TASK_FINALIZE_GRACE_USD = float(os.environ.get("TASK_FINALIZE_GRACE_USD", "0.10"))
+USE_TASK_TOOL       = os.environ.get("USE_TASK_TOOL", "0").lower() in ("1", "true", "yes")  # S-6 主脑立项工具位(独立开关)
+TASKS_DRIVER        = os.environ.get("TASKS_DRIVER", "inline")                   # inline|cloudtasks(同一代码路径)
+TASKS_QUEUE         = os.environ.get("TASKS_QUEUE", "agent-tasks")
+TASKS_REGION        = os.environ.get("TASKS_REGION", "us-central1")
+TASKS_ADVANCE_URL   = os.environ.get("TASKS_ADVANCE_URL", "")                    # advance 完整 URL(OIDC audience 同值)
+TASKS_INVOKER_SA    = os.environ.get("TASKS_INVOKER_SA", "")                     # Cloud Tasks 注入 OIDC 的 SA
+SUBAGENT_L2_FANOUT  = int(os.environ.get("SUBAGENT_L2_FANOUT", "3"))    # depth-1 再拆时的扇出顶
+MAX_TREE_NODES      = int(os.environ.get("MAX_TREE_NODES", "13"))       # 全树节点硬顶(防 6×6 乘法)
 # M5 记忆:loop 路径 transcript 回放 + 压缩(决策④)
 # CC 式「全量注入 + 临窗压缩」:默认把整段回放原文喂 loop,只在【逼近 context window】时才压缩。
 # 预算跟 LOOP_MODEL 的窗口挂钩(flash=1M),留头寸(FRACTION)给 system+schema+tools+本轮步骤+输出,
@@ -155,6 +210,73 @@ ALLOYDB_DB       = os.environ.get("ALLOYDB_DB", "your_database")
 ALLOYDB_USER     = os.environ.get("ALLOYDB_USER", "postgres")
 ALLOYDB_PASSWORD = os.environ.get("ALLOYDB_PASSWORD", "")
 
+# ── B1 有界读取:SQL 结果的行/字节/时间上界 ────────────────────────
+# 现状(改之前)是 `cur.execute(sql)` + 裸 `fetchall()`:没有超时、没有行数上界、
+# 没有字节上界。一条 `SELECT * FROM video_fact_instances` 就能把 MCP 子进程的内存
+# 和大脑的 context 一起顶穿,而且没人知道发生过。
+#
+# 【这几个常量是安全项,恒生效,不受 USE_BOUNDED_SQL 控制】——
+# 见 §12「不允许普通 flag 关掉(回滚只回滚展示,不回滚安全)」。
+# 【截断这件事本身也恒报,同样不受开关控制】(§12 规则 3:正确性字段永不受开关控制)——
+# 上界既然恒生效,关掉开关并不会让行回来,只会让上游【不知道行被扔了】,
+# 那比不加上界更隐蔽,等于把安全项做成了静默丢数据。
+SQL_MAX_ROWS   = int(os.environ.get("SQL_MAX_ROWS", "2000"))              # 最多保存 2000 行;第 2001 行只用于确认截断
+SQL_MAX_BYTES  = int(os.environ.get("SQL_MAX_BYTES", str(1024 * 1024)))   # 最终 JSON 的 UTF-8 字节上界(1 MiB)
+SQL_FETCH_BATCH = int(os.environ.get("SQL_FETCH_BATCH", "128"))           # fetchmany 批大小
+SQL_STATEMENT_TIMEOUT_MS = int(os.environ.get("SQL_STATEMENT_TIMEOUT_MS", "10000"))  # SET LOCAL statement_timeout
+SQL_LOCK_TIMEOUT_MS      = int(os.environ.get("SQL_LOCK_TIMEOUT_MS", "2000"))        # SET LOCAL lock_timeout
+
+# USE_BOUNDED_SQL —— 只管一件纯展示的事:【零行时报不报列名】。
+# 上界恒生效、截断恒报,两者都不受它控制(见上)。所以:
+#   关(默认)+ 没截断 → wire 与升级前逐字节等价(裸 JSON 数组);
+#   关(默认)+ 截断了 → wire 仍是信封 —— 别指望把它翻回 0 来"恢复旧 wire"。
+# 验证后生产强制开(§12 规则 2 的启动校验尚未落地,见交付报告)。
+USE_BOUNDED_SQL = os.environ.get("USE_BOUNDED_SQL", "0").lower() in ("1", "true", "yes")
+
+# analyze_video 单次生成的输出上限。
+# 【为什么不是 2048】:2.5-pro 的【思考 token 也算进 max_output_tokens】,而 analyze 的
+# 提示词要一个带 evidence 文本的 JSON —— 实测 pro 档两次标注全部 ANALYZE_FAILED,
+# 报错是 "Unterminated string starting at line 6",正好停在 evidence 那个字段:
+# 思考吃掉大半预算,JSON 从中间被截断。抬上限几乎不花钱(输出按实际用量计费,
+# cap 只是天花板;思考 token 无论如何都要付),而截断是确定的损失。
+# flash 档不受影响 —— 它生成的同样是那个小 JSON,2048 从来不是约束。
+# 这个 bug 一直在,只是 A4 之前被伪装成了"看过了、结论是看不清"的失败信封(假成功)。
+ANALYZE_MAX_OUTPUT_TOKENS = int(os.environ.get("ANALYZE_MAX_OUTPUT_TOKENS", "8192"))
+
+# ── 批 6:跑道末步工具面收窄(机制,非话术)────────────────────────────
+# 主循环最后 N 步,发给大脑的工具声明只剩 show_video(文本收口始终可用)。
+# 为什么是机制:nudge 文案两版、两次跑批(dp-main / 5d-newbase)各 4 个跑次
+# 在收到"硬顺序"提醒后照样烧查询到死 —— 大脑在规划惯性里不执行收口指令,
+# 措辞救不了,只能把别的工具从声明面上拿走。0 = 关(行为与批 6 之前逐字节一致);
+# 子 agent 豁免(subagents 显式传 narrow_last=0:它的交付物是文本证据,不是 show_video)。
+RUNWAY_NARROW_LEFT = int(os.environ.get("RUNWAY_NARROW_LEFT", "2"))
+
+# ── C6 ToolEvent:工具调用事件流(内部观测)────────────────────────────
+# "shadow"(默认)= 算出来只写 DEBUG 日志,不影响任何行为;"1"/"on" = 同时写 INFO。
+# 【永远不进 prompt】—— 它是给事后 triage / 完整率核对用的,不是给大脑读的。
+# 为什么默认 shadow 而不是关:这东西的价值在于【连续性】,开开关关的事件流算不出
+# "完整率 ≥99.9%"这种指标;而它是纯投影 + fail-open,shadow 的代价只有几行日志。
+USE_TOOL_EVENT = os.environ.get("USE_TOOL_EVENT", "shadow").strip().lower()
+
+# ── B0-2a 评测写闸 ────────────────────────────────────────────────
+# 评测跑【不许】改动生产数据。实测教训:gate 实验的 1256 行 analyze 产物永久留在
+# 生产 content_embeddings 里(占 18.6%),用户检索会命中评测垃圾 —— 其中还有
+# "No, there is no one climbing a rock wall" 这种否定结论,作为"证据"命中无关视频。
+# 开 = 三个写入口(analyze 入索引 / update_memory / semantic_index.index_entry)
+# 抛 EvalWriteBlocked;关(默认)= 空操作,生产路径逐字节不变。
+# 见 pipeline/eval_write_guard.py 里"为什么是 raise 不是静默 return"那段。
+EVAL_READ_ONLY = os.environ.get("EVAL_READ_ONLY", "0").lower() in ("1", "true", "yes")
+
+# B2 客户端超时 —— 【顺序依赖:必须先有上面的 statement_timeout,再收紧这里】。
+# 反过来做会造出"客户端已经放弃、服务端 SQL 还在跑"的悬挂查询:连接不归还、
+# 锁不释放,而且上游拿到超时后会去重试 → 一条慢查询变成 N 条并发慢查询。
+# 因此下界用 max() 焊死在 statement_timeout + 5s:哪怕有人把 env 设成 3,
+# 也不会出现"客户端比服务端先放弃"。5s 是留给 stdio 往返 + JSON 序列化的余量。
+MCP_CALL_TIMEOUT_S = max(
+    float(os.environ.get("MCP_CALL_TIMEOUT_S", "15")),
+    SQL_STATEMENT_TIMEOUT_MS / 1000.0 + 5.0,
+)
+
 # 业务表白名单 —— get_schema 只暴露这些表
 BUSINESS_TABLES = [
     "video_metadata",
@@ -192,6 +314,45 @@ SESSION_BACKEND = os.environ.get("SESSION_BACKEND", "sqlite").lower()
 REDIS_URL = os.environ.get("REDIS_URL", "")
 UPSTASH_REDIS_REST_URL = os.environ.get("UPSTASH_REDIS_REST_URL", "")
 UPSTASH_REDIS_REST_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "")
+
+
+# ── A7+ 启动校验:成本护栏别被配置配死 ──────────────────────────
+def _validate_tree_guard_budget(cost_cap: float, analyze_est: float, parallel: int) -> str:
+    """校验 per-tree 熔断线容不容得下 analyze。返回告警文本(空串 = 没问题);致命配置直接 raise。
+
+    为什么用 raise 而不是 assert:这是【安全约束】,而 `python -O` 会把 assert 整条优化掉 ——
+    偏偏生产更可能带 -O 跑,等于"最需要这条检查的场景恰好没有这条检查"。
+
+    分两档(见 MAX_TREE_COST_USD 上方注释):
+      · cap < 单次预留        → pro 档 analyze 【一次都进不来】,工具等于不存在 → raise,拒绝启动;
+      · cap < 单次预留 × 并行 → 满并行的一步会顶闸,而 admit 一旦拦下就 _trip 整棵树 → 告警。
+    cap<=0 是"熔断关闭",不受本约束管(不设闸 ≠ 把闸设死)。
+    """
+    if cost_cap <= 0 or analyze_est <= 0:
+        return ""
+    if cost_cap < analyze_est:
+        raise ValueError(
+            f"MAX_TREE_COST_USD={cost_cap:g} 小于单次 analyze 预留 "
+            f"TREE_ANALYZE_ESTIMATE_USD={analyze_est:g} —— pro 档 analyze_video 会被【静默】"
+            f"拦死(且第一次拦下就触闸,整棵树后续工具全被拦)。请把 MAX_TREE_COST_USD 提到 "
+            f">= {analyze_est * max(1, parallel):g}(= 单次预留 × MAX_ANALYZE_PARALLEL)。"
+            f"只跑 flash 档的部署,也可以把 TREE_ANALYZE_ESTIMATE_USD 调【小】到实际单次成本"
+            f"(禁令只禁调大,调小到真实值是对的)。"
+            f"【不要】用 MAX_TREE_COST_USD=0 绕过本报错:那是把请求内唯一的美元熔断整个关掉,"
+            f"不是本报错的补救方案。")
+    need = analyze_est * max(1, parallel)
+    if cost_cap < need:
+        return (f"MAX_TREE_COST_USD={cost_cap:g} < 单次预留 {analyze_est:g} × "
+                f"MAX_ANALYZE_PARALLEL={parallel} = {need:g}:pro 档下一步内并行 analyze "
+                f"会在实花接近 $0 时顶掉熔断线并触闸(整棵树后续工具全被拦)。"
+                f"建议提到 >= {need:g}。")
+    return ""
+
+
+TREE_GUARD_CONFIG_WARNING = _validate_tree_guard_budget(
+    MAX_TREE_COST_USD, TREE_ANALYZE_ESTIMATE_USD, MAX_ANALYZE_PARALLEL)
+if TREE_GUARD_CONFIG_WARNING:
+    logging.getLogger("pipeline.config").warning(TREE_GUARD_CONFIG_WARNING)
 
 
 def alloydb_dsn() -> dict:

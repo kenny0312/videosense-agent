@@ -3,8 +3,8 @@
 三层(决策③ = GCS-JSONL + Redis 热尾):
   - 热尾  : Redis LIST(RPUSH + LTRIM 到 HOT_WINDOW)—— 喂 prompt 的近窗,低延迟
   - 耐久  : GCS,一事件一对象 transcripts/{owner}/{sid}/{seq}.json —— 全保真真相
-  - 溢出  : 大/二进制 tool_result 本体 → GCS tool-results/{owner}/{sid}/{event_id}.json,
-           transcript 行里只留 result_ref 指针 + 预览
+  - 溢出  : 大/二进制 tool_result 本体 → GCS tool-results/{owner}/{sid}/{turn}/{event_id}.json,
+           transcript 行里只留 result_ref 指针 + 预览(turn 是 A6 补的,见 _event_key)
 全部 owner:session_id 作用域;【不进业务库】(潘多拉)。路由是【确定性代码,非模型】,按 type+size。
 默认 InMemory(本地/测试);SESSION_BACKEND=redis 时用 Redis+GCS(复用现有凭据,全程 fail-open)。
 """
@@ -183,14 +183,39 @@ class RedisGcsTranscriptStore(BaseTranscriptStore):
             return []
 
 
-def gcs_blob_put(owner: str, session_id: str, event_id: str, value: Any) -> str:
-    """大本体溢出到 GCS tool-results,返回 gs:// 指针。"""
+def _blob_name(owner: str, session_id: str, event_key: str) -> str:
+    """溢出对象的完整名:tool-results/{owner}/{sid}/{turn}/{event_id}.json
+    (event_key 已含 turn 段,见 _event_key)。抽出来是为了不必架 GCS 就能钉住这条路径。"""
+    return f"tool-results/{_scoped(owner, session_id).replace(':', '/')}/{event_key}.json"
+
+
+def gcs_blob_put(owner: str, session_id: str, event_key: str, value: Any) -> str:
+    """大本体溢出到 GCS tool-results,返回 gs:// 指针。
+
+    event_key 由 append_event 用 _event_key 拼好,形如 "{turn}/{event_id}"(A6)。
+    第三个参数【不再是】裸 event_id —— 裸 id 跨轮重名会覆盖(见 _event_key 的说明)。"""
     from google.cloud import storage
-    name = f"tool-results/{_scoped(owner, session_id).replace(':', '/')}/{event_id}.json"
+    name = _blob_name(owner, session_id, event_key)
     bkt = storage.Client(project=config.GCP_PROJECT).bucket(config.GCS_BUCKET)
     bkt.blob(name).upload_from_string(
         json.dumps(value, ensure_ascii=False, default=str), content_type="application/json")
     return f"gs://{config.GCS_BUCKET}/{name}"
+
+
+def _event_key(line: dict) -> str:
+    """A6:溢出对象的键 = "{turn}/{event_id}" —— 不带 turn 会【跨轮覆盖】。
+
+    event_id 就是 loop 的 cid(形如 c0_1,见 loop_driver),它按【本轮的步序】编号,
+    所以同一 session 第二轮的第一个工具结果和第一轮的第一个工具结果【必然重名】——
+    旧路径 tool-results/{owner}/{sid}/{event_id}.json 会被后一轮原地覆盖,第一轮那份
+    花钱买来的大本体就没了(transcript 行里的 result_ref 还指着它,指到的是新内容)。
+    turn 缺失/异形(非负整数以外的任何东西)→ 退回裸 event_id:既 fail-open,也顺手
+    挡住把任意字符串拼进 GCS 对象路径。"""
+    eid = str(line.get("event_id") or "evt")
+    turn = line.get("turn")
+    if isinstance(turn, bool) or not isinstance(turn, int) or turn < 0:
+        return eid
+    return f"{turn}/{eid}"
 
 
 # ── 确定性写入器(非模型;按 type+size 路由)──────────────
@@ -203,7 +228,7 @@ def append_event(store: BaseTranscriptStore, owner: str, session_id: str, event:
         val = line.get("value")
         if val is not None and (_size(val) > overflow_bytes or not _json_safe(val)):
             if blob_put is not None:
-                line["result_ref"] = blob_put(owner, session_id, line.get("event_id") or "evt", val)
+                line["result_ref"] = blob_put(owner, session_id, _event_key(line), val)
             line["preview"], line["n"] = _preview(val)
             line.pop("value", None)               # 完整本体绝不进 transcript 行
     store.append(_scoped(owner, session_id), line)

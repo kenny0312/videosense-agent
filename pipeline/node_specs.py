@@ -8,6 +8,25 @@
                     该写什么样的 Python
 
 新增一种分析能力 = 在这里加一条 NodeSpec(+ 在 dag_schema 的 ToolName 里登记)。
+
+## 【入声明三问】—— 加工具/加参数/改描述之前,先过这三关
+
+声明不是文档,是【每一步都要重发的 prompt】。16 步的请求付 16 次;开了子 agent 是
+(1+K) 份。所以这里每多 200 字,都是给每次请求加钱,而写的人拿不到那个反馈。
+`tests/pipeline/test_prompt_budget.py` 是硬预算,下面三问是软判据:
+
+  ① **模型看了这段描述,能不能【自己判断出】什么时候该用、什么时候不该用?**
+     判据写不清楚,往往是因为判据本身没想清楚 —— 那就先别加。
+     反面教材(真事):spawn_agents 的描述曾经 922 字里刹车占 370 字、正面引导只有 110,
+     而且五条判据里两条【结构性排除】了它本该服务的场景 —— 结果拆分率恒为 0。
+     重写成"方向盘"之后 0 → 67%。**模型不用它,先怀疑描述而不是模型。**
+
+  ② **这个能力是不是已经能用现有工具组合出来?** 能就别加。
+     工具数越多,每个被读到的机会越少 —— 加一个是给所有工具都收税。
+
+  ③ **不加代码前置判断能不能行?** 别在环外加分类器/开关去"帮模型选对工具"
+     (那是已经删掉的 router 原地复活)。选错了靠工具内的软失败回喂教育它。
+     开关命名禁止出现 `XX_GATE` 形态。
 """
 from __future__ import annotations
 
@@ -59,11 +78,40 @@ SPECS: dict[str, NodeSpec] = {
             "不是要数据清单(那用 show_table);问「有没有 / 有几个 X 视频」这类只问【有无 / 数量】的【也不归本工具】"
             "—— 那是要个答案,(必要时先 sql_query COUNT 一下)直接文字答「有,N 个」,别因为句子里出现「视频」"
             "二字就来 show_video 把它们全播出来】。用户要看/要播的,【最终必须由本工具交付】——"
-            "哪怕是靠 analyze_video 挑出来的(analyze 是你自己看,不产生用户可见的视频)。最多 8 个。"
+            "哪怕是靠 analyze_video 挑出来的(analyze 是你自己看,不产生用户可见的视频)。"
+            "最多 8 个;超过 8 个就分多次调用摆完,并优先摆与问题匹配最强的。"
+            "【要逐个标注就用 inputs.items(给了以它为准,顺序即展示顺序)】:标了 category "
+            "每个视频下面会出一个类目 chip(用户一眼看出这批是什么、能按类目筛);标了 start_ts/end_ts "
+            "用户点进去直接跳到那一段,不用自己拖进度条。"
         ),
         parameters=_obj(
             {"video_ids": {"type": "array", "items": {"type": "string"},
-                           "description": "要展示的 video_id 列表;省略则取上游节点结果行里的 video_id"}},
+                           "description": "要展示的 video_id 列表;省略则取上游节点结果行里的 video_id"},
+             "items": {
+                 "type": "array",
+                 "description": "可选:带标注的展示清单;给了就【以它为准】(顺序即展示顺序),"
+                                "此时忽略 video_ids 和上游行。你已经知道每个视频是什么类、"
+                                "该看哪一段时用它 —— 这些标注只有放进这里前端才看得见。",
+                 "items": {
+                     "type": "object",
+                     "properties": {
+                         "video_id": {"type": "string",
+                                      "description": "真实 video_id(不是「第 N 个」这种对用户的说法)"},
+                         "category": {"type": "string",
+                                      "description": "该视频所属大类,从【受控大类词表】里挑"
+                                                     "(中文说法也认);拿不准就别填,别自造词"},
+                         "start_ts": {"type": "number", "description": "片段起点(秒)"},
+                         "end_ts": {"type": "number", "description": "片段终点(秒)"},
+                         "label": {"type": "string",
+                                   "description": "时间标记上显示的字(如「开伞」);"
+                                                  "不填就只显示秒数"},
+                         "score": {"type": "number",
+                                   "description": "这条有多贴题(0~1)。填了会出置信度 chip、"
+                                                  "片段条也按它着色 —— 用户一眼看出哪几条最靠谱"},
+                     },
+                     "required": ["video_id"],
+                 },
+             }},
         ),
     ),
     "show_table": NodeSpec(
@@ -163,7 +211,11 @@ SPECS: dict[str, NodeSpec] = {
         ),
         parameters=_obj(
             {"query": {"type": "string", "description": "检索意图(英文短语;把中文意图翻成英文)"},
-             "k": {"type": "integer", "description": "返回条数,默认 8"}},
+             "k": {"type": "integer", "description": "返回条数,默认 8"},
+             # P0-5 视频内下钻:USE_IN_VIDEO_SEARCH 关闭时本参数会在声明层被剥掉(大脑不可见)。
+             "video_ids": {"type": "array", "items": {"type": "string"},
+                           "description": "可选:只在这些视频里检索(已锁定候选视频、要在【视频内】"
+                                          "找具体片段/时刻时用);不传 = 全库检索"}},
             ["query"],
         ),
     ),
@@ -186,6 +238,45 @@ SPECS: dict[str, NodeSpec] = {
             ["text"],
         ),
     ),
+    "start_background_task": NodeSpec(
+        tool="start_background_task",
+        needs_sandbox=False,
+        planner_desc=(
+            "【开一个后台任务】把一件【当场做不完】的活立项成后台任务:它会在后台分批推进,"
+            "做完之后【下一次对话你会自动收到通知】,那时你可以告诉用户、也可以用 "
+            "get_task_report 取报告全文。"
+            "【什么时候用】① 要深看的视频【数量超过一次请求装得下的量】(约十来个以上,"
+            "一口气看不完);② 用户明说「慢慢做 / 做完叫我 / 我先去忙别的」。"
+            "【什么时候【别】用】能当场答完的一律别立项 —— 查库统计、找几段视频、看一两个"
+            "视频、语义检索,这些直接做完给答案,别甩给后台让用户等。"
+            "inputs.goal = 一句话把这件活说清楚(后台会自己把它拆成子任务);"
+            "inputs.parent_task_id = 可选:要【基于之前某个任务的报告再做一版】时填它的 "
+            "task_id(后台规划时会读到那份报告,不用从零开始)。"
+            "【立项成功后就直接告诉用户「已经在后台做了、做完会讲」然后收口】—— "
+            "不要重复立项、也不要再当场自己做一遍。"
+        ),
+        parameters=_obj(
+            {"goal": {"type": "string", "description": "这个后台任务要完成什么(一句话)"},
+             "parent_task_id": {"type": "string",
+                                "description": "可选:基于哪个已完成任务的报告再做一版"}},
+            ["goal"],
+        ),
+    ),
+    "get_task_report": NodeSpec(
+        tool="get_task_report",
+        needs_sandbox=False,
+        planner_desc=(
+            "【取后台任务的报告】读一个已完成后台任务的最终报告与各子任务结论。"
+            "用户问起某个后台任务的结果、或你收到「任务已完成」的系统通知需要展开细节时用它。"
+            "inputs.task_id = 任务 id(系统通知里带、用户也可能直接给)。"
+            "返回 {goal, status, report, done, spent_usd};报告是纯文本,直接据它回答用户,"
+            "别把 task_id 之类的内部 id 抄给用户看。"
+        ),
+        parameters=_obj(
+            {"task_id": {"type": "string", "description": "后台任务 id"}},
+            ["task_id"],
+        ),
+    ),
     "spawn_agents": NodeSpec(
         tool="spawn_agents",
         needs_sandbox=False,
@@ -196,11 +287,27 @@ SPECS: dict[str, NodeSpec] = {
             "inputs.tasks = [{instruction: 这个子 agent 要做什么(自由文本,你写), "
             "video_ids?: 让它聚焦的视频 id 列表, tools?: 限它只能用的工具子集(默认 "
             "analyze_video/semantic_search/sql_query)}, ...]。"
-            "【用途】跨多个视频的深度比较/排名/多维评估,或「A 组做 X、B 组做 Y、再查 Z」这种"
-            "可并行的异质分解(如「跳伞 vs 滑雪 哪个更精彩」=一个 agent 深评跳伞组、一个深评滑雪组)。"
-            "【别用】只是计数/分类(sql_query COUNT 就够)、只看单个视频(直接 analyze_video)、"
-            "语义找片段(semantic_search)—— 这些别 spawn,多 agent 又贵又慢。"
-            "先用 sql_query/semantic_search 把候选缩小、想清怎么拆,再一次给出 K 段【不同的】instruction。"
+            "【拆分买的是【步数】不是【钱】】—— 这是最容易想错的一点:拆成 K 段并【不】减少"
+            "要看的视频总数,钱基本不变;它买到的是【每个子 agent 有自己独立的步数预算】。"
+            "你自己一轮循环的步数是有限的,一个一个看会用完步数、结果什么都交不出来;"
+            "拆出去之后,每段在自己的预算里从容做完,再把结论交回来给你综合。"
+            "【什么时候该拆(正面判据,满足其一就该认真考虑)】"
+            "① 手上待深看的视频数【明显超过你剩余步数能覆盖的量】(比如还有 12 个要逐个看画面、"
+            "而你已经用掉大半步数)—— 这是最常见也最该拆的情形;"
+            "② 同一批视频要做【多个互不相干的维度】(如既评危险度又评画面质量),各维度可并行;"
+            "③ 「A 组做 X、B 组做 Y、再查 Z」这类天然异质的分解"
+            "(如「跳伞 vs 滑雪 哪个更精彩」= 一个 agent 深评跳伞组、一个深评滑雪组)。"
+            "【怎么拆(照着做)】例:12 个视频要逐个看画面给证据,而你只剩 8 步 → 拆 3 段、"
+            "每段 4 个视频,每段的 instruction 写成「看这 4 个视频里【某动作】的时间段与画面证据,"
+            "逐条给结论」,并在 video_ids 里指定该段负责的那 4 个 id。"
+            "【什么时候别拆】"
+            "① 只是计数/分类(sql_query COUNT 就够)、只看一两个视频(直接 analyze_video)、"
+            "语义找片段(semantic_search)—— 这些当场做完,别 spawn;"
+            "② 子任务之间要用彼此的中间结果(那就自己按顺序做);"
+            "③ 你收口需要的不只是结论+证据、而是完整的原始过程;"
+            "④ 总量本来就小(三五个视频、剩余步数够用)—— 拆了只是多绕一圈。"
+            "先用 sql_query/semantic_search 把候选缩小、【数一下还有多少要看、自己还剩多少步】,"
+            "再决定拆不拆;要拆就一次给出 K 段【不同的】instruction。"
             "返回 [{instruction, output}...] —— 是各子 agent 的原始结论,你【自己】读完综合成最终答案"
             "(需要交付视频时,由【你】再调 show_video,子 agent 不负责交付)。"
         ),

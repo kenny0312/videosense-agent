@@ -37,8 +37,14 @@ def _strip_fence(text: str) -> str:
     return t
 
 
-def _upstream_preview(upstream: dict[str, list], max_rows: int = 3) -> str:
-    """给 LLM 看的上游变量预览(注入的是 data_<id> 变量)。"""
+def _upstream_preview(upstream: dict[str, list], max_rows: int = 3,
+                      up_meta: "dict[str, dict] | None" = None) -> str:
+    """给 LLM 看的上游变量预览(注入的是 data_<id> 变量)。
+
+    B4:上游被截断时必须【在这里说出来】。node_executor 会额外注入一个
+    `data_<id>_meta` 变量,但生成模型只看得见本函数打印的这段文字 —— 不提这一句,
+    那个变量就是死的:模型照着"共 N 行"去算总数/均值,把一个子集当全集报出去。
+    """
     if not upstream:
         return "（无上游数据：本节点是数据源）"
     parts = []
@@ -46,14 +52,21 @@ def _upstream_preview(upstream: dict[str, list], max_rows: int = 3) -> str:
         var = f"data_{nid}"
         n = len(rows) if isinstance(rows, list) else 1
         sample = rows[:max_rows] if isinstance(rows, list) else rows
-        parts.append(
-            f"- 变量 `{var}` (来自节点 {nid}, 共 {n} 行) 预览:\n"
-            f"  {json.dumps(sample, ensure_ascii=False, default=str)}"
-        )
+        m = (up_meta or {}).get(nid) or {}
+        if m.get("truncated"):
+            head = (f"- 变量 `{var}` (来自节点 {nid},【只带回 {n} 行 —— 上游已被截断】,"
+                    f"符合条件的行总共至少 {m.get('total')} 行;截断详情在 `{var}_meta` 里)\n"
+                    f"  ⚠️ 不要把 len({var}) 当成总数输出,也不要拿这个子集去算"
+                    f"「全部 / 平均 / 占比」—— 只能对带回来的这部分作答,并在输出里写明是子集。\n"
+                    f"  预览:")
+        else:
+            head = f"- 变量 `{var}` (来自节点 {nid}, 共 {n} 行) 预览:"
+        parts.append(f"{head}\n  {json.dumps(sample, ensure_ascii=False, default=str)}")
     return "\n".join(parts)
 
 
-def _node_prompt(node: Node, upstream: dict[str, list]) -> str:
+def _node_prompt(node: Node, upstream: dict[str, list],
+                 up_meta: "dict[str, dict] | None" = None) -> str:
     return f"""你是一个数据科学 Python 代码生成器,负责实现执行计划(DAG)中的**单个节点**。
 
 # 本节点
@@ -64,7 +77,7 @@ inputs: {json.dumps(node.inputs, ensure_ascii=False)}
 {codegen_hint(node.tool)}
 
 # 已注入的上游变量(可直接使用,无需自己查库/读文件)
-{_upstream_preview(upstream)}
+{_upstream_preview(upstream, up_meta=up_meta)}
 节点的 inputs 也已注入为变量 `inputs`(dict)。
 
 # 可用库
@@ -96,9 +109,10 @@ class CodeGenerator:
         self.model = GenerativeModel(config.CODEGEN_MODEL)
         self.history: list[dict] = []
 
-    def generate(self, node: Node, upstream: dict[str, list]) -> str:
-        """首轮生成:基于节点定义 + 上游预览。"""
-        self.history = [{"role": "user", "text": _node_prompt(node, upstream)}]
+    def generate(self, node: Node, upstream: dict[str, list],
+                 up_meta: "dict[str, dict] | None" = None) -> str:
+        """首轮生成:基于节点定义 + 上游预览。up_meta = 上游截断信息(B4),不传 = 没截断。"""
+        self.history = [{"role": "user", "text": _node_prompt(node, upstream, up_meta)}]
         return self._call()
 
     def repair(self, stderr: str, exit_code: int) -> str:

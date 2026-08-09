@@ -13,6 +13,9 @@
 from __future__ import annotations
 
 import logging
+import os
+import time
+import uuid
 from typing import Any, TYPE_CHECKING
 
 from pipeline import config, mcp_client
@@ -28,12 +31,32 @@ if TYPE_CHECKING:                       # 仅类型提示;运行期不 import se
 log = logging.getLogger("pipeline.orchestrator")
 
 
+def _maybe_dump_trace(trace: Trace, session_id: str | None, status: str) -> None:
+    """T-1 落盘钩子:TRACE_DUMP_DIR 非空才落一份 trace JSON,供事后
+    `python -m pipeline.agentops.trace_report --triage <dir>` 定位。
+
+    默认关(env 未设 = 一行不写),守住 Part 0 不变量①"开关全关行为等价";
+    跑批/eval/复现事故时打开。全程 fail-open:观测绝不能拖垮请求。
+    """
+    d = os.environ.get("TRACE_DUMP_DIR", "").strip()
+    if not d:
+        return
+    try:
+        from pipeline.agentops.trace import dump_trace
+        name = f"{int(time.time() * 1000)}_{(session_id or 'nosid')[:12]}_{status}.json"
+        dump_trace(trace, os.path.join(d, name), session_id=session_id, status=status)
+    except Exception:
+        log.warning("trace dump 失败(fail-open)", exc_info=True)
+
+
 def _result(ok: bool, *, trace: Trace, dag: DAG | None = None,
             answer: Any = None, results: dict[str, NodeResult] | None = None,
             fail_node: str | None = None, error: str = "",
             status: str | None = None, reason: str = "",
             session_id: str | None = None, turn_type: str = "new",
-            loop_meta: dict | None = None, context: dict | None = None) -> dict:
+            loop_meta: dict | None = None, context: dict | None = None,
+            can_continue: bool = False) -> dict:
+    _maybe_dump_trace(trace, session_id, status or ("ok" if ok else "error"))
     results = results or {}
     generated_code = {nid: r.code for nid, r in results.items() if r.code}
     plot = next((r.artifact for r in results.values() if r.artifact), {})
@@ -58,6 +81,9 @@ def _result(ok: bool, *, trace: Trace, dag: DAG | None = None,
         "trace": trace.as_list(),
         "trace_summary": trace.summary_line(),
         "loop": loop_meta,                                # M6:loop 审计指标(steps/terminated/tool_calls);dag 路径为 None
+        # A1:这一轮是【部分交付】(步数用完了,不是出错),用户可以自己决定要不要接着问。
+        # 只是个标志 —— 系统绝不据此自动把剩下的活转成后台任务继续跑(没点头就花钱是红线)。
+        "can_continue": can_continue,
         "context": context,                               # 前端 context 监控环:{replay_tokens, budget}(仅 loop 路径)
         "usage": usage.summarize(),                       # 本轮 LLM token 总计 + 估算成本(含自愈重试)
     }
@@ -110,30 +136,59 @@ def run_query(nl: str, *, quiet_trace: bool = False,
         getattr(session, "usage_cum", None) if session is not None else None, nl=nl,
         has_image=image is not None, model=model)
     # L2 用户记忆:跨会话偏好/事实(owner 作用域;无记忆 = 空串不占 token;fail-open)。
+    # C3:【不再】拼进 rt_facts —— 系统运行时数字和用户跨会话资料是两样东西,
+    # 挤在一个参数里之后没人说得清该往哪加。改成各走各的具名参,拼装顺序由
+    # _loop_system 一处定义、test_prompt_order 锁死(拼出来的字节与拆之前一致)。
+    mem_section = ""
     if config.USE_USER_MEMORY:
         try:
             from pipeline import user_memory
-            mem = user_memory.render_section(owner)
-            if mem:
-                rt_facts = rt_facts + "\n\n" + mem
+            mem_section = user_memory.render_section(owner)
         except Exception as e:
             log.warning("用户记忆加载失败(fail-open): %r", e)
+    # C1 库存快照:开局就让大脑知道【库里有什么】(总量/大类分布/专栏表孤儿)。
+    # 取数在这里、拼装在 loop_driver —— 与 rt_facts / user_memory 同一条分工。
+    # library_state 自带 TTL 缓存与 fail-open;这层 try 只兜 import 期的意外。
+    lib_state = ""
+    try:
+        from pipeline import library_state as _lib
+        lib_state = _lib.library_state_line()
+    except Exception as e:
+        log.warning("库存快照加载失败(fail-open): %r", e)
     # 瞬时失败(重试后仍抖 / 未收敛)→ 给【优雅的重试提示】而非原始崩溃卡片。
     # (Pandora 对照测的镜像教训:别把抖动伪装成"库空"的假结果,也别把它甩成 error;诚实说"这次没成,再试一次"。)
     _RETRY_MSG = "抱歉,这次没能完成 —— 可能是临时的服务波动。请再发一次,或把问题说得更具体一点。"
+    # A2:本请求的短前缀,拼进 result_id —— 上一轮的 id 一眼可辨,不再与本轮的 c{步}_{i} 撞号。
+    req_short = uuid.uuid4().hex[:8]
     try:
         lo = loop_driver.run_query_loop(nl, schema=schema, replay_context=replay_ctx,
                                         sandbox=sandbox, trace=trace, session_id=sid,
                                         on_step=on_step, runtime_facts=rt_facts, owner=owner,
                                         image=image, model=model,
-                                        use_critic=(True if critic else None))
+                                        use_critic=(True if critic else None),
+                                        req_short=req_short,
+                                        library_state=lib_state, user_memory=mem_section)
         lstep.ok(steps=lo.steps, terminated=lo.terminated)
     except Exception as e:
         lstep.fail(error=repr(e))
         log.warning("loop 抛错(优雅降级为重试提示): %r", e)
         return _result(True, trace=trace, status="ok", answer=_RETRY_MSG,
                        session_id=sid, turn_type=ttype)
-    if lo.answer is None or not lo.answer.strip():
+    # A1:步数耗尽【单独分流】,不许再落进下面那张"瞬时波动"网。步数用完是成本护栏正常
+    # 工作的结果,不是服务抖动;而且这条路上工具往往已经跑完、show_video 已经把视频摆到
+    # 了屏幕上(实证 7 例里 4 例如此)。归到空答分支的三重代价:谎报原因、丢掉整份 ledger
+    # (视频/表格全没了)、劝用户把刚烧掉的 16 步全额重烧。这里改走【部分交付】:
+    # 沿用下面的正常路径(带 results、落 transcript、记 loop 指标),只多一个 can_continue。
+    answer = lo.answer
+    partial = lo.terminated in loop_driver.PARTIAL_TERMINATIONS
+    if partial and not (answer or "").strip():     # loop_driver 已给诚实文案,这里只兜底
+        answer = (loop_driver.MAX_STEPS_ANSWER if lo.terminated == "max_steps"
+                  else loop_driver.REPEAT_ANSWER)
+    # can_continue 只给 max_steps:那是【预算用完】,缩小范围接着问确实有意义。
+    # repeat 是【那条路不通】,原样再跑一次大概率还是同样结果 —— 给"可以继续"的信号
+    # 等于劝用户再烧一遍钱,跟 A1 要治的那个病是同一种。
+    can_continue = lo.terminated == "max_steps"
+    if answer is None or not answer.strip():
         # E2:空串答案也兜住 —— 已识别的安全拦截在 conversation 层换成了体面拒答;
         # 走到这的空答是"没识别出原因的空生成",按瞬时波动给重试提示,绝不把空卡片交给用户。
         log.warning("loop 未收敛或空答(%s)→ 重试提示", lo.terminated)
@@ -145,7 +200,7 @@ def run_query(nl: str, *, quiet_trace: bool = False,
         try:
             turn_no = session.next_turn()
             loop_memory.record_loop_turn(TX_STORE, owner, sid, turn_no, nl,
-                                         lo.trace, lo.results, lo.answer, blob_put=gcs_blob_put)
+                                         lo.trace, lo.results, answer, blob_put=gcs_blob_put)
         except Exception as e:
             log.warning("record_loop_turn 失败(fail-open): %r", e)
         try:
@@ -153,6 +208,7 @@ def run_query(nl: str, *, quiet_trace: bool = False,
         except Exception as e:
             log.warning("usage 累计失败(fail-open): %r", e)
     replay_tok = (len(replay_ctx) // 3) if replay_ctx else 0   # 与 loop_memory._est_tokens 同口径
-    return _result(True, trace=trace, results=lo.results, answer=lo.answer,
+    return _result(True, trace=trace, results=lo.results, answer=answer,
                    session_id=sid, turn_type=ttype, loop_meta=loop_driver.loop_metrics(lo),
+                   can_continue=can_continue,
                    context={"replay_tokens": replay_tok, "budget": config.LOOP_CONTEXT_TOKEN_BUDGET})

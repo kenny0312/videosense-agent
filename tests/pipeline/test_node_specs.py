@@ -49,6 +49,23 @@ def test_spot_check_key_schemas():
     assert "load_artifact" not in ns.SPECS              # 记忆简化:值复用工具已下线
 
 
+def test_show_video_items_schema_declares_annotations():
+    """show_video 的 items:逐个标注的展示清单(类目 chip + 片段跳转),video_ids 仍在。"""
+    props = ns.SPECS["show_video"].parameters["properties"]
+    assert "video_ids" in props                          # 老参数没被顶掉
+    it = props["items"]
+    assert it["type"] == "array" and it["items"]["type"] == "object"
+    # label/score 也必须在:上游行集那条路一直带着它们,而前端【真的在用】——
+    # score 出置信度 chip 并给片段条着色,marks[].label 决定时间标记上显示的字。
+    # items 少了这两个,模型一旦按引导去标注类目就会静默丢掉它们(净 UX 回退)。
+    assert set(it["items"]["properties"]) == {
+        "video_id", "category", "start_ts", "end_ts", "label", "score"}
+    assert it["items"]["required"] == ["video_id"]
+    assert it["items"]["properties"]["start_ts"]["type"] == "number"
+    assert it["items"]["properties"]["score"]["type"] == "number"
+    assert ns.required_inputs("show_video") == ()        # items 是可选的,不能变成必填
+
+
 def test_sensor_fusion_tools_removed():
     # chore/purge-sensor-tools:Stage 7-9 传感器融合 demo 工具已下线(视频产品零用途)
     for t in ("load_sensor_csv", "merge_asof", "interpolate", "ols_regress", "threshold_sweep"):

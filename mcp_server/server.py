@@ -26,6 +26,7 @@ from mcp import types
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pipeline import config
+from pipeline.sql_bounds import build_envelope, fetch_bounded, needs_envelope
 
 # ══════════════════════════════════════════
 #  配置(集中到 pipeline.config)
@@ -46,6 +47,53 @@ app = Server("alloydb-mcp")
 def get_conn():
     import psycopg2
     return psycopg2.connect(**config.alloydb_dsn())
+
+
+# ── B1 服务端护栏:只读事务 + 语句/锁超时 ──────────────────────────
+
+def _begin_readonly(conn) -> None:
+    """把连接压成只读。
+
+    与 `sql_guard.is_read_only()` 是两层不同的防线,不是重复:
+    前者是【解析文本】猜这条 SQL 想干嘛(可被 CTE/函数绕过),这里是让
+    Postgres 自己拒绝任何写 —— 解析器看走眼时,DB 仍然会拦下来。
+    """
+    conn.set_session(readonly=True)
+
+
+def _apply_timeouts(cur) -> None:
+    """`SET LOCAL statement_timeout / lock_timeout`。
+
+    为什么是 SET LOCAL 而不是 SET:LOCAL 只活到本事务结束,连接归还/复用时
+    自动失效,不会把超时设置泄漏给后续查询。psycopg2 在第一条 execute 前会
+    隐式 BEGIN,所以把这两条放在业务 SQL 之前,它们和业务 SQL 在同一个事务里。
+
+    值用 int() 硬转后拼进语句:PG 的 SET 不吃占位符,而 int() 之后不存在注入面。
+
+    【这是 B2 的前置条件】:客户端超时(config.MCP_CALL_TIMEOUT_S)敢往下收,
+    唯一的依据就是服务端会先放弃。顺序反了就会出现"客户端不等了、SQL 还在跑"
+    的悬挂查询 —— 连接不还、锁不放,上游一重试就变成 N 条并发慢查询。
+    """
+    cur.execute(f"SET LOCAL statement_timeout = {int(config.SQL_STATEMENT_TIMEOUT_MS)}")
+    cur.execute(f"SET LOCAL lock_timeout = {int(config.SQL_LOCK_TIMEOUT_MS)}")
+
+
+def _error_payload(e: Exception) -> dict:
+    """错误 wire。`error` 的取值与今天【逐字节一致】,只在 DB 给了 SQLSTATE 时
+    附加一个 `pgcode` 键。
+
+    为什么要加:上游按 SQLSTATE 决定"这个错该不该叫 LLM 重写 SQL"
+    (42601/42703/42P01 该,57014 超时不该 —— 否则是烧钱死循环)。
+    异常对象过不了 stdio,SQLSTATE 不搭这趟车的话,分类逻辑在【生产】上
+    永远读到 None,B1 设的 statement_timeout 也就永远分不出类。
+    纯增字段:老消费者只读 `error`,拿到的字符串一个字节都没变。
+    """
+    payload = {"error": str(e)}
+    code = getattr(e, "pgcode", None)
+    if code:
+        payload["pgcode"] = str(code)
+    return payload
+
 
 # ── 声明工具 ──────────────────────────────
 
@@ -92,8 +140,13 @@ async def call_tool(name: str, arguments: dict):
             else:
                 conn = get_conn()
                 try:
+                    # get_schema 也要设超时:B2 收紧的是【整个 MCP 调用】的客户端
+                    # 超时,不区分工具。这里不设的话,一条卡住的 information_schema
+                    # 查询照样能造出"客户端已放弃、服务端还在跑"的悬挂查询。
+                    _begin_readonly(conn)
                     cols = ",".join(f"'{t}'" for t in config.BUSINESS_TABLES)
                     with conn.cursor() as cur:
+                        _apply_timeouts(cur)
                         cur.execute(f"""
                             SELECT table_name, column_name, data_type
                             FROM information_schema.columns
@@ -115,7 +168,7 @@ async def call_tool(name: str, arguments: dict):
             )]
         except Exception as e:
             log.error("get_schema() 失败: %s", e)
-            return [types.TextContent(type="text", text=json.dumps({"error": str(e)}))]
+            return [types.TextContent(type="text", text=json.dumps(_error_payload(e)))]
 
     # ── query_db ──────────────────────────
     elif name == "query_db":
@@ -131,27 +184,41 @@ async def call_tool(name: str, arguments: dict):
 
         try:
             if USE_MOCK_DB:
-                from repl._mock_db import mock_run_sql
-                result = mock_run_sql(sql)
-                log.info("[mock] query_db() 返回 %d 行", len(result))
+                from repl._mock_db import mock_cursor
+                cur = mock_cursor(sql)
+                res = fetch_bounded(cur)          # 与真库【同一份】上界实现
+                log.info("[mock] query_db() 返回 %d 行", res.returned)
             else:
                 import psycopg2.extras
                 conn = get_conn()
                 try:
+                    _begin_readonly(conn)
                     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                        _apply_timeouts(cur)
                         cur.execute(sql)
-                        result = [dict(r) for r in cur.fetchall()]
+                        res = fetch_bounded(cur)  # 必须在 cursor 还开着时读
                 finally:
                     conn.close()
-                log.info("query_db() 返回 %d 行", len(result))
+                log.info("query_db() 返回 %d 行", res.returned)
 
+            if res.truncated:
+                log.warning("query_db() 触发上界: reason=%s 扫到>=%d 行,只返回 %d 行",
+                            res.reason, res.total_seen, res.returned)
+
+            # wire 三形状之一。未截断且不需要单独报列名 → 裸 JSON 数组,与今天【逐字节等价】。
+            # 【截断恒发信封,不受 USE_BOUNDED_SQL 控制】(§12 规则 3:正确性字段永不受开关控制)
+            # —— 上界既然恒生效,关掉开关不会让行回来、只会让上游不知道行被扔了。
+            # 开关只管"零行时报不报列名"这一件纯展示的事。
+            payload = (build_envelope(res)
+                       if needs_envelope(res, report=config.USE_BOUNDED_SQL)
+                       else res.rows)
             return [types.TextContent(
                 type="text",
-                text=json.dumps(result, ensure_ascii=False, default=str)
+                text=json.dumps(payload, ensure_ascii=False, default=str)
             )]
         except Exception as e:
             log.error("query_db() 执行失败: %s", e)
-            return [types.TextContent(type="text", text=json.dumps({"error": str(e)}))]
+            return [types.TextContent(type="text", text=json.dumps(_error_payload(e)))]
 
     else:
         return [types.TextContent(type="text", text=json.dumps({"error": f"未知工具: {name}"}))]

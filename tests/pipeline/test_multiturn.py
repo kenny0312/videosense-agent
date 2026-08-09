@@ -162,7 +162,45 @@ def test_loop_exception_degrades_to_retry_message():
         _restore_loop(sl); orch.mcp_client = m
 
 
-def test_loop_nonconvergence_degrades_to_retry_message():
+# ── A1:步数耗尽 = 部分交付,不是"服务波动" ────────────────────────
+def _out_of_steps_outcome(videos):
+    """步数耗尽的真实形状:工具已经跑完、show_video 已经把视频摆到了屏幕上,
+    只差最后归纳那一步(实证 7 例 max_steps 空答里 4 例如此)。"""
+    from pipeline.loop_driver import ExecResult
+    cid = "r_ab12cd34_c0_0"
+    ledger = {cid: ExecResult(ok=True, value={"items": videos}, n=len(videos), videos=videos)}
+    trace = [{"cid": cid, "tool": "show_video", "inputs": {"video_ids": [v["video_id"] for v in videos]},
+              "uses": [], "ok": True, "turn": 0, "ms": 1.0, "cache_hit": False}]
+    return LoopOutcome(answer=loop_driver.MAX_STEPS_ANSWER, steps=16, terminated="max_steps",
+                       final_tool="show_video", final_value=None, preview_value=None,
+                       results=ledger, trace=trace)
+
+
+def test_max_steps_is_partial_delivery_not_a_transient_blip():
+    """步数耗尽必须【单独分流】,不许落进空答重试网。旧行为三重损害:
+    ① 谎报成"临时的服务波动";② 劝用户把刚烧掉的 16 步全额重烧;
+    ③ 没传 results → 整份账本被丢掉,屏幕上已经摆出来的视频凭空消失。"""
+    s = Session("t")
+    m = _stub_mcp()
+    videos = [{"video_id": "v006", "n": 1}, {"video_id": "v007", "n": 2}]
+    sl, calls = _stub_loop(lambda nl, **kw: _out_of_steps_outcome(videos))
+    recorded = []
+    loop_memory.record_loop_turn = lambda *a, **k: recorded.append(a)   # _restore_loop 会还原
+    try:
+        r = orch.run_query("把所有跳伞视频都看一遍", session=s)
+        assert r["status"] == "ok"
+        assert "服务波动" not in r["answer"] and "再发一次" not in r["answer"]
+        assert r["videos"] == videos            # ★ 已经 show_video 摆出来的视频仍在响应里
+        assert r["can_continue"] is True        # 让上层/用户决定要不要继续
+        assert r["loop"]["terminated"] == "max_steps"      # 归因没被诚实文案掩盖
+        assert recorded and recorded[0][-1] == loop_driver.MAX_STEPS_ANSWER   # 这一轮落了 transcript
+    finally:
+        _restore_loop(sl); orch.mcp_client = m
+
+
+def test_max_steps_without_answer_still_gets_honest_text():
+    """orchestrator 侧兜底:即便 loop 那头(旧版本/别的实现)仍回 answer=None,
+    步数耗尽也不能变成"服务波动"。"""
     s = Session("t")
     m = _stub_mcp()
 
@@ -172,7 +210,25 @@ def test_loop_nonconvergence_degrades_to_retry_message():
     sl, calls = _stub_loop(unconverged)
     try:
         r = orch.run_query("something hard", session=s)
-        assert r["status"] == "ok" and "服务波动" in r["answer"]   # answer=None → 也给提示,不崩
+        assert r["status"] == "ok" and "服务波动" not in r["answer"]
+        assert r["answer"] == loop_driver.MAX_STEPS_ANSWER and r["can_continue"] is True
+    finally:
+        _restore_loop(sl); orch.mcp_client = m
+
+
+def test_empty_answer_without_max_steps_still_gets_retry_message():
+    """反向锁:非 max_steps 的空答仍走原来的优雅重试提示(空答网没被 A1 拆掉)。"""
+    s = Session("t")
+    m = _stub_mcp()
+
+    def blank(nl, **kw):
+        return LoopOutcome(answer="   ", steps=1, terminated="text", final_tool=None,
+                           final_value=None, preview_value=None, results={}, trace=[])
+    sl, calls = _stub_loop(blank)
+    try:
+        r = orch.run_query("something", session=s)
+        assert r["status"] == "ok" and "服务波动" in r["answer"]
+        assert r["can_continue"] is False
     finally:
         _restore_loop(sl); orch.mcp_client = m
 
